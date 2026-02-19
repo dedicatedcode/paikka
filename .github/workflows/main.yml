@@ -1,0 +1,84 @@
+---
+name: "develop"
+
+on:
+  push:
+    branches:
+      - main
+      - next
+
+permissions:
+  packages: write
+
+jobs:
+  build-and-publish-develop:
+    name: "Build and publish develop image"
+    runs-on: "ubuntu-latest"
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up JDK 25
+        uses: actions/setup-java@v4
+        with:
+          java-version: '25'
+          distribution: 'temurin'
+          cache: maven
+      - name: Generate acknowledgments data
+        run: |
+          chmod +x scripts/generate-acknowledgments.sh
+          ./scripts/generate-acknowledgments.sh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build
+        run: mvn verify -DskipTests
+      - name: Login to Docker Hub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Docker meta for reitti
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            dedicatedcode/reitti
+            ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=develop,enable={{is_default_branch}}
+            type=raw,value=next,enable=${{ github.ref_name == 'next' }}
+      - name: Build and push reitti image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+      - name: Docker meta for tile-cache
+        id: meta-tile-cache
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            dedicatedcode/reitti-tile-cache
+            ghcr.io/${{ github.repository }}-tile-cache
+          tags: |
+            type=raw,value=develop,enable={{is_default_branch}}
+            type=raw,value=next,enable=${{ github.ref_name == 'next' }}
+      - name: Build and push tile-cache image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./docker/tiles-cache
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta-tile-cache.outputs.tags }}
+          labels: ${{ steps.meta-tile-cache.outputs.labels }}
