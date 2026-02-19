@@ -10,7 +10,7 @@ PAIKKA provides fast, scalable reverse geocoding capabilities by processing Open
 
 Standard geocoding solutions often fall short for specific personal tracking needs. PAIKKA was built to solve these challenges:
 
-- **Meaningful Results:** Optimized for the specific usage patterns and location data used by Reitti.
+- **Meaningful Results:** Optimized for the specific usage patterns and location dataDir from the location data for Reitti.
 - **Boundary Intelligence:** Unlike many light geocoders, PAIKKA includes administrative boundaries on nodes when available.
 - **Resource Efficient:** A computationally light solution that doesn't require massive infrastructure.
 - **Portable Data:** Designed so prepared exports can be easily copied to and served from lightweight machines.
@@ -67,6 +67,54 @@ PAIKKA includes helper scripts to simplify data preparation:
    ```bash
    ./scripts/import.sh filtered.osm.pbf [data_dir] [memory] [threads]
    ```
+
+### Running with Docker
+
+Alternatively, you can use Docker to prepare and import data. The container includes the required scripts and osmium-tool.
+
+#### Prerequisites
+
+- Docker installed
+- A PBF file with OSM data
+
+#### Prepare the data (filter OSM data)
+
+Run the prepare script to filter the OSM data. Mount a local directory containing your input PBF file and specify the output location:
+
+```bash
+docker run -v /path/to/your/data:/data paikka prepare input.osm.pbf filtered.osm.pbf
+```
+
+- Replace `/path/to/your/data` with the absolute path to your local directory
+- `input.osm.pbf` is your source OSM data file
+- `filtered.osm.pbf` is the output filtered file that will be created in your mounted directory
+
+#### Import the data
+
+Run the import script to import the filtered data into the data directory:
+
+```bash
+docker run -v /path/to/your/data:/data paikka import filtered.osm.pbf /data
+```
+
+- `filtered.osm.pbf` is the filtered PBF file from the previous step
+- `/data` is the target directory inside the container (mounted from your local directory)
+
+After import completes, your data directory will contain the processed data files ready for the service.
+
+#### Running the service with Docker
+
+To run the PAIKKA service itself:
+
+```bash
+docker run -d \
+  -v /path/to/your/data:/data \
+  -p 8080:8080 \
+  -e PAIKKA_ADMIN_PASSWORD=your-secure-password \
+  paikka
+```
+
+The data directory is mounted at `/data` inside the container, and the service runs on port 8080.
 
 ### Examples
 
