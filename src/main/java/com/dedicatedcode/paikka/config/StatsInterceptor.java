@@ -5,6 +5,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 import org.springframework.web.servlet.HandlerInterceptor;
 
@@ -13,6 +14,7 @@ import java.util.TreeMap;
 import java.util.stream.Collectors;
 
 @Component
+@ConditionalOnProperty(name = "paikka.import-mode", havingValue = "false", matchIfMissing = true)
 public class StatsInterceptor implements HandlerInterceptor {
     
     private static final Logger logger = LoggerFactory.getLogger(StatsInterceptor.class);
