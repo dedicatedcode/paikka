@@ -1,35 +1,54 @@
 # PAIKKA
 
-PAIKKA is a high-performance reverse geocoding service that serves as the geocoding backend for [Reitti](https://github.com/dedicatedcode/reitti), a comprehensive personal location tracking and analysis application. The name "PAIKKA" comes from Finnish, meaning "place" or "location".
+PAIKKA is a specialized reverse geocoding service designed to provide high-performance location resolution for [Reitti](https://github.com/dedicatedcode/reitti). The name comes from the Finnish word for "place" and is pronounced [ˈpɑi̯kːɑ].
 
 ## Overview
 
-PAIKKA provides fast, scalable reverse geocoding capabilities by processing OpenStreetMap data and serving it through a REST API. It's designed to handle planet-scale datasets efficiently while maintaining low latency for geocoding requests.
+PAIKKA provides fast, scalable reverse geocoding capabilities by processing OpenStreetMap data and serving it through a REST API and web interface. It's designed to handle planet-scale datasets efficiently while maintaining low latency for geocoding requests.
+
+## Why PAIKKA?
+
+Standard geocoding solutions often fall short for specific personal tracking needs. PAIKKA was built to solve these challenges:
+
+- **Meaningful Results:** Optimized for the specific usage patterns and location data used by Reitti.
+- **Boundary Intelligence:** Unlike many light geocoders, PAIKKA includes administrative boundaries on nodes when available.
+- **Resource Efficient:** A computationally light solution that doesn't require massive infrastructure.
+- **Portable Data:** Designed so prepared exports can be easily copied to and served from lightweight machines.
 
 ## Relationship to Reitti
 
-PAIKKA is the dedicated reverse geocoding component of the Reitti ecosystem:
+[Reitti](https://github.com/dedicatedcode/reitti) is a comprehensive personal location tracking and analysis application that helps you understand your movement patterns and significant places. PAIKKA acts as the dedicated "location engine" for Reitti, converting raw GPS coordinates into human-readable context.
 
-- **[Reitti](https://github.com/dedicatedcode/reitti)** - The main application for personal location tracking and analysis
-- **PAIKKA** - The reverse geocoding service that converts coordinates to human-readable addresses
+## Limitations
 
-While Reitti can use external geocoding services like Nominatim or Photon, PAIKKA provides a self-hosted, optimized solution specifically designed for Reitti's needs.
+- Boundary data is dependent on availability within the source nodes.
+- Optimized for read-heavy serving; updates require re-importing prepared data.
+- Focused strictly on reverse geocoding (coordinates to place).
 
 ## Features
 
 - **Planet-scale data processing** - Import and process complete OpenStreetMap datasets
 - **High-performance geocoding** - Optimized for low-latency reverse geocoding requests
 - **RESTful API** - Simple HTTP endpoints for geocoding operations
+- **Web Dashboard** - Administrative interface for monitoring and statistics
 - **Spatial indexing** - Efficient S2-based spatial indexing for fast lookups
 - **Boundary support** - Administrative boundary data for hierarchical location information
 - **Geometry simplification** - Optimized geometry storage and retrieval
 - **Health monitoring** - Built-in health check endpoints
+- **Security** - Password-protected admin interface with CSRF protection
+- **Performance optimization** - Static resource caching and compression
 
 ## API Endpoints
 
+### Public API
 - `GET /api/v1/health` - Health check endpoint
 - `GET /api/v1/reverse?lat={lat}&lon={lon}[&lang={lang}]` - Reverse geocoding
 - `GET /api/v1/geometry/{osmId}` - Retrieve geometry for OSM objects
+
+### Web Interface
+- `GET /` - About page with project information
+- `GET /login` - Admin login page
+- `GET /admin/stats` - Admin dashboard (requires authentication)
 
 ## Data Preparation
 
@@ -265,10 +284,26 @@ server.port=8080
 paikka.data-dir=/opt/paikka/data
 
 # S2 spatial indexing level (10-15, higher = more precise but larger index)
-paikka.s2-level=12
+paikka.s2-level=14
 
 # Maximum nodes to process in memory
-paikka.max-nodes=10000000
+paikka.max-nodes=50000000
+
+# Import configuration
+paikka.max-import-threads=10
+
+# API response limits
+paikka.max-results=500
+paikka.default-results=10
+
+# Base URL for the service
+paikka.base-url=http://localhost:8080
+
+# Statistics database path
+paikka.stats-db-path=./data/stats.db
+
+# Admin password
+paikka.admin.password=your-secure-password
 ```
 
 ### Sample Requests
@@ -287,16 +322,31 @@ curl 'http://localhost:8080/api/v1/reverse?lat=60.1699&lon=24.9384&lang=fi'
 curl 'http://localhost:8080/api/v1/geometry/12345'
 ```
 
+### Web Interface
+
+- Visit `http://localhost:8080/` for the about page
+- Visit `http://localhost:8080/admin/stats` to access the admin dashboard (login required)
+
 ## Integration with Reitti
 
 To use PAIKKA with Reitti, configure the geocoding service in Reitti's settings:
 
 1. Start PAIKKA service on your server
-2. In Reitti, go to Settings → Geocoding
-3. Add a new geocoding service:
+2. Set the admin password in your configuration
+3. In Reitti, go to Settings → Geocoding
+4. Add a new geocoding service:
    - **Name**: PAIKKA
    - **URL**: `http://your-paikka-server:8080/api/v1/reverse?lat={lat}&lon={lon}`
    - **Priority**: Set as primary service
+
+## Security
+
+PAIKKA includes security features for production deployment:
+
+- **Admin Authentication**: Password-protected admin interface
+- **CSRF Protection**: Cross-site request forgery protection for forms
+- **Static Resource Caching**: Optimized caching headers for performance
+- **Secure Headers**: Proper security headers for web interface
 
 ## Performance Tuning
 
@@ -329,6 +379,16 @@ There are multiple ways of getting support:
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request to the main [Reitti repository](https://github.com/dedicatedcode/reitti).
+
+## Technology Stack
+
+- **Java 21** - Modern Java runtime with performance improvements
+- **Spring Boot** - Application framework with embedded web server
+- **RocksDB** - High-performance embedded database for spatial data
+- **FlatBuffers** - Efficient serialization for geocoding data
+- **S2 Geometry** - Spatial indexing and geometric operations
+- **Leaflet** - Interactive maps for the web interface
+- **Thymeleaf** - Server-side templating for HTML pages
 
 ## License
 
