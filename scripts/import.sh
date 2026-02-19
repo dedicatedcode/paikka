@@ -5,11 +5,12 @@
 
 # Usage function
 usage() {
-    echo "Usage: $0 <pbf_file> [data_dir] [memory] [threads]"
+    echo "Usage: $0 [jar_file] <pbf_file> [data_dir] [memory] [threads]"
     echo ""
     echo "Imports OSM PBF data into PAIKKA format"
     echo ""
     echo "Arguments:"
+    echo "  jar_file    Path to the PAIKKA jar file (optional, auto-detected if not provided)"
     echo "  pbf_file    Path to the OSM PBF file to import"
     echo "  data_dir    Directory to store processed data (default: ./data)"
     echo "  memory      JVM heap size (default: 16g)"
@@ -17,28 +18,43 @@ usage() {
     echo ""
     echo "Examples:"
     echo "  $0 planet-latest.osm.pbf"
-    echo "  $0 europe-latest.osm.pbf /opt/paikka/data"
+    echo "  $0 /app/app.jar europe-latest.osm.pbf /opt/paikka/data"
     echo "  $0 germany-latest.osm.pbf ./data 16g"
     echo "  $0 germany-latest.osm.pbf ./data 16g 4"
     echo ""
     echo "Requirements:"
     echo "  - Java 21 or higher"
-    echo "  - PAIKKA jar file in target/ directory"
+    echo "  - PAIKKA jar file in target/ directory or provided as parameter"
     echo "  - Sufficient RAM (recommended: 32GB+ for planet)"
     exit 1
 }
 
 # Check if at least one argument provided
 if [ $# -lt 1 ]; then
-    echo "Error: PBF file argument required"
+    echo "Error: At least one argument required"
     echo ""
     usage
 fi
 
+# Check if first argument is a jar file
+JAR_FILE=""
+if [[ "$1" == *.jar ]]; then
+    JAR_FILE="$1"
+    shift
+fi
+
+# Now parse remaining arguments
 PBF_FILE="$1"
 DATA_DIR="${2:-./data}"
 MEMORY="${3:-16g}"
 THREADS="${4:-}"
+
+# Check if PBF file argument is provided
+if [ -z "$PBF_FILE" ]; then
+    echo "Error: PBF file argument required"
+    echo ""
+    usage
+fi
 
 # Check if PBF file exists
 if [ ! -f "$PBF_FILE" ]; then
@@ -46,12 +62,20 @@ if [ ! -f "$PBF_FILE" ]; then
     exit 1
 fi
 
-# Find PAIKKA jar file
-JAR_FILE=$(find target -name "paikka-*.jar" -not -name "*-sources.jar" | head -1)
-
+# Find PAIKKA jar file if not provided
 if [ -z "$JAR_FILE" ]; then
-    echo "Error: PAIKKA jar file not found in target/ directory"
-    echo "Please run 'mvn clean package' first"
+    JAR_FILE=$(find target -name "paikka-*.jar" -not -name "*-sources.jar" | head -1)
+    
+    if [ -z "$JAR_FILE" ]; then
+        echo "Error: PAIKKA jar file not found in target/ directory"
+        echo "Please run 'mvn clean package' first or provide jar file path as first argument"
+        exit 1
+    fi
+fi
+
+# Verify jar file exists
+if [ ! -f "$JAR_FILE" ]; then
+    echo "Error: JAR file '$JAR_FILE' does not exist"
     exit 1
 fi
 

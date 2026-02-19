@@ -50,9 +50,14 @@ chown -R paikka:paikka $DATA_DIR
 cd $DATA_DIR
 
 # Check if the first argument is a known script
-if [ "$1" = "prepare" ] || [ "$1" = "import" ]; then
+if [ "$1" = "prepare" ]; then
     echo "Running script: $1"
-    exec runuser -u paikka -- "$@"
+    shift
+    exec runuser -u paikka -- prepare "$@"
+elif [ "$1" = "import" ]; then
+    echo "Running script: $1"
+    shift
+    exec runuser -u paikka -- import "$APP_HOME/app.jar" "$@"
 fi
 
 # Default: Execute the Java application
