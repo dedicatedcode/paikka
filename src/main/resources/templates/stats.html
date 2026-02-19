@@ -20,6 +20,18 @@
             <a href="/admin/map">Query Map</a>
         </div>
         
+        <div class="admin-actions">
+            <button 
+                hx-post="/admin/refresh-db" 
+                hx-target="#refresh-status"
+                hx-indicator="#refresh-spinner"
+                class="refresh-button">
+                Refresh Database
+            </button>
+            <span id="refresh-spinner" class="htmx-indicator">Refreshing...</span>
+            <div id="refresh-status"></div>
+        </div>
+        
         <form hx-get="/admin/stats" hx-target="body" hx-trigger="submit" class="controls">
             <div class="filter-group">
                 <label for="startDate">Start Date</label>
@@ -288,7 +300,70 @@
                     }
                 }
             });
+            
+            // Handle refresh database response
+            document.body.addEventListener('htmx:afterRequest', function(event) {
+                if (event.detail.pathInfo.requestPath === '/admin/refresh-db') {
+                    const statusDiv = document.getElementById('refresh-status');
+                    if (event.detail.successful) {
+                        const response = JSON.parse(event.detail.xhr.responseText);
+                        if (response.success) {
+                            statusDiv.innerHTML = '<span style="color: #4caf50;">✓ ' + response.message + '</span>';
+                        } else {
+                            statusDiv.innerHTML = '<span style="color: #f44336;">✗ ' + response.message + '</span>';
+                        }
+                    } else {
+                        statusDiv.innerHTML = '<span style="color: #f44336;">✗ Failed to refresh database</span>';
+                    }
+                    
+                    // Clear status message after 5 seconds
+                    setTimeout(function() {
+                        statusDiv.innerHTML = '';
+                    }, 5000);
+                }
+            });
         })();
     </script>
+    
+    <style>
+        .admin-actions {
+            margin: 20px 0;
+            padding: 15px;
+            background: #2a2a2a;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+        
+        .refresh-button {
+            padding: 10px 20px;
+            background: #4a9eff;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+        }
+        
+        .refresh-button:hover {
+            background: #3a8eef;
+        }
+        
+        .htmx-indicator {
+            display: none;
+            color: #ff8800;
+            font-style: italic;
+        }
+        
+        .htmx-request .htmx-indicator {
+            display: inline;
+        }
+        
+        #refresh-status {
+            font-size: 14px;
+        }
+    </style>
 </body>
 </html>
