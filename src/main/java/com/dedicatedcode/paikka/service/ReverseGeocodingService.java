@@ -5,7 +5,6 @@ import com.dedicatedcode.paikka.dto.GeoJsonGeometry;
 import com.dedicatedcode.paikka.dto.POIResponse;
 import com.dedicatedcode.paikka.exception.POINotFoundException;
 import com.dedicatedcode.paikka.flatbuffers.*;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import org.locationtech.jts.geom.Geometry;
 import org.locationtech.jts.io.WKBReader;
 import org.rocksdb.Options;
@@ -33,14 +32,12 @@ public class ReverseGeocodingService {
 
     private final PaikkaConfiguration config;
     private final S2Helper s2Helper;
-    private final ObjectMapper objectMapper;
     private final String normalizedBaseUrl;
     private RocksDB shardsDb;
     
-    public ReverseGeocodingService(PaikkaConfiguration config, S2Helper s2Helper, ObjectMapper objectMapper) {
+    public ReverseGeocodingService(PaikkaConfiguration config, S2Helper s2Helper) {
         this.config = config;
         this.s2Helper = s2Helper;
-        this.objectMapper = objectMapper;
         this.normalizedBaseUrl = normalizeBaseUrl(config.getBaseUrl());
         initializeRocksDB();
     }
