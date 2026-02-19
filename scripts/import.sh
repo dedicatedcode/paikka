@@ -5,49 +5,79 @@
 
 # Usage function
 usage() {
-    echo "Usage: $0 [jar_file] <pbf_file> [data_dir] [memory] [threads]"
+    echo "Usage: $0 [OPTIONS] <pbf_file>"
     echo ""
     echo "Imports OSM PBF data into PAIKKA format"
     echo ""
-    echo "Arguments:"
-    echo "  jar_file    Path to the PAIKKA jar file (optional, auto-detected if not provided)"
-    echo "  pbf_file    Path to the OSM PBF file to import"
-    echo "  data_dir    Directory to store processed data (default: ./data)"
-    echo "  memory      JVM heap size (default: 16g)"
-    echo "  threads     Maximum number of import threads (default: half of CPU cores)"
+    echo "Required Arguments:"
+    echo "  pbf_file              Path to the OSM PBF file to import"
+    echo ""
+    echo "Options:"
+    echo "  --jar-file PATH       Path to the PAIKKA jar file (auto-detected if not provided)"
+    echo "  --data-dir PATH       Directory to store processed data (default: ./data)"
+    echo "  --memory SIZE         JVM heap size (default: 16g)"
+    echo "  --threads NUM         Maximum number of import threads (default: half of CPU cores)"
+    echo "  -h, --help            Show this help message"
     echo ""
     echo "Examples:"
     echo "  $0 planet-latest.osm.pbf"
-    echo "  $0 /app/app.jar europe-latest.osm.pbf /opt/paikka/data"
-    echo "  $0 germany-latest.osm.pbf ./data 16g"
-    echo "  $0 germany-latest.osm.pbf ./data 16g 4"
+    echo "  $0 --jar-file /app/app.jar --data-dir /opt/paikka/data europe-latest.osm.pbf"
+    echo "  $0 --memory 32g --threads 8 germany-latest.osm.pbf"
+    echo "  $0 --data-dir ./data --memory 16g germany-latest.osm.pbf"
     echo ""
     echo "Requirements:"
     echo "  - Java 21 or higher"
-    echo "  - PAIKKA jar file in target/ directory or provided as parameter"
+    echo "  - PAIKKA jar file in target/ directory or provided via --jar-file"
     echo "  - Sufficient RAM (recommended: 32GB+ for planet)"
     exit 1
 }
 
-# Check if at least one argument provided
-if [ $# -lt 1 ]; then
-    echo "Error: At least one argument required"
-    echo ""
-    usage
-fi
-
-# Check if first argument is a jar file
+# Default values
 JAR_FILE=""
-if [[ "$1" == *.jar ]]; then
-    JAR_FILE="$1"
-    shift
-fi
+DATA_DIR="./data"
+MEMORY="16g"
+THREADS=""
+PBF_FILE=""
 
-# Now parse remaining arguments
-PBF_FILE="$1"
-DATA_DIR="${2:-./data}"
-MEMORY="${3:-16g}"
-THREADS="${4:-}"
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --jar-file)
+            JAR_FILE="$2"
+            shift 2
+            ;;
+        --data-dir)
+            DATA_DIR="$2"
+            shift 2
+            ;;
+        --memory)
+            MEMORY="$2"
+            shift 2
+            ;;
+        --threads)
+            THREADS="$2"
+            shift 2
+            ;;
+        -h|--help)
+            usage
+            ;;
+        -*)
+            echo "Error: Unknown option: $1"
+            echo ""
+            usage
+            ;;
+        *)
+            if [ -z "$PBF_FILE" ]; then
+                PBF_FILE="$1"
+            else
+                echo "Error: Multiple PBF files specified: '$PBF_FILE' and '$1'"
+                echo ""
+                usage
+            fi
+            shift
+            ;;
+    esac
+done
 
 # Check if PBF file argument is provided
 if [ -z "$PBF_FILE" ]; then
@@ -68,7 +98,7 @@ if [ -z "$JAR_FILE" ]; then
     
     if [ -z "$JAR_FILE" ]; then
         echo "Error: PAIKKA jar file not found in target/ directory"
-        echo "Please run 'mvn clean package' first or provide jar file path as first argument"
+        echo "Please run 'mvn clean package' first or provide jar file path via --jar-file"
         exit 1
     fi
 fi

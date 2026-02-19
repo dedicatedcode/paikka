@@ -57,7 +57,7 @@ if [ "$1" = "prepare" ]; then
 elif [ "$1" = "import" ]; then
     echo "Running script: $1"
     shift
-    exec runuser -u paikka -- import "$APP_HOME/app.jar" "$@"
+    exec runuser -u paikka -- import --jar-file "$APP_HOME/app.jar" "$@"
 fi
 
 # Default: Execute the Java application
