@@ -62,6 +62,34 @@ public class BoundaryService {
     }
     
     /**
+     * Reload the RocksDB database from the data directory.
+     * This is useful when a new data folder has been uploaded or updated.
+     */
+    public synchronized void reloadDatabase() {
+        logger.info("Reloading boundaries database...");
+        
+        // Close existing database connection
+        if (boundariesDb != null) {
+            try {
+                boundariesDb.close();
+                logger.info("Closed existing boundaries database connection");
+            } catch (Exception e) {
+                logger.warn("Error closing existing boundaries database: {}", e.getMessage());
+            }
+            boundariesDb = null;
+        }
+        
+        // Reinitialize the database
+        initializeRocksDB();
+        
+        if (boundariesDb != null) {
+            logger.info("Boundaries database reloaded successfully");
+        } else {
+            logger.warn("Boundaries database reload completed but database is not available");
+        }
+    }
+    
+    /**
      * Get boundary geometry by OSM ID.
      * 
      * @param osmId OSM relation ID

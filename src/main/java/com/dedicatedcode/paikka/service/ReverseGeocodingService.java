@@ -77,6 +77,34 @@ public class ReverseGeocodingService {
     }
     
     /**
+     * Reload the RocksDB database from the data directory.
+     * This is useful when a new data folder has been uploaded or updated.
+     */
+    public synchronized void reloadDatabase() {
+        logger.info("Reloading POI shards database...");
+        
+        // Close existing database connection
+        if (shardsDb != null) {
+            try {
+                shardsDb.close();
+                logger.info("Closed existing POI shards database connection");
+            } catch (Exception e) {
+                logger.warn("Error closing existing POI shards database: {}", e.getMessage());
+            }
+            shardsDb = null;
+        }
+        
+        // Reinitialize the database
+        initializeRocksDB();
+        
+        if (shardsDb != null) {
+            logger.info("POI shards database reloaded successfully");
+        } else {
+            logger.warn("POI shards database reload completed but database is not available");
+        }
+    }
+    
+    /**
      * Find the nearest POI to the given coordinates.
      */
     public POIResponse findNearestPOI(double lat, double lon, String lang) {
