@@ -1,0 +1,15 @@
+// POI Geometry (stored as WKB bytes)
+table Geometry {
+  type:string;     // "Point", "Polygon", "MultiPolygon", "LineString"
+  data:[ubyte];    // WKB binary
+}
+
+// Root table for geometry lookups
+table Boundary {
+  osm_id:long;
+  level:int;
+  name:string;
+  geometry:Geometry;
+}
+
+root_type Boundary;

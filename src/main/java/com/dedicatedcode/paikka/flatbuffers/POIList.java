@@ -1,0 +1,47 @@
+package com.dedicatedcode.paikka.flatbuffers;
+
+import java.nio.*;
+import java.lang.*;
+import java.util.*;
+import com.google.flatbuffers.*;
+
+@SuppressWarnings("unused")
+public final class POIList extends Table {
+  public static void ValidateVersion() { Constants.FLATBUFFERS_25_2_10(); }
+  public static POIList getRootAsPOIList(ByteBuffer _bb) { return getRootAsPOIList(_bb, new POIList()); }
+  public static POIList getRootAsPOIList(ByteBuffer _bb, POIList obj) { _bb.order(ByteOrder.LITTLE_ENDIAN); return (obj.__assign(_bb.getInt(_bb.position()) + _bb.position(), _bb)); }
+  public void __init(int _i, ByteBuffer _bb) { __reset(_i, _bb); }
+  public POIList __assign(int _i, ByteBuffer _bb) { __init(_i, _bb); return this; }
+
+  public POI pois(int j) { return pois(new POI(), j); }
+  public POI pois(POI obj, int j) { int o = __offset(4); return o != 0 ? obj.__assign(__indirect(__vector(o) + j * 4), bb) : null; }
+  public int poisLength() { int o = __offset(4); return o != 0 ? __vector_len(o) : 0; }
+  public POI.Vector poisVector() { return poisVector(new POI.Vector()); }
+  public POI.Vector poisVector(POI.Vector obj) { int o = __offset(4); return o != 0 ? obj.__assign(__vector(o), 4, bb) : null; }
+
+  public static int createPOIList(FlatBufferBuilder builder,
+      int poisOffset) {
+    builder.startTable(1);
+    POIList.addPois(builder, poisOffset);
+    return POIList.endPOIList(builder);
+  }
+
+  public static void startPOIList(FlatBufferBuilder builder) { builder.startTable(1); }
+  public static void addPois(FlatBufferBuilder builder, int poisOffset) { builder.addOffset(0, poisOffset, 0); }
+  public static int createPoisVector(FlatBufferBuilder builder, int[] data) { builder.startVector(4, data.length, 4); for (int i = data.length - 1; i >= 0; i--) builder.addOffset(data[i]); return builder.endVector(); }
+  public static void startPoisVector(FlatBufferBuilder builder, int numElems) { builder.startVector(4, numElems, 4); }
+  public static int endPOIList(FlatBufferBuilder builder) {
+    int o = builder.endTable();
+    return o;
+  }
+  public static void finishPOIListBuffer(FlatBufferBuilder builder, int offset) { builder.finish(offset); }
+  public static void finishSizePrefixedPOIListBuffer(FlatBufferBuilder builder, int offset) { builder.finishSizePrefixed(offset); }
+
+  public static final class Vector extends BaseVector {
+    public Vector __assign(int _vector, int _element_size, ByteBuffer _bb) { __reset(_vector, _element_size, _bb); return this; }
+
+    public POIList get(int j) { return get(new POIList(), j); }
+    public POIList get(POIList obj, int j) {  return obj.__assign(__indirect(__element(j), bb), bb); }
+  }
+}
+

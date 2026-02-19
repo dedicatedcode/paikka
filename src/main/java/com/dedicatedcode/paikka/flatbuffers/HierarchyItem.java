@@ -1,0 +1,55 @@
+package com.dedicatedcode.paikka.flatbuffers;
+
+import java.nio.*;
+import java.lang.*;
+import java.util.*;
+import com.google.flatbuffers.*;
+
+@SuppressWarnings("unused")
+public final class HierarchyItem extends Table {
+  public static void ValidateVersion() { Constants.FLATBUFFERS_25_2_10(); }
+  public static HierarchyItem getRootAsHierarchyItem(ByteBuffer _bb) { return getRootAsHierarchyItem(_bb, new HierarchyItem()); }
+  public static HierarchyItem getRootAsHierarchyItem(ByteBuffer _bb, HierarchyItem obj) { _bb.order(ByteOrder.LITTLE_ENDIAN); return (obj.__assign(_bb.getInt(_bb.position()) + _bb.position(), _bb)); }
+  public void __init(int _i, ByteBuffer _bb) { __reset(_i, _bb); }
+  public HierarchyItem __assign(int _i, ByteBuffer _bb) { __init(_i, _bb); return this; }
+
+  public int level() { int o = __offset(4); return o != 0 ? bb.getInt(o + bb_pos) : 0; }
+  public String type() { int o = __offset(6); return o != 0 ? __string(o + bb_pos) : null; }
+  public ByteBuffer typeAsByteBuffer() { return __vector_as_bytebuffer(6, 1); }
+  public ByteBuffer typeInByteBuffer(ByteBuffer _bb) { return __vector_in_bytebuffer(_bb, 6, 1); }
+  public String name() { int o = __offset(8); return o != 0 ? __string(o + bb_pos) : null; }
+  public ByteBuffer nameAsByteBuffer() { return __vector_as_bytebuffer(8, 1); }
+  public ByteBuffer nameInByteBuffer(ByteBuffer _bb) { return __vector_in_bytebuffer(_bb, 8, 1); }
+  public long osmId() { int o = __offset(10); return o != 0 ? bb.getLong(o + bb_pos) : 0L; }
+
+  public static int createHierarchyItem(FlatBufferBuilder builder,
+      int level,
+      int typeOffset,
+      int nameOffset,
+      long osmId) {
+    builder.startTable(4);
+    HierarchyItem.addOsmId(builder, osmId);
+    HierarchyItem.addName(builder, nameOffset);
+    HierarchyItem.addType(builder, typeOffset);
+    HierarchyItem.addLevel(builder, level);
+    return HierarchyItem.endHierarchyItem(builder);
+  }
+
+  public static void startHierarchyItem(FlatBufferBuilder builder) { builder.startTable(4); }
+  public static void addLevel(FlatBufferBuilder builder, int level) { builder.addInt(0, level, 0); }
+  public static void addType(FlatBufferBuilder builder, int typeOffset) { builder.addOffset(1, typeOffset, 0); }
+  public static void addName(FlatBufferBuilder builder, int nameOffset) { builder.addOffset(2, nameOffset, 0); }
+  public static void addOsmId(FlatBufferBuilder builder, long osmId) { builder.addLong(3, osmId, 0L); }
+  public static int endHierarchyItem(FlatBufferBuilder builder) {
+    int o = builder.endTable();
+    return o;
+  }
+
+  public static final class Vector extends BaseVector {
+    public Vector __assign(int _vector, int _element_size, ByteBuffer _bb) { __reset(_vector, _element_size, _bb); return this; }
+
+    public HierarchyItem get(int j) { return get(new HierarchyItem(), j); }
+    public HierarchyItem get(HierarchyItem obj, int j) {  return obj.__assign(__indirect(__element(j), bb), bb); }
+  }
+}
+

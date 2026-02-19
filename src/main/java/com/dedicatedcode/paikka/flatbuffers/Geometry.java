@@ -1,0 +1,53 @@
+package com.dedicatedcode.paikka.flatbuffers;
+
+import java.nio.*;
+import java.lang.*;
+import java.util.*;
+import com.google.flatbuffers.*;
+
+@SuppressWarnings("unused")
+public final class Geometry extends Table {
+  public static void ValidateVersion() { Constants.FLATBUFFERS_25_2_10(); }
+  public static Geometry getRootAsGeometry(ByteBuffer _bb) { return getRootAsGeometry(_bb, new Geometry()); }
+  public static Geometry getRootAsGeometry(ByteBuffer _bb, Geometry obj) { _bb.order(ByteOrder.LITTLE_ENDIAN); return (obj.__assign(_bb.getInt(_bb.position()) + _bb.position(), _bb)); }
+  public void __init(int _i, ByteBuffer _bb) { __reset(_i, _bb); }
+  public Geometry __assign(int _i, ByteBuffer _bb) { __init(_i, _bb); return this; }
+
+  public String type() { int o = __offset(4); return o != 0 ? __string(o + bb_pos) : null; }
+  public ByteBuffer typeAsByteBuffer() { return __vector_as_bytebuffer(4, 1); }
+  public ByteBuffer typeInByteBuffer(ByteBuffer _bb) { return __vector_in_bytebuffer(_bb, 4, 1); }
+  public int data(int j) { int o = __offset(6); return o != 0 ? bb.get(__vector(o) + j * 1) & 0xFF : 0; }
+  public int dataLength() { int o = __offset(6); return o != 0 ? __vector_len(o) : 0; }
+  public ByteVector dataVector() { return dataVector(new ByteVector()); }
+  public ByteVector dataVector(ByteVector obj) { int o = __offset(6); return o != 0 ? obj.__assign(__vector(o), bb) : null; }
+  public ByteBuffer dataAsByteBuffer() { return __vector_as_bytebuffer(6, 1); }
+  public ByteBuffer dataInByteBuffer(ByteBuffer _bb) { return __vector_in_bytebuffer(_bb, 6, 1); }
+
+  public static int createGeometry(FlatBufferBuilder builder,
+      int typeOffset,
+      int dataOffset) {
+    builder.startTable(2);
+    Geometry.addData(builder, dataOffset);
+    Geometry.addType(builder, typeOffset);
+    return Geometry.endGeometry(builder);
+  }
+
+  public static void startGeometry(FlatBufferBuilder builder) { builder.startTable(2); }
+  public static void addType(FlatBufferBuilder builder, int typeOffset) { builder.addOffset(0, typeOffset, 0); }
+  public static void addData(FlatBufferBuilder builder, int dataOffset) { builder.addOffset(1, dataOffset, 0); }
+  public static int createDataVector(FlatBufferBuilder builder, byte[] data) { return builder.createByteVector(data); }
+  public static int createDataVector(FlatBufferBuilder builder, ByteBuffer data) { return builder.createByteVector(data); }
+  public static void startDataVector(FlatBufferBuilder builder, int numElems) { builder.startVector(1, numElems, 1); }
+  public static int endGeometry(FlatBufferBuilder builder) {
+    int o = builder.endTable();
+    return o;
+  }
+
+  public static final class Vector extends BaseVector {
+    public Vector __assign(int _vector, int _element_size, ByteBuffer _bb) { __reset(_vector, _element_size, _bb); return this; }
+
+    public Geometry get(int j) { return get(new Geometry(), j); }
+    public Geometry get(Geometry obj, int j) {  return obj.__assign(__indirect(__element(j), bb), bb); }
+  }
+}
+

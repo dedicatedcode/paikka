@@ -1,0 +1,126 @@
+package com.dedicatedcode.paikka.flatbuffers;
+
+import com.google.flatbuffers.BaseVector;
+import com.google.flatbuffers.Constants;
+import com.google.flatbuffers.FlatBufferBuilder;
+import com.google.flatbuffers.Table;
+
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+
+@SuppressWarnings("unused")
+public final class POI extends Table {
+  public static void ValidateVersion() { Constants.FLATBUFFERS_25_2_10(); }
+  public static POI getRootAsPOI(ByteBuffer _bb) { return getRootAsPOI(_bb, new POI()); }
+  public static POI getRootAsPOI(ByteBuffer _bb, POI obj) { _bb.order(ByteOrder.LITTLE_ENDIAN); return (obj.__assign(_bb.getInt(_bb.position()) + _bb.position(), _bb)); }
+  public void __init(int _i, ByteBuffer _bb) { __reset(_i, _bb); }
+  public POI __assign(int _i, ByteBuffer _bb) { __init(_i, _bb); return this; }
+
+  public long id() { int o = __offset(4); return o != 0 ? bb.getLong(o + bb_pos) : 0L; }
+  public float lat() { int o = __offset(6); return o != 0 ? bb.getFloat(o + bb_pos) : 0.0f; }
+  public float lon() { int o = __offset(8); return o != 0 ? bb.getFloat(o + bb_pos) : 0.0f; }
+  public String type() { int o = __offset(10); return o != 0 ? __string(o + bb_pos) : null; }
+  public ByteBuffer typeAsByteBuffer() { return __vector_as_bytebuffer(10, 1); }
+  public ByteBuffer typeInByteBuffer(ByteBuffer _bb) { return __vector_in_bytebuffer(_bb, 10, 1); }
+  public String subtype() { int o = __offset(12); return o != 0 ? __string(o + bb_pos) : null; }
+  public ByteBuffer subtypeAsByteBuffer() { return __vector_as_bytebuffer(12, 1); }
+  public ByteBuffer subtypeInByteBuffer(ByteBuffer _bb) { return __vector_in_bytebuffer(_bb, 12, 1); }
+  public Name names(int j) { return names(new Name(), j); }
+  public Name names(Name obj, int j) { int o = __offset(14); return o != 0 ? obj.__assign(__indirect(__vector(o) + j * 4), bb) : null; }
+  public int namesLength() { int o = __offset(14); return o != 0 ? __vector_len(o) : 0; }
+  public Name.Vector namesVector() { return namesVector(new Name.Vector()); }
+  public Name.Vector namesVector(Name.Vector obj) { int o = __offset(14); return o != 0 ? obj.__assign(__vector(o), 4, bb) : null; }
+
+  public Address address() {
+    return address(new Address());
+  }
+
+  public Address address(Address obj) {
+    int o = __offset(16);
+    return o != 0 ? obj.__assign(__indirect(o + bb_pos), bb) : null;
+  }
+  public HierarchyItem hierarchy(int j) { return hierarchy(new HierarchyItem(), j); }
+
+  public HierarchyItem hierarchy(HierarchyItem obj, int j) {
+    int o = __offset(18);
+    return o != 0 ? obj.__assign(__indirect(__vector(o) + j * 4), bb) : null;
+  }
+
+  public int hierarchyLength() {
+    int o = __offset(18);
+    return o != 0 ? __vector_len(o) : 0;
+  }
+  public HierarchyItem.Vector hierarchyVector() { return hierarchyVector(new HierarchyItem.Vector()); }
+
+  public HierarchyItem.Vector hierarchyVector(HierarchyItem.Vector obj) {
+    int o = __offset(18);
+    return o != 0 ? obj.__assign(__vector(o), 4, bb) : null;
+  }
+  public Geometry boundary() { return boundary(new Geometry()); }
+
+  public Geometry boundary(Geometry obj) {
+    int o = __offset(20);
+    return o != 0 ? obj.__assign(__indirect(o + bb_pos), bb) : null;
+  }
+
+  public static int createPOI(FlatBufferBuilder builder,
+      long id,
+      float lat,
+      float lon,
+      int typeOffset,
+      int subtypeOffset,
+      int namesOffset,
+                              int addressOffset,
+      int hierarchyOffset,
+      int boundaryOffset) {
+    builder.startTable(9);
+    POI.addId(builder, id);
+    POI.addBoundary(builder, boundaryOffset);
+    POI.addHierarchy(builder, hierarchyOffset);
+    POI.addAddress(builder, addressOffset);
+    POI.addNames(builder, namesOffset);
+    POI.addSubtype(builder, subtypeOffset);
+    POI.addType(builder, typeOffset);
+    POI.addLon(builder, lon);
+    POI.addLat(builder, lat);
+    return POI.endPOI(builder);
+  }
+
+  public static void startPOI(FlatBufferBuilder builder) {
+    builder.startTable(9);
+  }
+  public static void addId(FlatBufferBuilder builder, long id) { builder.addLong(0, id, 0L); }
+  public static void addLat(FlatBufferBuilder builder, float lat) { builder.addFloat(1, lat, 0.0f); }
+  public static void addLon(FlatBufferBuilder builder, float lon) { builder.addFloat(2, lon, 0.0f); }
+  public static void addType(FlatBufferBuilder builder, int typeOffset) { builder.addOffset(3, typeOffset, 0); }
+  public static void addSubtype(FlatBufferBuilder builder, int subtypeOffset) { builder.addOffset(4, subtypeOffset, 0); }
+  public static void addNames(FlatBufferBuilder builder, int namesOffset) { builder.addOffset(5, namesOffset, 0); }
+  public static int createNamesVector(FlatBufferBuilder builder, int[] data) { builder.startVector(4, data.length, 4); for (int i = data.length - 1; i >= 0; i--) builder.addOffset(data[i]); return builder.endVector(); }
+  public static void startNamesVector(FlatBufferBuilder builder, int numElems) { builder.startVector(4, numElems, 4); }
+
+  public static void addAddress(FlatBufferBuilder builder, int addressOffset) {
+    builder.addOffset(6, addressOffset, 0);
+  }
+
+  public static void addHierarchy(FlatBufferBuilder builder, int hierarchyOffset) {
+    builder.addOffset(7, hierarchyOffset, 0);
+  }
+  public static int createHierarchyVector(FlatBufferBuilder builder, int[] data) { builder.startVector(4, data.length, 4); for (int i = data.length - 1; i >= 0; i--) builder.addOffset(data[i]); return builder.endVector(); }
+  public static void startHierarchyVector(FlatBufferBuilder builder, int numElems) { builder.startVector(4, numElems, 4); }
+
+  public static void addBoundary(FlatBufferBuilder builder, int boundaryOffset) {
+    builder.addOffset(8, boundaryOffset, 0);
+  }
+  public static int endPOI(FlatBufferBuilder builder) {
+    int o = builder.endTable();
+    return o;
+  }
+
+  public static final class Vector extends BaseVector {
+    public Vector __assign(int _vector, int _element_size, ByteBuffer _bb) { __reset(_vector, _element_size, _bb); return this; }
+
+    public POI get(int j) { return get(new POI(), j); }
+    public POI get(POI obj, int j) {  return obj.__assign(__indirect(__element(j), bb), bb); }
+  }
+}
+

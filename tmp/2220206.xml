@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6" generator="openstreetmap-cgimap 2.1.0 (383547 spike-06.openstreetmap.org)" copyright="OpenStreetMap and contributors" attribution="http://www.openstreetmap.org/copyright" license="http://opendatacommons.org/licenses/odbl/1-0/">
+ <relation id="2220206" visible="true" version="21" changeset="80713244" timestamp="2020-02-08T01:21:22Z" user="Verdy_p" uid="90780">
+  <member type="node" ref="1704462398" role="admin_centre"/>
+  <member type="way" ref="212810311" role="outer"/>
+  <member type="way" ref="24874398" role="outer"/>
+  <member type="way" ref="24874557" role="outer"/>
+  <member type="way" ref="398378955" role="outer"/>
+  <member type="way" ref="398378954" role="outer"/>
+  <member type="way" ref="166558499" role="outer"/>
+  <member type="way" ref="166643411" role="outer"/>
+  <member type="way" ref="169296432" role="outer"/>
+  <member type="way" ref="166558486" role="outer"/>
+  <tag k="admin_level" v="10"/>
+  <tag k="boundary" v="administrative"/>
+  <tag k="ISO3166-2" v="MC-FO"/>
+  <tag k="name" v="Fontvieille"/>
+  <tag k="name:ar" v="فونتفيل"/>
+  <tag k="name:mk" v="Фонвјеј"/>
+  <tag k="name:oc" v="Fònt Vièlha"/>
+  <tag k="note" v="Les quartiers administratifs ont une existence réelle à Monaco (voir le site de l'IMSE)."/>
+  <tag k="ref:IMSE" v="06"/>
+  <tag k="source:name:oc" v="ieo-bdtopoc"/>
+  <tag k="type" v="boundary"/>
+  <tag k="wikidata" v="Q55098"/>
+ </relation>
+</osm>
