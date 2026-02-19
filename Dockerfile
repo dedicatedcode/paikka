@@ -46,6 +46,9 @@ fi
 mkdir -p $DATA_DIR
 chown -R paikka:paikka $DATA_DIR
 
+# Switch to data directory
+cd $DATA_DIR
+
 # Check if the first argument is a known script
 if [ "$1" = "prepare" ] || [ "$1" = "import" ]; then
     echo "Running script: $1"
