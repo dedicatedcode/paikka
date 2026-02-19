@@ -46,7 +46,13 @@ fi
 mkdir -p $DATA_DIR
 chown -R paikka:paikka $DATA_DIR
 
-# Execute using runuser to drop privileges
+# Check if the first argument is a known script
+if [ "$1" = "prepare" ] || [ "$1" = "import" ]; then
+    echo "Running script: $1"
+    exec runuser -u paikka -- "$@"
+fi
+
+# Default: Execute the Java application
 exec runuser -u paikka -- java $JAVA_OPTS -jar $APP_HOME/app.jar -Dspring.profiles.active=docker "$@"
 EOF
 
