@@ -1,6 +1,5 @@
 package com.dedicatedcode.paikka.service;
 
-import com.dedicatedcode.paikka.config.PaikkaConfiguration;
 import com.dedicatedcode.paikka.flatbuffers.*;
 import com.dedicatedcode.paikka.flatbuffers.Geometry;
 import com.google.flatbuffers.FlatBufferBuilder;
@@ -200,47 +199,6 @@ public class ImportService {
                             EntityContainer container = entityQueue.take();
                             if (isPoisonPill(container)) break;
                             try {
-                                if (container.getEntity().getId() == 946757745L) {
-                                    System.out.printf("BoundariesDB Size:" + boundariesDb.getLongProperty("rocksdb.estimate-num-keys") + "\n");
-
-                                    // Get the point coordinates for this POI
-                                    double[] coords = getPoiCoordinates(container.getEntity(), nodeCache);
-                                    if (coords != null) {
-                                        Point debugPoint = geometryFactory.createPoint(new Coordinate(coords[1], coords[0])); // lon, lat
-                                        System.out.printf("Debug POI 946757745 at lat=%.6f, lon=%.6f\n", coords[0], coords[1]);
-
-                                        // Iterate over every boundary in the database
-                                        try (RocksIterator rocksIterator = boundariesDb.newIterator()) {
-                                            rocksIterator.seekToFirst();
-                                            int matchCount = 0;
-                                            while (rocksIterator.isValid()) {
-                                                try {
-                                                    byte[] boundaryData = rocksIterator.value();
-                                                    if (boundaryData != null) {
-                                                        Boundary boundary = Boundary.getRootAsBoundary(ByteBuffer.wrap(boundaryData));
-                                                        Geometry fbGeometry = boundary.geometry();
-                                                        if (fbGeometry != null) {
-                                                            byte[] wkbData = new byte[fbGeometry.dataLength()];
-                                                            fbGeometry.dataAsByteBuffer().get(wkbData);
-                                                            org.locationtech.jts.geom.Geometry jtsGeometry = wkbReader.read(wkbData);
-
-                                                            if (jtsGeometry.contains(debugPoint)) {
-                                                                matchCount++;
-                                                                String name = boundary.name() != null ? boundary.name() : "Unknown";
-                                                                System.out.printf("  MATCH %d: Level %d, Name='%s', OSM ID=%d\n",
-                                                                    matchCount, boundary.level(), name, boundary.osmId());
-                                                            }
-                                                        }
-                                                    }
-                                                } catch (Exception e) {
-                                                    // Skip invalid boundaries
-                                                }
-                                                rocksIterator.next();
-                                            }
-                                            System.out.printf("Total boundaries matching POI 946757745: %d\n", matchCount);
-                                        }
-                                    }
-                                }
                                 PoiData poiData = processPoi(container.getEntity(), nodeCache, hierarchyCache, geometryFactory, wkbReader);
                                 if (poiData != null) {
                                     localShardBuffer.computeIfAbsent(s2Helper.getShardId(poiData.lat(), poiData.lon()), k -> new ArrayList<>()).add(poiData);
