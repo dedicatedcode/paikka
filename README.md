@@ -28,15 +28,12 @@ Standard geocoding solutions often fall short for specific personal tracking nee
 ## Features
 
 - **Planet-scale data processing** - Import and process complete OpenStreetMap datasets
-- **High-performance geocoding** - Optimized for low-latency reverse geocoding requests
+- **High-performance geocoding** - Fast and efficient reverse geocoding
 - **RESTful API** - Simple HTTP endpoints for geocoding operations
 - **Web Dashboard** - Administrative interface for monitoring and statistics
-- **Spatial indexing** - Efficient S2-based spatial indexing for fast lookups
 - **Boundary support** - Administrative boundary data for hierarchical location information
-- **Geometry simplification** - Optimized geometry storage and retrieval
 - **Health monitoring** - Built-in health check endpoints
-- **Security** - Password-protected admin interface with CSRF protection
-- **Performance optimization** - Static resource caching and compression
+- **Secure** - Password-protected admin interface with security features
 
 ## API Endpoints
 
@@ -56,207 +53,35 @@ Standard geocoding solutions often fall short for specific personal tracking nee
 
 - Java 21 or higher
 - Maven 3.6 or higher
-- At least 32GB RAM for planet-scale imports
-- 500GB+ available disk space for planet data
-- SSD storage recommended for optimal performance
+- osmium-tool (for filtering OSM data)
 
-### Downloading Planet Data
+### Quick Start
 
-1. **Download the latest planet PBF file:**
+PAIKKA includes helper scripts to simplify data preparation:
+
+1. **Filter OSM data** (recommended to reduce file size):
    ```bash
-   wget https://planet.openstreetmap.org/pbf/planet-latest.osm.pbf
+   ./scripts/filter_osm.sh input.osm.pbf filtered.osm.pbf
    ```
 
-2. **Alternative regional extracts** (for smaller datasets):
+2. **Import the data**:
    ```bash
-   # Europe extract (~30GB)
-   wget https://download.geofabrik.de/europe-latest.osm.pbf
-   
-   # Country-specific extract (e.g., Germany ~3GB)
-   wget https://download.geofabrik.de/europe/germany-latest.osm.pbf
+   ./scripts/import.sh filtered.osm.pbf [data_dir] [memory] [threads]
    ```
 
-### Filtering Planet Data (Recommended)
-
-Since PAIKKA only needs specific OSM data (administrative boundaries and POIs), you can significantly reduce file size and import time by filtering the planet file. This can reduce a 70GB planet file to ~10-15GB.
-
-#### Installing osmium-tool
+### Examples
 
 ```bash
-# Ubuntu/Debian
-sudo apt-get install osmium-tool
+# Filter and import a country extract
+./scripts/filter_osm.sh germany-latest.osm.pbf germany-filtered.osm.pbf
+./scripts/import.sh germany-filtered.osm.pbf ./data 16g
 
-# macOS
-brew install osmium-tool
-
-# Or build from source: https://osmcode.org/osmium-tool/
+# Import planet data with custom settings
+./scripts/filter_osm.sh planet-latest.osm.pbf planet-filtered.osm.pbf
+./scripts/import.sh planet-filtered.osm.pbf /opt/paikka/data 32g 8
 ```
 
-#### Size Comparison After Filtering
-
-| Original Dataset | Original Size | Filtered Size | Reduction |
-|------------------|---------------|---------------|-----------|
-| Planet           | ~70GB         | ~10-15GB      | ~80%      |
-| Europe           | ~30GB         | ~4-6GB        | ~80%      |
-| Germany          | ~4.4GB        | ~980MB        | ~78%      |
-| Monaco           | 657K          | 223K          | ~66%      |
-
-**Benefits of filtering:**
-- Dramatically reduced import times (3-5x faster)
-- Lower storage requirements
-- Faster subsequent processing
-- Reduced memory usage during import
-
-### Storage Requirements
-
-| Dataset                 | PBF Size | During Import | Processed Size | RAM Required | Import Time |
-|-------------------------|----------|---------------|----------------|--------------|-------------|
-| Monaco                  | 223K     | 1.3M          | ~920K          | -            | 2s          |
-| Country (e.g., Germany) | ~4.4GB   | 1.2G          | ~75MB          | 8GB          | 2-4 hours   |
-| Continent (Europe)      | ~30GB    |               | ~150GB         | 16GB         | 12-24 hours |
-| Planet                  | ~70GB    |               | ~350GB         | 32GB+        | 2-5 days    |
-
-## Data Import
-
-### Building the Application
-
-```bash
-mvn clean package
-```
-
-### Running the Import
-
-```bash
-java -Xmx32g -jar target/paikka-*.jar \
-  --import \
-  --pbf-file=/path/to/planet-latest.osm.pbf \
-  --data-dir=/path/to/data/directory
-```
-
-### Post-Import Cleanup
-
-After a successful import, you can safely delete temporary files to reclaim disk space. The import process creates several large temporary files that are no longer needed once the data is processed into RocksDB format.
-
-#### What Gets Deleted (The "Clean Sweep")
-
-| File/Folder | Estimated Size | Why it's safe to delete |
-|-------------|----------------|-------------------------|
-| `planet.osm.pbf` | ~70 GB | The original raw data. You've already extracted what you need. |
-| `filtered.osm.pbf` | ~5-15 GB | Once processing is complete, all relevant data is in RocksDB. |
-| `temp/node_cache.dat` | 100+ GB | Temporary "phonebook" for coordinate lookups during import. |
-| `temp/` directory | Variable | All intermediate files generated during processing. |
-
-#### Manual Cleanup
-
-```bash
-# After successful import, clean up temporary files
-rm -rf /path/to/data/temp/
-rm planet-latest.osm.pbf  # Original PBF file
-rm filtered.osm.pbf       # Filtered PBF file (if used)
-```
-
-This cleanup can reduce storage usage from 200GB+ during import to ~20GB for the final production data.
-
-### Import Parameters
-
-- `--import` - Enable import mode
-- `--pbf-file` - Path to the OSM PBF file
-- `--data-dir` - Directory where processed data will be stored (default: `./data`)
-
-### Expected Import Times
-
-Import times vary significantly based on hardware and dataset size:
-
-- **SSD + 32GB RAM**: Planet import ~2-3 days
-- **HDD + 16GB RAM**: Planet import ~4-5 days
-- **Country extract**: 2-4 hours regardless of hardware
-
-### Monitoring Import Progress
-
-The import process logs progress regularly:
-
-```
-INFO  - Processing nodes: 1,000,000 / 8,500,000,000 (0.01%)
-INFO  - Processing ways: 500,000 / 900,000,000 (0.06%)
-INFO  - Processing relations: 10,000 / 10,000,000 (0.10%)
-INFO  - Building spatial index...
-INFO  - Import completed successfully
-```
-
-## Distributed Data Preparation
-
-For production deployments, you can prepare data on a powerful machine and transfer it to the production server.
-
-### Preparing Data on Build Machine
-
-1. **Run import on powerful machine:**
-   ```bash
-   java -Xmx64g -jar paikka-*.jar \
-     --import \
-     --pbf-file=planet-latest.osm.pbf \
-     --data-dir=/build/data
-   ```
-
-2. **Create compressed archive:**
-   ```bash
-   tar -czf paikka-data.tar.gz -C /build data/
-   ```
-
-### Transferring to Production
-
-1. **Transfer data archive:**
-   ```bash
-   scp paikka-data.tar.gz production-server:/opt/paikka/
-   ```
-
-2. **Extract on production server:**
-   ```bash
-   cd /opt/paikka
-   tar -xzf paikka-data.tar.gz
-   ```
-
-3. **Start PAIKKA service:**
-   ```bash
-   java -Xmx8g -jar paikka-*.jar --data-dir=/opt/paikka/data
-   ```
-
-### Hot Data Replacement
-
-To update data without downtime:
-
-1. **Prepare new data in temporary directory:**
-   ```bash
-   java -Xmx32g -jar paikka-*.jar \
-     --import \
-     --pbf-file=planet-latest.osm.pbf \
-     --data-dir=/opt/paikka/data-new
-   ```
-
-2. **Stop PAIKKA service:**
-   ```bash
-   systemctl stop paikka
-   ```
-
-3. **Replace data directory:**
-   ```bash
-   mv /opt/paikka/data /opt/paikka/data-old
-   mv /opt/paikka/data-new /opt/paikka/data
-   ```
-
-4. **Start PAIKKA service:**
-   ```bash
-   systemctl start paikka
-   ```
-
-5. **Verify service health:**
-   ```bash
-   curl http://localhost:8080/api/v1/health
-   ```
-
-6. **Clean up old data:**
-   ```bash
-   rm -rf /opt/paikka/data-old
-   ```
+The scripts handle all the technical details including memory management, JVM optimization, and cleanup.
 
 ## Running the Service
 
@@ -341,32 +166,7 @@ To use PAIKKA with Reitti, configure the geocoding service in Reitti's settings:
 
 ## Security
 
-PAIKKA includes security features for production deployment:
-
-- **Admin Authentication**: Password-protected admin interface
-- **CSRF Protection**: Cross-site request forgery protection for forms
-- **Static Resource Caching**: Optimized caching headers for performance
-- **Secure Headers**: Proper security headers for web interface
-
-## Performance Tuning
-
-### JVM Settings
-
-For optimal performance, tune JVM settings based on your hardware:
-
-```bash
-# For 16GB RAM server
-java -Xmx12g -XX:+UseG1GC -XX:MaxGCPauseMillis=200 -jar paikka-*.jar
-
-# For 32GB RAM server  
-java -Xmx24g -XX:+UseG1GC -XX:MaxGCPauseMillis=200 -jar paikka-*.jar
-```
-
-### Storage Optimization
-
-- Use SSD storage for data directory
-- Ensure sufficient disk space (3-5x the PBF file size)
-- Consider using separate disks for data and logs
+PAIKKA is secure and includes password-protected admin interface with proper security features for production deployment.
 
 ## Getting Support
 
