@@ -1,4 +1,4 @@
-# PAIKKA
+![](.github/banner.png)
 
 PAIKKA is a specialized reverse geocoding service designed to provide high-performance location resolution for [Reitti](https://github.com/dedicatedcode/reitti). The name comes from the Finnish word for "place" and is pronounced [ˈpɑi̯kːɑ].
 
@@ -28,10 +28,10 @@ Standard geocoding solutions often fall short for specific personal tracking nee
 ## Features
 
 - **Planet-scale data processing** - Import and process complete OpenStreetMap datasets
-- **High-performance geocoding** - Fast and efficient reverse geocoding
-- **RESTful API** - Simple HTTP endpoints for geocoding operations
-- **Web Dashboard** - Administrative interface for monitoring and statistics
-- **Boundary support** - Administrative boundary data for hierarchical location information
+- **High-performance geocoding** – Fast and efficient reverse geocoding
+- **RESTful API** – Simple HTTP endpoints for geocoding operations
+- **Web Dashboard** – Administrative interface for monitoring and statistics
+- **Boundary support** – Administrative boundary data for hierarchical location information
 - **Health monitoring** - Built-in health check endpoints
 - **Secure** - Password-protected admin interface with security features
 
@@ -187,7 +187,7 @@ Contributions are welcome! Please feel free to submit a Pull Request to the main
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License – see the [LICENSE](LICENSE) file for details.
 
 ## About
 
