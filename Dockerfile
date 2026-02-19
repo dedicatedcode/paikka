@@ -10,7 +10,7 @@ RUN userdel ubuntu
 RUN adduser paikka --uid 1000
 
 # add osmium-tool and other needed applications
-RUN apt update && DEBIAN_FRONTEND=noninteractive apt-get -yq install osmium-tool wget
+RUN apt update && DEBIAN_FRONTEND=noninteractive apt-get -yq install osmium-tool wget util-linux
 # Set environment variables
 ENV SPRING_PROFILES_ACTIVE=docker
 ENV APP_HOME=/app
@@ -46,8 +46,8 @@ fi
 mkdir -p $DATA_DIR
 chown -R paikka:paikka $DATA_DIR
 
-# Execute
-exec su-exec paikka java $JAVA_OPTS -jar $APP_HOME/app.jar -Dspring.profiles.active=docker "$@"
+# Execute using runuser to drop privileges
+exec runuser -u paikka -- java $JAVA_OPTS -jar $APP_HOME/app.jar -Dspring.profiles.active=docker "$@"
 EOF
 
 RUN chmod +x /entrypoint.sh
