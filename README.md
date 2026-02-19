@@ -51,8 +51,7 @@ Standard geocoding solutions often fall short for specific personal tracking nee
 
 ### Prerequisites
 
-- Java 21 or higher
-- Maven 3.6 or higher
+- Java 25 or higher
 - osmium-tool (for filtering OSM data)
 
 ### Quick Start
@@ -164,10 +163,6 @@ To use PAIKKA with Reitti, configure the geocoding service in Reitti's settings:
    - **URL**: `http://your-paikka-server:8080/api/v1/reverse?lat={lat}&lon={lon}`
    - **Priority**: Set as primary service
 
-## Security
-
-PAIKKA is secure and includes password-protected admin interface with proper security features for production deployment.
-
 ## Getting Support
 
 There are multiple ways of getting support:
@@ -182,13 +177,13 @@ Contributions are welcome! Please feel free to submit a Pull Request to the main
 
 ## Technology Stack
 
-- **Java 21** - Modern Java runtime with performance improvements
-- **Spring Boot** - Application framework with embedded web server
-- **RocksDB** - High-performance embedded database for spatial data
-- **FlatBuffers** - Efficient serialization for geocoding data
-- **S2 Geometry** - Spatial indexing and geometric operations
-- **Leaflet** - Interactive maps for the web interface
-- **Thymeleaf** - Server-side templating for HTML pages
+- **Java 21** – Modern Java runtime with performance improvements
+- **Spring Boot** – Application framework with embedded web server
+- **RocksDB** – High-performance embedded database for spatial data
+- **FlatBuffers** – Efficient serialization for geocoding data
+- **S2 Geometry** – Spatial indexing and geometric operations
+- **Leaflet** – Interactive maps for the web interface
+- **Thymeleaf** – Server-side templating for HTML pages
 
 ## License
 
