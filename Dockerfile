@@ -7,8 +7,10 @@ LABEL org.opencontainers.image.licenses="MIT"
 
 # Create a non-root user and group
 RUN userdel ubuntu
-RUN adduser paikka --uid 1000 --no-create-home -disabled-login
+RUN adduser paikka --uid 1000
 
+# add osmium-tool and other needed applications
+RUN apt update && DEBIAN_FRONTEND=noninteractive apt-get -yq install osmium-tool wget
 # Set environment variables
 ENV SPRING_PROFILES_ACTIVE=docker
 ENV APP_HOME=/app
@@ -30,6 +32,7 @@ RUN ln -s $APP_HOME/import.sh /usr/bin/import
 
 RUN chmod +x /usr/bin/prepare
 RUN chmod +x /usr/bin/import
+
 # Create a script to start the application with configurable UID/GID
 RUN cat <<'EOF' > /entrypoint.sh
 #!/bin/sh
@@ -50,9 +53,6 @@ EOF
 RUN chmod +x /entrypoint.sh
 # Expose the application port
 EXPOSE 8080
-
-# add osmium-tool and other needed applications
-RUN apt update && DEBIAN_FRONTEND=noninteractive apt-get -yq install osmium-tool wget
 
 # Add healthcheck
 HEALTHCHECK --interval=5s --timeout=3s --start-period=1s --retries=20 \
