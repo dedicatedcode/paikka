@@ -5,7 +5,6 @@ on:
   push:
     branches:
       - main
-      - next
 
 permissions:
   packages: write
@@ -23,12 +22,6 @@ jobs:
           java-version: '25'
           distribution: 'temurin'
           cache: maven
-      - name: Generate acknowledgments data
-        run: |
-          chmod +x scripts/generate-acknowledgments.sh
-          ./scripts/generate-acknowledgments.sh
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Build
         run: mvn verify -DskipTests
       - name: Login to Docker Hub
@@ -46,17 +39,16 @@ jobs:
         uses: docker/setup-qemu-action@v3
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-      - name: Docker meta for reitti
+      - name: Docker meta for paikka
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: |
-            dedicatedcode/reitti
+            dedicatedcode/paikka
             ghcr.io/${{ github.repository }}
           tags: |
             type=raw,value=develop,enable={{is_default_branch}}
-            type=raw,value=next,enable=${{ github.ref_name == 'next' }}
-      - name: Build and push reitti image
+      - name: Build and push paikka image
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -64,16 +56,6 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-      - name: Docker meta for tile-cache
-        id: meta-tile-cache
-        uses: docker/metadata-action@v5
-        with:
-          images: |
-            dedicatedcode/reitti-tile-cache
-            ghcr.io/${{ github.repository }}-tile-cache
-          tags: |
-            type=raw,value=develop,enable={{is_default_branch}}
-            type=raw,value=next,enable=${{ github.ref_name == 'next' }}
       - name: Build and push tile-cache image
         uses: docker/build-push-action@v6
         with:
