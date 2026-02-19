@@ -168,7 +168,7 @@ if [ $EXIT_CODE -eq 0 ]; then
     # Clean up temporary files to save disk space
     echo ""
     echo "🧹 Cleaning up temporary files..."
-    TEMP_DIR="$DATA_DIR/temp"
+    TEMP_DIR="$DATA_DIR/node_cache"
     if [ -d "$TEMP_DIR" ]; then
         echo "  Removing temporary directory: $TEMP_DIR"
         rm -rf "$TEMP_DIR"
@@ -182,8 +182,7 @@ if [ $EXIT_CODE -eq 0 ]; then
     echo "  java -Xmx8g -jar $JAR_FILE --data-dir=$DATA_DIR"
     echo ""
     echo "💡 To save more disk space, you can also delete:"
-    echo "  - The original PBF file: $PBF_FILE"
-    echo "  - Any filtered PBF files used during import"
+    echo "  - The PBF file: $PBF_FILE"
 else
     echo ""
     echo "✗ Import failed"

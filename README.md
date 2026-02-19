@@ -79,7 +79,7 @@ Alternatively, you can use Docker to prepare and import data. The container incl
 
 #### Prepare the data (filter OSM data)
 
-Run the prepare script to filter the OSM data. Mount a local directory containing your input PBF file and specify the output location:
+Run the prepare script to filter the OSM data. Mount a local directory containing your input PBF file and specify the output filename:
 
 ```bash
 docker run -v /path/to/your/data:/data paikka prepare input.osm.pbf filtered.osm.pbf
