@@ -203,14 +203,47 @@ public class ImportService {
                     System.out.print("\033[u"); 
                     System.out.flush();
                 } else {
-                    System.out.printf("[PROGRESS] %s | Phase: %-20s | PBF/s: %-7s | POI/s: %-7s | Node/s: %-7s | Queue: %-5d | Heap: %s%n",
-                            formatTime(elapsed),
-                            phase,
-                            formatCompactNumber(pbfPerSec),
-                            formatCompactNumber(poisPerSec),
-                            formatCompactNumber(nodesPerSec),
+                    StringBuilder sb = new StringBuilder();
+                    sb.append(String.format("[PROGRESS] %s | Phase: %s%n", formatTime(elapsed), phase));
+                    
+                    if (phase.contains("1.1")) {
+                        sb.append(String.format("  DATA:  Nodes: %s, Ways: %s, Rels: %s, PBF: %s%n",
+                                formatCompactNumber(stats.getNodesCached()),
+                                formatCompactNumber(stats.getWaysProcessed()),
+                                formatCompactNumber(stats.getRelationsFound()),
+                                formatCompactNumber(stats.getEntitiesRead())));
+                        sb.append(String.format("  SPEED: Node/s: %s, Way/s: %s, PBF/s: %s%n",
+                                formatCompactNumber(nodesPerSec),
+                                formatCompactNumber(waysPerSec),
+                                formatCompactNumber(pbfPerSec)));
+                    } else if (phase.contains("1.2")) {
+                        sb.append(String.format("  DATA:  Bounds: %s, Rels: %s, Nodes: %s, Ways: %s%n",
+                                formatCompactNumber(stats.getBoundariesProcessed()),
+                                formatCompactNumber(stats.getRelationsFound()),
+                                formatCompactNumber(stats.getNodesCached()),
+                                formatCompactNumber(stats.getWaysProcessed())));
+                        sb.append(String.format("  SPEED: Bnd/s: %s, Node/s: %s, Way/s: %s%n",
+                                formatCompactNumber(boundsPerSec),
+                                formatCompactNumber(nodesPerSec),
+                                formatCompactNumber(waysPerSec)));
+                    } else {
+                        sb.append(String.format("  DATA:  POIs: %s, Nodes: %s, Ways: %s, PBF: %s%n",
+                                formatCompactNumber(stats.getPoisProcessed()),
+                                formatCompactNumber(stats.getNodesCached()),
+                                formatCompactNumber(stats.getWaysProcessed()),
+                                formatCompactNumber(stats.getEntitiesRead())));
+                        sb.append(String.format("  SPEED: POI/s: %s, PBF/s: %s, Node/s: %s%n",
+                                formatCompactNumber(poisPerSec),
+                                formatCompactNumber(pbfPerSec),
+                                formatCompactNumber(nodesPerSec)));
+                    }
+                    
+                    sb.append(String.format("  SYSTEM: Thrd: %d, Queue: %d, Heap: %s",
+                            stats.getActiveThreads(),
                             stats.getQueueSize(),
-                            stats.getMemoryStats());
+                            stats.getMemoryStats()));
+                    
+                    System.out.println(sb.toString());
                 }
 
                 try {
