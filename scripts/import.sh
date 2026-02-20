@@ -198,6 +198,7 @@ if [ $EXIT_CODE -eq 0 ]; then
     # Clean up temporary files to save disk space
     echo ""
     echo "🧹 Cleaning up temporary files..."
+    # Here we also need to remove the folder grid_index AI!
     TEMP_DIR="$DATA_DIR/node_cache"
     if [ -d "$TEMP_DIR" ]; then
         echo "  Removing temporary directory: $TEMP_DIR"
