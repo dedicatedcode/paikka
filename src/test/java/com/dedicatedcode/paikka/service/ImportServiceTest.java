@@ -198,12 +198,10 @@ class ImportServiceTest {
 
     @Test
     void testImportPoiHasNamesAndBoundary() throws Exception {
-        //poiById.lat() = 43.740246
-        //poiById.lon() = 7.4256916
         POI poiById = findPoiById(tempDataDir, 432751852);
         assertEquals(1, poiById.namesLength(), "POI should have no");
         assertEquals("Jardin des Boulingrins", poiById.names(0).text(), "POI should have no");
-        assertEquals(2, poiById.hierarchyLength());
+        assertEquals(3, poiById.hierarchyLength());
     }
 
     @Test

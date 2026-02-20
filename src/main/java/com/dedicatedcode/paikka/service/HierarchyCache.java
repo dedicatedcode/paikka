@@ -7,6 +7,7 @@ import org.locationtech.jts.geom.Envelope;
 import org.locationtech.jts.geom.Location;
 import org.locationtech.jts.geom.Point;
 import org.locationtech.jts.io.WKBReader;
+import org.rocksdb.ReadOptions;
 import org.rocksdb.RocksDB;
 
 import java.nio.ByteBuffer;
@@ -19,9 +20,9 @@ public class HierarchyCache {
     private final S2Helper s2Helper;
     private final WKBReader wkbReader = new WKBReader();
 
-    // Cache State: Map Level -> List of boundaries (to support overlapping levels)
     private long lastS2CellId = -1;
     private final Map<Integer, List<CachedBoundary>> levelCache = new HashMap<>();
+    private List<SimpleHierarchyItem> lastHierarchy;
 
     public HierarchyCache(RocksDB boundariesDb, RocksDB gridIndexDb, S2Helper s2Helper) {
         this.boundariesDb = boundariesDb;
@@ -35,16 +36,15 @@ public class HierarchyCache {
         long currentS2Cell = s2Helper.getS2CellId(lon, lat, S2Helper.GRID_LEVEL);
 
         // If we changed S2 cells, we MUST refresh
-        if (currentS2Cell != lastS2CellId) {
-            lastS2CellId = currentS2Cell;
-            return refresh(lon, lat, currentS2Cell);
+        if (currentS2Cell == lastS2CellId && lastHierarchy != null) {
+            // Optimization: If the point is still inside ALL layers of the previous
+            // result, we can return the cached list immediately.
+            if (layersStillValid(lon, lat)) {
+                return lastHierarchy;
+            }
         }
-
-        // Even if in the same cell, we need to verify if the "Full" hierarchy
-        // we found previously is still the "Full" hierarchy for this specific point.
-        // To be 100% safe and order-independent, we re-verify all candidates
-        // if the count of hits doesn't match our cache size.
-        return refresh(lon, lat, currentS2Cell);
+        lastHierarchy = refresh(lon, lat, currentS2Cell);
+        return lastHierarchy;
     }
     private List<SimpleHierarchyItem> refresh(double lon, double lat, long cellId) {
         long[] candidates = fetchGridCandidates(cellId);

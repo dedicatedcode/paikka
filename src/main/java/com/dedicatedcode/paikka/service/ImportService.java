@@ -2,14 +2,16 @@ package com.dedicatedcode.paikka.service;
 
 import com.dedicatedcode.paikka.flatbuffers.*;
 import com.dedicatedcode.paikka.flatbuffers.Geometry;
-import com.google.common.geometry.*;
+import com.google.common.geometry.S2CellId;
+import com.google.common.geometry.S2LatLng;
+import com.google.common.geometry.S2LatLngRect;
+import com.google.common.geometry.S2RegionCoverer;
 import com.google.flatbuffers.FlatBufferBuilder;
 import de.topobyte.osm4j.core.access.OsmIterator;
 import de.topobyte.osm4j.core.model.iface.*;
 import de.topobyte.osm4j.pbf.seq.PbfIterator;
 import org.locationtech.jts.algorithm.construct.MaximumInscribedCircle;
 import org.locationtech.jts.geom.*;
-import org.locationtech.jts.io.WKBReader;
 import org.locationtech.jts.io.WKBWriter;
 import org.roaringbitmap.longlong.Roaring64Bitmap;
 import org.rocksdb.*;
@@ -75,32 +77,58 @@ public class ImportService {
         Path shardsDbPath = dataDirectory.resolve("poi_shards");
         Path boundariesDbPath = dataDirectory.resolve("boundaries");
         Path gridIndexDbPath = dataDirectory.resolve("grid_index");
+        Path nodeCacheDbPath = dataDirectory.resolve("node_cache");
 
         RocksDB.loadLibrary();
         ImportStatistics stats = new ImportStatistics();
+        try (Cache sharedCache = new LRUCache(2 * 1024 * 1024 * 1024L)) {
+            BlockBasedTableConfig tableConfig = new BlockBasedTableConfig()
+                    .setBlockCache(sharedCache)
+                    .setFilterPolicy(new BloomFilter(10, false)); // Fast "No-Hit" checks
 
-        try (Options options = new Options().setCreateIfMissing(true)
-                .setCompressionType(CompressionType.LZ4_COMPRESSION);
-             RocksDB shardsDb = RocksDB.open(options, shardsDbPath.toString());
-             RocksDB boundariesDb = RocksDB.open(options, boundariesDbPath.toString());
-             RocksDB gridIndexDb = RocksDB.open(options, gridIndexDbPath.toString());
-             RocksDB nodeCache = createNodeCache(dataDirectory)) {
+            // 2. Options for Persistent Databases (shardsDb, boundariesDb)
+            Options persistentOpts = new Options()
+                    .setCreateIfMissing(true)
+                    .setTableFormatConfig(tableConfig)
+                    .setCompressionType(CompressionType.LZ4_COMPRESSION)
+                    .setMaxOpenFiles(-1);
 
-            printPhaseHeader("PASS 1: Node Harvesting & Admin Boundaries");
-            pass1NodeHarvestingAndAdminProcessing(pbfFile, nodeCache, gridIndexDb, boundariesDb, stats);
+            // 3. Options for Temporary Grid Index (Heavy writes then Heavy reads)
+            Options gridOpts = new Options()
+                    .setCreateIfMissing(true)
+                    .setTableFormatConfig(tableConfig)
+                    .setCompressionType(CompressionType.LZ4_COMPRESSION)
+                    .setWriteBufferSize(256 * 1024 * 1024);
 
-            printPhaseHeader("PASS 2: POI Sharding & Hierarchy Baking");
-            pass2PoiShardingAndBaking(pbfFile, nodeCache, gridIndexDb, shardsDb, boundariesDb, stats);
+            // 4. Options for Node Cache (The most intense DB)
+            Options nodeOpts = new Options()
+                    .setCreateIfMissing(true)
+                    .setTableFormatConfig(tableConfig)
+                    .setCompressionType(CompressionType.LZ4_COMPRESSION)
+                    // Massive write buffer to keep first-pass nodes in RAM
+                    .setWriteBufferSize(512 * 1024 * 1024)
+                    .setMaxWriteBufferNumber(3)
+                    .setLevel0FileNumCompactionTrigger(4);
+            try (RocksDB shardsDb = RocksDB.open(persistentOpts, shardsDbPath.toString());
+                 RocksDB boundariesDb = RocksDB.open(persistentOpts, boundariesDbPath.toString());
+                 RocksDB gridIndexDb = RocksDB.open(gridOpts, gridIndexDbPath.toString());
+                 RocksDB nodeCache = RocksDB.open(nodeOpts, nodeCacheDbPath.toString())) {
 
-            stats.setTotalTime(System.currentTimeMillis() - totalStartTime);
-            printFinalStatistics(stats);
-            printSuccess();
+                printPhaseHeader("PASS 1: Node Harvesting & Admin Boundaries");
+                pass1NodeHarvestingAndAdminProcessing(pbfFile, nodeCache, gridIndexDb, boundariesDb, stats);
+
+                printPhaseHeader("PASS 2: POI Sharding & Hierarchy Baking");
+                pass2PoiShardingAndBaking(pbfFile, nodeCache, gridIndexDb, shardsDb, boundariesDb, stats);
+                stats.setTotalTime(System.currentTimeMillis() - totalStartTime);
+                printFinalStatistics(stats);
+                printSuccess();
 
         } catch (Exception e) {
             printError("IMPORT FAILED: " + e.getMessage());
             e.printStackTrace();
             throw e;
         }
+    }
     }
 
     private void updateGridIndexEntry(RocksDB gridIndexDb, long cellId, long osmId) throws Exception {
@@ -858,13 +886,6 @@ public class ImportService {
             updateGridIndexEntry(gridsIndexDb, cellId.id(), osmId);
         }
         boundariesDb.put(s2Helper.longToByteArray(osmId), fbb.sizedByteArray());
-    }
-
-    private RocksDB createNodeCache(Path dataDir) throws Exception {
-        return RocksDB.open(new Options().setCreateIfMissing(true)
-                .setWriteBufferSize(512 * 1024 * 1024)
-                .setCompressionType(CompressionType.LZ4_COMPRESSION), 
-                dataDir.resolve("node_cache").toString());
     }
 
     private EntityContainer createPoisonPill() {
