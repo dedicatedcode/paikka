@@ -161,6 +161,7 @@ public class ImportService {
                     sb.append(String.format(" │ \033[32mPBF Entities:\033[0m %s \033[33m(%s/s)\033[0m", 
                             formatCompactNumber(stats.getEntitiesRead()), formatCompactNumber(pbfPerSec)));
                     sb.append(String.format(" │ \033[34mWays Found:\033[0m %s", formatCompactNumber(stats.getWaysProcessed())));
+                    sb.append(String.format(" │ \033[37mNodes Found:\033[0m %s", formatCompactNumber(stats.getNodesFound())));
                     sb.append(String.format(" │ \033[35mRelations:\033[0m %s", formatCompactNumber(stats.getRelationsFound())));
                     
                 } else if (phase.contains("1.1.2")) {
@@ -417,6 +418,7 @@ public class ImportService {
                     stats.incrementRelationsFound();
                 } else if (container.getType() == EntityType.Node && isPoi(container.getEntity())) {
                     usedNodes.add(container.getEntity().getId());
+                    stats.incrementNodesFound();
                 }
             }
         });
@@ -995,10 +997,10 @@ public class ImportService {
         System.out.println();
         if (subPhaseName.contains("Scan")) {
             long entitiesPerSec = seconds > 0 ? (long)(stats.getEntitiesRead() / seconds) : 0;
-            System.out.printf("\033[1;32m✓ %s\033[0m \033[2m(%s)\033[0m │ \033[32mEntities:\033[0m %s \033[33m(%s/s)\033[0m │ \033[34mWays:\033[0m %s │ \033[35mRelations:\033[0m %s%n", 
+            System.out.printf("\033[1;32m✓ %s\033[0m \033[2m(%s)\033[0m │ \033[32mEntities:\033[0m %s \033[33m(%s/s)\033[0m │ \033[34mWays:\033[0m %s │ \033[37mNodes:\033[0m %s │ \033[35mRelations:\033[0m %s%n", 
                     subPhaseName, formatTime(subPhaseTime), 
                     formatCompactNumber(stats.getEntitiesRead()), formatCompactNumber(entitiesPerSec),
-                    formatCompactNumber(stats.getWaysProcessed()), formatCompactNumber(stats.getRelationsFound()));
+                    formatCompactNumber(stats.getWaysProcessed()), formatCompactNumber(stats.getNodesFound()), formatCompactNumber(stats.getRelationsFound()));
         } else if (subPhaseName.contains("Caching")) {
             long nodesPerSec = seconds > 0 ? (long)(stats.getNodesCached() / seconds) : 0;
             System.out.printf("\033[1;32m✓ %s\033[0m \033[2m(%s)\033[0m │ \033[32mNodes:\033[0m %s \033[33m(%s/s)\033[0m │ \033[36mDB Writes:\033[0m %s%n", 
@@ -1031,6 +1033,9 @@ public class ImportService {
         System.out.printf("│ \033[32mPBF Entities\033[0m    │ %15s │ %13s/s │%n", 
                 formatCompactNumber(stats.getEntitiesRead()), 
                 formatCompactNumber((long)(stats.getEntitiesRead() / totalSeconds)));
+        System.out.printf("│ \033[37mNodes Found\033[0m     │ %15s │ %13s/s │%n", 
+                formatCompactNumber(stats.getNodesFound()), 
+                formatCompactNumber((long)(stats.getNodesFound() / totalSeconds)));
         System.out.printf("│ \033[34mNodes Cached\033[0m    │ %15s │ %13s/s │%n", 
                 formatCompactNumber(stats.getNodesCached()), 
                 formatCompactNumber((long)(stats.getNodesCached() / totalSeconds)));
@@ -1045,7 +1050,7 @@ public class ImportService {
                 formatCompactNumber((long)(stats.getPoisProcessed() / totalSeconds)));
         System.out.println("└─────────────────┴─────────────────┴─────────────────┘");
         
-        long totalObjects = stats.getNodesCached() + stats.getWaysProcessed() + stats.getBoundariesProcessed() + stats.getPoisProcessed();
+        long totalObjects = stats.getNodesFound() + stats.getNodesCached() + stats.getWaysProcessed() + stats.getBoundariesProcessed() + stats.getPoisProcessed();
         System.out.printf("%n\033[1;37m🚀 Overall Throughput:\033[0m \033[1;32m%s objects\033[0m processed at \033[1;33m%s objects/sec\033[0m%n", 
                 formatCompactNumber(totalObjects), 
                 formatCompactNumber((long)(totalObjects / totalSeconds)));
@@ -1058,6 +1063,7 @@ public class ImportService {
     private static class ImportStatistics {
         private final AtomicLong entitiesRead = new AtomicLong(0);
         private final AtomicLong nodesCached = new AtomicLong(0);
+        private final AtomicLong nodesFound = new AtomicLong(0);
         private final AtomicLong waysProcessed = new AtomicLong(0);
         private final AtomicLong relationsFound = new AtomicLong(0);
         private final AtomicLong boundariesProcessed = new AtomicLong(0);
@@ -1074,6 +1080,8 @@ public class ImportService {
         public void incrementEntitiesRead() { entitiesRead.incrementAndGet(); }
         public long getNodesCached() { return nodesCached.get(); }
         public void incrementNodesCached() { nodesCached.incrementAndGet(); }
+        public long getNodesFound() { return nodesFound.get(); }
+        public void incrementNodesFound() { nodesFound.incrementAndGet(); }
         public long getWaysProcessed() { return waysProcessed.get(); }
         public void incrementWaysProcessed() { waysProcessed.incrementAndGet(); }
         public long getRelationsFound() { return relationsFound.get(); }
