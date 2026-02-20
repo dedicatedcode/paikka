@@ -149,100 +149,37 @@ public class ImportService {
                 long boundsPerSec = seconds > 0 ? (long)(stats.getBoundariesProcessed() / seconds) : 0;
 
                 String phase = stats.getCurrentPhase();
+                StringBuilder sb = new StringBuilder();
 
                 if (isTty) {
-                    System.out.print("\033[s"); // Save cursor position
-                    System.out.print("\n\n\n\n\n\n\033[6A"); 
-                    
-                    System.out.println("\033[1;34m" + "─".repeat(80) + "\033[0m");
-                    System.out.printf("\033[1;33mPHASE:\033[0m [%-45s]  ⏱  %s\n", phase, formatTime(elapsed));
-                    
-                    // Dynamic row based on phase
-                    if (phase.contains("1.1")) {
-                        System.out.printf("  \033[32mDATA:\033[0m   Nodes: %-10s | Ways: %-10s | Rels: %-10s | PBF:  %-10s\n",
-                                formatCompactNumber(stats.getNodesCached()),
-                                formatCompactNumber(stats.getWaysProcessed()),
-                                formatCompactNumber(stats.getRelationsFound()),
-                                formatCompactNumber(stats.getEntitiesRead()));
-                        System.out.printf("  \033[32mSPEED:\033[0m  Node/s: %-9s | Way/s: %-9s | PBF/s: %-9s | Heap:  %-10s\n",
-                                formatCompactNumber(nodesPerSec),
-                                formatCompactNumber(waysPerSec),
-                                formatCompactNumber(pbfPerSec),
-                                stats.getMemoryStats());
-                    } else if (phase.contains("1.2")) {
-                        System.out.printf("  \033[32mDATA:\033[0m   Bounds: %-9s | Rels: %-10s | Nodes: %-10s | Ways: %-10s\n",
-                                formatCompactNumber(stats.getBoundariesProcessed()),
-                                formatCompactNumber(stats.getRelationsFound()),
-                                formatCompactNumber(stats.getNodesCached()),
-                                formatCompactNumber(stats.getWaysProcessed()));
-                        System.out.printf("  \033[32mSPEED:\033[0m  Bnd/s:  %-9s | Node/s: %-9s | Way/s: %-9s | Heap:  %-10s\n",
-                                formatCompactNumber(boundsPerSec),
-                                formatCompactNumber(nodesPerSec),
-                                formatCompactNumber(waysPerSec),
-                                stats.getMemoryStats());
-                    } else {
-                        System.out.printf("  \033[32mDATA:\033[0m   POIs:   %-10s | Nodes: %-10s | Ways: %-10s | PBF:  %-10s\n",
-                                formatCompactNumber(stats.getPoisProcessed()),
-                                formatCompactNumber(stats.getNodesCached()),
-                                formatCompactNumber(stats.getWaysProcessed()),
-                                formatCompactNumber(stats.getEntitiesRead()));
-                        System.out.printf("  \033[32mSPEED:\033[0m  POI/s:  %-9s | PBF/s: %-9s | Node/s: %-9s | Heap:  %-10s\n",
-                                formatCompactNumber(poisPerSec),
-                                formatCompactNumber(pbfPerSec),
-                                formatCompactNumber(nodesPerSec),
-                                stats.getMemoryStats());
-                    }
+                    sb.append("\r\033[K"); // Carriage return and clear line
+                }
 
-                    System.out.printf("  \033[32mSYSTEM:\033[0m Thrd:  %-10d | Queue: %-10d | DBW:   %-10d\n",
-                            stats.getActiveThreads(),
-                            stats.getQueueSize(),
-                            stats.getRocksDbWrites());
-                    System.out.println("\033[1;34m" + "─".repeat(80) + "\033[0m");
-                    
-                    System.out.print("\033[6A"); 
-                    System.out.print("\033[u"); 
+                sb.append(String.format("[%s] %-35s | ", formatTime(elapsed), phase));
+
+                if (phase.contains("1.1")) {
+                    sb.append(String.format("Nodes: %s (%s/s), Ways: %s (%s/s), PBF: %s (%s/s)",
+                            formatCompactNumber(stats.getNodesCached()), formatCompactNumber(nodesPerSec),
+                            formatCompactNumber(stats.getWaysProcessed()), formatCompactNumber(waysPerSec),
+                            formatCompactNumber(stats.getEntitiesRead()), formatCompactNumber(pbfPerSec)));
+                } else if (phase.contains("1.2")) {
+                    sb.append(String.format("Bounds: %s (%s/s), Nodes: %s (%s/s), Ways: %s (%s/s)",
+                            formatCompactNumber(stats.getBoundariesProcessed()), formatCompactNumber(boundsPerSec),
+                            formatCompactNumber(stats.getNodesCached()), formatCompactNumber(nodesPerSec),
+                            formatCompactNumber(stats.getWaysProcessed()), formatCompactNumber(waysPerSec)));
+                } else {
+                    sb.append(String.format("POIs: %s (%s/s), PBF: %s (%s/s), Nodes: %s (%s/s)",
+                            formatCompactNumber(stats.getPoisProcessed()), formatCompactNumber(poisPerSec),
+                            formatCompactNumber(stats.getEntitiesRead()), formatCompactNumber(pbfPerSec),
+                            formatCompactNumber(stats.getNodesCached()), formatCompactNumber(nodesPerSec)));
+                }
+
+                sb.append(String.format(" | Heap: %s", stats.getMemoryStats()));
+
+                if (isTty) {
+                    System.out.print(sb.toString());
                     System.out.flush();
                 } else {
-                    StringBuilder sb = new StringBuilder();
-                    sb.append(String.format("[PROGRESS] %s | Phase: %s%n", formatTime(elapsed), phase));
-                    
-                    if (phase.contains("1.1")) {
-                        sb.append(String.format("  DATA:  Nodes: %s, Ways: %s, Rels: %s, PBF: %s%n",
-                                formatCompactNumber(stats.getNodesCached()),
-                                formatCompactNumber(stats.getWaysProcessed()),
-                                formatCompactNumber(stats.getRelationsFound()),
-                                formatCompactNumber(stats.getEntitiesRead())));
-                        sb.append(String.format("  SPEED: Node/s: %s, Way/s: %s, PBF/s: %s%n",
-                                formatCompactNumber(nodesPerSec),
-                                formatCompactNumber(waysPerSec),
-                                formatCompactNumber(pbfPerSec)));
-                    } else if (phase.contains("1.2")) {
-                        sb.append(String.format("  DATA:  Bounds: %s, Rels: %s, Nodes: %s, Ways: %s%n",
-                                formatCompactNumber(stats.getBoundariesProcessed()),
-                                formatCompactNumber(stats.getRelationsFound()),
-                                formatCompactNumber(stats.getNodesCached()),
-                                formatCompactNumber(stats.getWaysProcessed())));
-                        sb.append(String.format("  SPEED: Bnd/s: %s, Node/s: %s, Way/s: %s%n",
-                                formatCompactNumber(boundsPerSec),
-                                formatCompactNumber(nodesPerSec),
-                                formatCompactNumber(waysPerSec)));
-                    } else {
-                        sb.append(String.format("  DATA:  POIs: %s, Nodes: %s, Ways: %s, PBF: %s%n",
-                                formatCompactNumber(stats.getPoisProcessed()),
-                                formatCompactNumber(stats.getNodesCached()),
-                                formatCompactNumber(stats.getWaysProcessed()),
-                                formatCompactNumber(stats.getEntitiesRead())));
-                        sb.append(String.format("  SPEED: POI/s: %s, PBF/s: %s, Node/s: %s%n",
-                                formatCompactNumber(poisPerSec),
-                                formatCompactNumber(pbfPerSec),
-                                formatCompactNumber(nodesPerSec)));
-                    }
-                    
-                    sb.append(String.format("  SYSTEM: Thrd: %d, Queue: %d, Heap: %s",
-                            stats.getActiveThreads(),
-                            stats.getQueueSize(),
-                            stats.getMemoryStats()));
-                    
                     System.out.println(sb.toString());
                 }
 
@@ -252,6 +189,7 @@ public class ImportService {
                     break;
                 }
             }
+            if (isTty) System.out.println();
         });
     }
 
