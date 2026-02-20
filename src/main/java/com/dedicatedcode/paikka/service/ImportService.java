@@ -7,7 +7,7 @@ import com.google.common.geometry.S2LatLng;
 import com.google.common.geometry.S2LatLngRect;
 import com.google.common.geometry.S2RegionCoverer;
 import com.google.flatbuffers.FlatBufferBuilder;
-import de.topobyte.osm4j.core.access.OsmIterator;
+import de.topobyet.osm4j.core.access.OsmIterator;
 import de.topobyte.osm4j.core.model.iface.*;
 import de.topobyte.osm4j.pbf.seq.PbfIterator;
 import org.locationtech.jts.algorithm.construct.MaximumInscribedCircle;
@@ -135,6 +135,8 @@ public class ImportService {
     }
 
     private void startProgressReporter(ImportStatistics stats) {
+        boolean isTty = System.console() != null;
+
         Thread.ofPlatform().daemon().start(() -> {
             while (stats.isRunning()) {
                 long elapsed = System.currentTimeMillis() - stats.getStartTime();
@@ -142,36 +144,47 @@ public class ImportService {
                 long readPerSec = elapsed > 0 ? (totalRead * 1000L) / elapsed : 0;
                 long poisPerSec = elapsed > 0 ? (stats.getPoisProcessed() * 1000L) / elapsed : 0;
 
-                // ANSI: Save cursor, move to bottom, clear lines, print dashboard, restore cursor
-                System.out.print("\033[s"); // Save cursor position
-                
-                // Move to a fixed position at the bottom (e.g., line 40 or just use relative movement)
-                // We'll use relative movement to ensure we don't overwrite previous logs
-                System.out.print("\n\n\n\n\n\n\033[6A"); 
-                
-                System.out.println("\033[1;34m" + "─".repeat(80) + "\033[0m");
-                System.out.printf("\033[1;33mPHASE:\033[0m [%-45s]  ⏱  %s\n", stats.getCurrentPhase(), formatTime(elapsed));
-                System.out.printf("  \033[32mDATA:\033[0m   Nodes: %-10s | Ways: %-10s | Rels: %-10s | POIs: %-10s\n",
-                        formatCompactNumber(stats.getNodesCached()),
-                        formatCompactNumber(stats.getWaysProcessed()),
-                        formatCompactNumber(stats.getRelationsFound()),
-                        formatCompactNumber(stats.getPoisProcessed()));
-                System.out.printf("  \033[32mSPEED:\033[0m  Ents:  %-10s | POIs:  %-10s | Heap:  %-10s\n",
-                        formatCompactNumber(readPerSec) + "/s",
-                        formatCompactNumber(poisPerSec) + "/s",
-                        stats.getMemoryStats());
-                System.out.printf("  \033[32mSYSTEM:\033[0m Thrd:  %-10d | Q:     %-10d | DBW:   %-10d\n",
-                        stats.getActiveThreads(),
-                        stats.getQueueSize(),
-                        stats.getRocksDbWrites());
-                System.out.println("\033[1;34m" + "─".repeat(80) + "\033[0m");
-                
-                System.out.print("\033[6A"); // Move cursor back up 6 lines
-                System.out.print("\033[u"); // Restore cursor position
-                System.out.flush();
+                if (isTty) {
+                    // ANSI: Save cursor, move to bottom, clear lines, print dashboard, restore cursor
+                    System.out.print("\033[s"); // Save cursor position
+                    
+                    // Move to a fixed position at the bottom
+                    System.out.print("\n\n\n\n\n\n\033[6A"); 
+                    
+                    System.out.println("\033[1;34m" + "─".repeat(80) + "\033[0m");
+                    System.out.printf("\033[1;33mPHASE:\033[0m [%-45s]  ⏱  %s\n", stats.getCurrentPhase(), formatTime(elapsed));
+                    System.out.printf("  \033[32mDATA:\033[0m   Nodes: %-10s | Ways: %-10s | Rels: %-10s | POIs: %-10s\n",
+                            formatCompactNumber(stats.getNodesCached()),
+                            formatCompactNumber(stats.getWaysProcessed()),
+                            formatCompactNumber(stats.getRelationsFound()),
+                            formatCompactNumber(stats.getPoisProcessed()));
+                    System.out.printf("  \033[32mSPEED:\033[0m  Ents:  %-10s | POIs:  %-10s | Heap:  %-10s\n",
+                            formatCompactNumber(readPerSec) + "/s",
+                            formatCompactNumber(poisPerSec) + "/s",
+                            stats.getMemoryStats());
+                    System.out.printf("  \033[32mSYSTEM:\033[0m Thrd:  %-10d | Q:     %-10d | DBW:   %-10d\n",
+                            stats.getActiveThreads(),
+                            stats.getQueueSize(),
+                            stats.getRocksDbWrites());
+                    System.out.println("\033[1;34m" + "─".repeat(80) + "\033[0m");
+                    
+                    System.out.print("\033[6A"); // Move cursor back up 6 lines
+                    System.out.print("\033[u"); // Restore cursor position
+                    System.out.flush();
+                } else {
+                    // Simple periodic log for IDEs/Logs (non-TTY)
+                    System.out.printf("[PROGRESS] %s | Phase: %-20s | POIs: %-8s | Nodes: %-8s | Q: %-5d | Heap: %s%n",
+                            formatTime(elapsed),
+                            stats.getCurrentPhase(),
+                            formatCompactNumber(stats.getPoisProcessed()),
+                            formatCompactNumber(stats.getNodesCached()),
+                            stats.getQueueSize(),
+                            stats.getMemoryStats());
+                }
 
                 try {
-                    Thread.sleep(500);
+                    // Refresh faster on TTY, slower on IDE/Logs
+                    Thread.sleep(isTty ? 500 : 5000);
                 } catch (InterruptedException e) {
                     break;
                 }
