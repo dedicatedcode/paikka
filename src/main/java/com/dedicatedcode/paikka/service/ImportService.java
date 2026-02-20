@@ -140,51 +140,80 @@ public class ImportService {
         Thread.ofPlatform().daemon().start(() -> {
             while (stats.isRunning()) {
                 long elapsed = System.currentTimeMillis() - stats.getStartTime();
-                long totalRead = stats.getEntitiesRead();
-                long readPerSec = elapsed > 0 ? (totalRead * 1000L) / elapsed : 0;
-                long poisPerSec = elapsed > 0 ? (stats.getPoisProcessed() * 1000L) / elapsed : 0;
+                double seconds = elapsed / 1000.0;
+                
+                long pbfPerSec = seconds > 0 ? (long)(stats.getEntitiesRead() / seconds) : 0;
+                long nodesPerSec = seconds > 0 ? (long)(stats.getNodesCached() / seconds) : 0;
+                long waysPerSec = seconds > 0 ? (long)(stats.getWaysProcessed() / seconds) : 0;
+                long poisPerSec = seconds > 0 ? (long)(stats.getPoisProcessed() / seconds) : 0;
+                long boundsPerSec = seconds > 0 ? (long)(stats.getBoundariesProcessed() / seconds) : 0;
+
+                String phase = stats.getCurrentPhase();
 
                 if (isTty) {
-                    // ANSI: Save cursor, move to bottom, clear lines, print dashboard, restore cursor
                     System.out.print("\033[s"); // Save cursor position
-                    
-                    // Move to a fixed position at the bottom
                     System.out.print("\n\n\n\n\n\n\033[6A"); 
                     
                     System.out.println("\033[1;34m" + "─".repeat(80) + "\033[0m");
-                    System.out.printf("\033[1;33mPHASE:\033[0m [%-45s]  ⏱  %s\n", stats.getCurrentPhase(), formatTime(elapsed));
-                    System.out.printf("  \033[32mDATA:\033[0m   Nodes: %-10s | Ways: %-10s | Rels: %-10s | POIs: %-10s\n",
-                            formatCompactNumber(stats.getNodesCached()),
-                            formatCompactNumber(stats.getWaysProcessed()),
-                            formatCompactNumber(stats.getRelationsFound()),
-                            formatCompactNumber(stats.getPoisProcessed()));
-                    System.out.printf("  \033[32mSPEED:\033[0m  Ents:  %-10s | POIs:  %-10s | Heap:  %-10s\n",
-                            formatCompactNumber(readPerSec) + "/s",
-                            formatCompactNumber(poisPerSec) + "/s",
-                            stats.getMemoryStats());
-                    System.out.printf("  \033[32mSYSTEM:\033[0m Thrd:  %-10d | Q:     %-10d | DBW:   %-10d\n",
+                    System.out.printf("\033[1;33mPHASE:\033[0m [%-45s]  ⏱  %s\n", phase, formatTime(elapsed));
+                    
+                    // Dynamic row based on phase
+                    if (phase.contains("1.1")) {
+                        System.out.printf("  \033[32mDATA:\033[0m   Nodes: %-10s | Ways: %-10s | Rels: %-10s | PBF:  %-10s\n",
+                                formatCompactNumber(stats.getNodesCached()),
+                                formatCompactNumber(stats.getWaysProcessed()),
+                                formatCompactNumber(stats.getRelationsFound()),
+                                formatCompactNumber(stats.getEntitiesRead()));
+                        System.out.printf("  \033[32mSPEED:\033[0m  Node/s: %-9s | Way/s: %-9s | PBF/s: %-9s | Heap:  %-10s\n",
+                                formatCompactNumber(nodesPerSec),
+                                formatCompactNumber(waysPerSec),
+                                formatCompactNumber(pbfPerSec),
+                                stats.getMemoryStats());
+                    } else if (phase.contains("1.2")) {
+                        System.out.printf("  \033[32mDATA:\033[0m   Bounds: %-9s | Rels: %-10s | Nodes: %-10s | Ways: %-10s\n",
+                                formatCompactNumber(stats.getBoundariesProcessed()),
+                                formatCompactNumber(stats.getRelationsFound()),
+                                formatCompactNumber(stats.getNodesCached()),
+                                formatCompactNumber(stats.getWaysProcessed()));
+                        System.out.printf("  \033[32mSPEED:\033[0m  Bnd/s:  %-9s | Node/s: %-9s | Way/s: %-9s | Heap:  %-10s\n",
+                                formatCompactNumber(boundsPerSec),
+                                formatCompactNumber(nodesPerSec),
+                                formatCompactNumber(waysPerSec),
+                                stats.getMemoryStats());
+                    } else {
+                        System.out.printf("  \033[32mDATA:\033[0m   POIs:   %-10s | Nodes: %-10s | Ways: %-10s | PBF:  %-10s\n",
+                                formatCompactNumber(stats.getPoisProcessed()),
+                                formatCompactNumber(stats.getNodesCached()),
+                                formatCompactNumber(stats.getWaysProcessed()),
+                                formatCompactNumber(stats.getEntitiesRead()));
+                        System.out.printf("  \033[32mSPEED:\033[0m  POI/s:  %-9s | PBF/s: %-9s | Node/s: %-9s | Heap:  %-10s\n",
+                                formatCompactNumber(poisPerSec),
+                                formatCompactNumber(pbfPerSec),
+                                formatCompactNumber(nodesPerSec),
+                                stats.getMemoryStats());
+                    }
+
+                    System.out.printf("  \033[32mSYSTEM:\033[0m Thrd:  %-10d | Queue: %-10d | DBW:   %-10d\n",
                             stats.getActiveThreads(),
                             stats.getQueueSize(),
                             stats.getRocksDbWrites());
                     System.out.println("\033[1;34m" + "─".repeat(80) + "\033[0m");
                     
-                    System.out.print("\033[6A"); // Move cursor back up 6 lines
-                    System.out.print("\033[u"); // Restore cursor position
+                    System.out.print("\033[6A"); 
+                    System.out.print("\033[u"); 
                     System.out.flush();
                 } else {
-                    // Simple periodic log for IDEs/Logs (non-TTY)
-                    System.out.printf("[PROGRESS] %s | Phase: %-20s | Ents/s: %-8s | POIs: %-8s | Nodes: %-8s | Q: %-5d | Heap: %s%n",
+                    System.out.printf("[PROGRESS] %s | Phase: %-20s | PBF/s: %-7s | POI/s: %-7s | Node/s: %-7s | Queue: %-5d | Heap: %s%n",
                             formatTime(elapsed),
-                            stats.getCurrentPhase(),
-                            formatCompactNumber(readPerSec),
-                            formatCompactNumber(stats.getPoisProcessed()),
-                            formatCompactNumber(stats.getNodesCached()),
+                            phase,
+                            formatCompactNumber(pbfPerSec),
+                            formatCompactNumber(poisPerSec),
+                            formatCompactNumber(nodesPerSec),
                             stats.getQueueSize(),
                             stats.getMemoryStats());
                 }
 
                 try {
-                    // Refresh faster on TTY, slower on IDE/Logs
                     Thread.sleep(isTty ? 500 : 5000);
                 } catch (InterruptedException e) {
                     break;
