@@ -151,16 +151,16 @@ public class ImportService {
                 
                 System.out.println("\033[1;34m" + "─".repeat(80) + "\033[0m");
                 System.out.printf("\033[1;33mPHASE:\033[0m [%-45s]  ⏱  %s\n", stats.getCurrentPhase(), formatTime(elapsed));
-                System.out.printf("  \033[32mDATA:\033[0m   Nodes: %-8s | Ways: %-8s | Rels: %-8s | POIs: %-8s\n",
+                System.out.printf("  \033[32mDATA:\033[0m   Nodes: %-10s | Ways: %-10s | Rels: %-10s | POIs: %-10s\n",
                         formatCompactNumber(stats.getNodesCached()),
                         formatCompactNumber(stats.getWaysProcessed()),
                         formatCompactNumber(stats.getRelationsFound()),
                         formatCompactNumber(stats.getPoisProcessed()));
-                System.out.printf("  \033[32mSPEED:\033[0m  Entities: %-10s | POIs: %-10s | Heap: %s\n",
+                System.out.printf("  \033[32mSPEED:\033[0m  Ents:  %-10s | POIs:  %-10s | Heap:  %-10s\n",
                         formatCompactNumber(readPerSec) + "/s",
                         formatCompactNumber(poisPerSec) + "/s",
                         stats.getMemoryStats());
-                System.out.printf("  \033[32mSYSTEM:\033[0m Threads: %-8d | Queue: %-8d | DB Writes: %d\n",
+                System.out.printf("  \033[32mSYSTEM:\033[0m Thrd:  %-10d | Q:     %-10d | DBW:   %-10d\n",
                         stats.getActiveThreads(),
                         stats.getQueueSize(),
                         stats.getRocksDbWrites());
