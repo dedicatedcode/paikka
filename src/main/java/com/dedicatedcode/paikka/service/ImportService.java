@@ -173,9 +173,10 @@ public class ImportService {
                     System.out.flush();
                 } else {
                     // Simple periodic log for IDEs/Logs (non-TTY)
-                    System.out.printf("[PROGRESS] %s | Phase: %-20s | POIs: %-8s | Nodes: %-8s | Q: %-5d | Heap: %s%n",
+                    System.out.printf("[PROGRESS] %s | Phase: %-20s | Ents/s: %-8s | POIs: %-8s | Nodes: %-8s | Q: %-5d | Heap: %s%n",
                             formatTime(elapsed),
                             stats.getCurrentPhase(),
+                            formatCompactNumber(readPerSec),
                             formatCompactNumber(stats.getPoisProcessed()),
                             formatCompactNumber(stats.getNodesCached()),
                             stats.getQueueSize(),
