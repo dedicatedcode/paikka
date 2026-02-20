@@ -327,6 +327,25 @@ public class ImportService {
                     try {
                         while (true) {
                             List<EntityContainer> batch = entityBatchQueue.take();
+                            for (int j = 0; j < Math.min(10, batch.size()); j++) {
+                                OsmEntity entity = batch.get(j).getEntity();
+                                double lat = 0, lon = 0;
+
+                                if (entity instanceof OsmNode n) {
+                                    lat = n.getLatitude();
+                                    lon = n.getLongitude();
+                                } else if (entity instanceof OsmWay w) {
+                                    // If it's a way, we just grab the first node's coords for the test
+                                    // Assuming your processPoi handles way geometry already
+                                    continue;
+                                }
+
+                                long cellId = s2Helper.getS2CellId(lon, lat, S2Helper.GRID_LEVEL);
+
+                                // Print as Hex to easily see the prefix (MSB)
+                                System.out.printf("[Worker-%d] Entity: %d | S2Cell: %016x | Lat: %.4f, Lon: %.4f%n",
+                                                  Thread.currentThread().getId(), entity.getId(), cellId, lat, lon);
+                            }
                             stats.setQueueSize(entityBatchQueue.size());
                             if (isPoisonPill(batch)) break;
                             for (EntityContainer container : batch) {
