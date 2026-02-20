@@ -7,7 +7,7 @@ import com.google.common.geometry.S2LatLng;
 import com.google.common.geometry.S2LatLngRect;
 import com.google.common.geometry.S2RegionCoverer;
 import com.google.flatbuffers.FlatBufferBuilder;
-import de.topobyet.osm4j.core.access.OsmIterator;
+import de.topobyte.osm4j.core.access.OsmIterator;
 import de.topobyte.osm4j.core.model.iface.*;
 import de.topobyte.osm4j.pbf.seq.PbfIterator;
 import org.locationtech.jts.algorithm.construct.MaximumInscribedCircle;
