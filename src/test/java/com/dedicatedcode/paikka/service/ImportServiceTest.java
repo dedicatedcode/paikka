@@ -31,8 +31,6 @@ class ImportServiceTest {
 
     private Path tempDataDir;
     private Path tempImportFile;
-    private ImportService importService;
-    private S2Helper s2Helper;
 
     @BeforeEach
     void setUp() throws Exception {
@@ -48,13 +46,10 @@ class ImportServiceTest {
         PaikkaConfiguration config = new PaikkaConfiguration();
         config.setMaxImportThreads(2);
         config.setS2Level(12);
-        
-        s2Helper = new S2Helper();
+
         GeometrySimplificationService geometrySimplificationService = new GeometrySimplificationService();
-        
-        importService = new ImportService(s2Helper, geometrySimplificationService);
-        
-        // Import the data once during setup
+
+        ImportService importService = new ImportService(new S2Helper(), geometrySimplificationService);
         importService.importData(tempImportFile.toString(), tempDataDir.toString());
     }
 

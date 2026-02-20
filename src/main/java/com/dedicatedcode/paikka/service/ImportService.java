@@ -177,7 +177,6 @@ public class ImportService {
                                            RocksDB shardsDb, RocksDB boundariesDb, ImportStatistics stats) throws Exception {
         long startTime = System.currentTimeMillis();
         printSubPhase("2.1: Processing POIs and building shards (Planet-Scale Mode)");
-
         final Map<Long, List<PoiData>> shardBuffer = new ConcurrentHashMap<>();
 
         ScheduledExecutorService flushingExecutor = Executors.newSingleThreadScheduledExecutor();
@@ -203,8 +202,8 @@ public class ImportService {
 
         AtomicLong processedCount = new AtomicLong(0);
         AtomicLong readerCount = new AtomicLong(0);
-        BlockingQueue<EntityContainer> entityQueue = new LinkedBlockingQueue<>(200_000);
-        
+        BlockingQueue<List<EntityContainer>> entityBatchQueue = new LinkedBlockingQueue<>(100_000);
+
         // Use Virtual Threads for processing
         int numProcessors = Runtime.getRuntime().availableProcessors() * 2;
         CountDownLatch latch = new CountDownLatch(numProcessors);
@@ -215,23 +214,30 @@ public class ImportService {
             );
 
             Thread readerThread = Thread.ofVirtual().start(() -> {
+                List<EntityContainer> batch = new ArrayList<>(500);
                 try {
                     withPbfIterator(pbfFile, iterator -> {
                         while (iterator.hasNext()) {
                             EntityContainer container = iterator.next();
                             OsmEntity entity = container.getEntity();
                             if ((entity instanceof OsmNode && isPoi(entity)) || (entity instanceof OsmWay && isPoi(entity))) {
-                                entityQueue.put(container);
+                                batch.add(container);
                                 readerCount.incrementAndGet();
+
+                                if (batch.size() >= 500) {
+                                    entityBatchQueue.put(new ArrayList<>(batch));
+                                    batch.clear();
+                                }
                             }
                         }
+                        if (!batch.isEmpty()) entityBatchQueue.put(batch);
                     });
                 } catch (Exception e) {
                     System.err.println("Reader thread failed: " + e.getMessage());
                 } finally {
                     for (int i = 0; i < numProcessors; i++) {
                         try {
-                            entityQueue.put(createPoisonPill());
+                            entityBatchQueue.put(Collections.singletonList(createPoisonPill()));
                         } catch (InterruptedException e) {
                             Thread.currentThread().interrupt();
                             break;
@@ -248,19 +254,22 @@ public class ImportService {
                     try {
                         while (true) {
 
-                            EntityContainer container = entityQueue.take();
-                            if (isPoisonPill(container)) break;
-                            try {
-                                PoiData poiData = processPoi(container.getEntity(), nodeCache, hierarchyCache, geometryFactory);
-                                if (poiData != null) {
-                                    localShardBuffer.computeIfAbsent(s2Helper.getShardId(poiData.lat(), poiData.lon()), k -> new ArrayList<>()).add(poiData);
-                                }
-                            } catch (Exception e) { /* Skip failed POI */ }
-
-                            long count = processedCount.incrementAndGet();
-                            if (count > 0 && count % 5000 == 0) {
-                                updateProgress(startTime, readerCount.get(), count, entityQueue.size());
+                            List<EntityContainer> batch = entityBatchQueue.take();
+                            if (isPoisonPill(batch)) break;
+                            for (EntityContainer container : batch) {
+                                try {
+                                    PoiData poiData = processPoi(container.getEntity(), nodeCache, hierarchyCache, geometryFactory);
+                                    if (poiData != null) {
+                                        localShardBuffer.computeIfAbsent(s2Helper.getShardId(poiData.lat(), poiData.lon()), k -> new ArrayList<>()).add(poiData);
+                                    }
+                                    long count = processedCount.incrementAndGet();
+                                    if (count > 0 && count % 5000 == 0) {
+                                        updateProgress(startTime, readerCount.get(), count, readerCount.get());
+                                    }
+                                } catch (Exception e) { /* Skip failed POI */ }
                             }
+
+
                             if (localShardBuffer.size() > 5000) {
                                 synchronized (shardBuffer) {
                                     localShardBuffer.forEach((shardId, poiList) -> shardBuffer.computeIfAbsent(shardId, k -> new ArrayList<>()).addAll(poiList));
@@ -294,7 +303,7 @@ public class ImportService {
         printPhaseComplete(processedCount.get(), System.currentTimeMillis() - startTime);
     }
 
-    private void updateProgress(long startTime, long currentReaderCount, long count, int queueSize) {
+    private void updateProgress(long startTime, long currentReaderCount, long count, long queueSize) {
         long elapsed = System.currentTimeMillis() - startTime;
         long readerPerSec = elapsed > 0 ? (currentReaderCount * 1000L) / elapsed : 0;
         long poisPerSec = elapsed > 0 ? (count * 1000L) / elapsed : 0;
@@ -391,7 +400,7 @@ public class ImportService {
                         int batchSize = 0;
                         while (true) {
                             EntityContainer container = nodeQueue.take();
-                            if (isPoisonPill(container)) break;
+                            if (isPoisonPill(Collections.singletonList(container))) break;
                             OsmNode node = (OsmNode) container.getEntity();
                             byte[] value = ByteBuffer.allocate(16).putDouble(node.getLatitude()).putDouble(node.getLongitude()).array();
                             batch.put(s2Helper.longToByteArray(node.getId()), value);
@@ -892,8 +901,8 @@ public class ImportService {
         return new EntityContainer(null, null);
     }
 
-    private boolean isPoisonPill(EntityContainer c) {
-        return c.getType() == null;
+    private boolean isPoisonPill(List<EntityContainer> c) {
+        return c.getFirst().getType() == null;
     }
 
     private void withPbfIterator(Path pbfFile, ConsumerWithException<OsmIterator> consumer) throws Exception {
