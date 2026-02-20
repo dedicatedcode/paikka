@@ -1,196 +1,138 @@
 package com.dedicatedcode.paikka.service;
 
 import com.dedicatedcode.paikka.flatbuffers.Boundary;
-import com.dedicatedcode.paikka.flatbuffers.Geometry;
+import org.locationtech.jts.algorithm.locate.IndexedPointInAreaLocator;
+import org.locationtech.jts.geom.Coordinate;
 import org.locationtech.jts.geom.Envelope;
+import org.locationtech.jts.geom.Location;
 import org.locationtech.jts.geom.Point;
-import org.locationtech.jts.geom.prep.PreparedGeometry;
-import org.locationtech.jts.geom.prep.PreparedGeometryFactory;
-import org.locationtech.jts.index.strtree.STRtree;
 import org.locationtech.jts.io.WKBReader;
 import org.rocksdb.RocksDB;
 
 import java.nio.ByteBuffer;
 import java.util.*;
 
-/**
- * Optimized Spatial Cache for OSM Administrative Hierarchies.
- * Uses a 'Candidate Count' guard to ensure sub-level boundaries (like Level 10/11)
- * are never missed when moving between POIs.
- */
 public class HierarchyCache {
 
-    private final STRtree globalIndex;
     private final RocksDB boundariesDb;
+    private final RocksDB gridIndexDb;
     private final S2Helper s2Helper;
     private final WKBReader wkbReader = new WKBReader();
 
-    // Cache State
-    private List<CachedBoundary> lastHierarchy = null;
-    private Envelope lastEnvelope = null;
-    private int lastCandidateCount = -1;
+    // Cache State: Map Level -> List of boundaries (to support overlapping levels)
+    private long lastS2CellId = -1;
+    private final Map<Integer, List<CachedBoundary>> levelCache = new HashMap<>();
 
-    public HierarchyCache(STRtree globalIndex, RocksDB boundariesDb, S2Helper s2Helper) {
-        this.globalIndex = globalIndex;
+    public HierarchyCache(RocksDB boundariesDb, RocksDB gridIndexDb, S2Helper s2Helper) {
         this.boundariesDb = boundariesDb;
+        this.gridIndexDb = gridIndexDb;
         this.s2Helper = s2Helper;
     }
 
     public List<SimpleHierarchyItem> resolve(Point point) {
-        // 1. FAST PATH: Envelope Check + Candidate Guard
-        if (lastEnvelope != null && lastEnvelope.contains(point.getCoordinate())) {
+        double lon = point.getX();
+        double lat = point.getY();
+        long currentS2Cell = s2Helper.getS2CellId(lon, lat, S2Helper.GRID_LEVEL);
 
-            // CRITICAL FIX: Even if in envelope, check if the INDEX sees more items now
-            // (e.g., we just walked into a small Level 10 boundary)
-            if (getBoundaryCandidateCount(point) == lastCandidateCount) {
-                if (matchesAll(lastHierarchy, point)) {
-                    return extractInfo(lastHierarchy);
+        // If we changed S2 cells, we MUST refresh
+        if (currentS2Cell != lastS2CellId) {
+            lastS2CellId = currentS2Cell;
+            return refresh(lon, lat, currentS2Cell);
+        }
+
+        // Even if in the same cell, we need to verify if the "Full" hierarchy
+        // we found previously is still the "Full" hierarchy for this specific point.
+        // To be 100% safe and order-independent, we re-verify all candidates
+        // if the count of hits doesn't match our cache size.
+        return refresh(lon, lat, currentS2Cell);
+    }
+    private List<SimpleHierarchyItem> refresh(double lon, double lat, long cellId) {
+        long[] candidates = fetchGridCandidates(cellId);
+
+        // Start with a fresh temporary state for this specific coordinate
+        Map<Integer, List<CachedBoundary>> nextCache = new HashMap<>();
+
+        if (candidates != null) {
+            for (long id : candidates) {
+                // Reuse prepared geometry if we already have it in the old cache
+                CachedBoundary cb = findInExistingCache(id);
+                if (cb == null) {
+                    cb = fetchFromDb(id);
+                }
+
+                // Point-in-Polygon check
+                if (cb != null && cb.contains(lon, lat)) {
+                    nextCache.computeIfAbsent(cb.level, k -> new ArrayList<>()).add(cb);
                 }
             }
         }
 
-        // 2. SLOW PATH: Full Re-calculation
-        return refreshCache(point);
+        // Atomic update of the cache state
+        levelCache.clear();
+        levelCache.putAll(nextCache);
+
+        return extractInfo();
     }
 
-    private List<SimpleHierarchyItem> refreshCache(Point point) {
-        // 1. Get ALL overlapping candidates from the index (the bounding boxes)
-        @SuppressWarnings("unchecked")
-        List<Long> allCandidateIds = globalIndex.query(point.getEnvelopeInternal());
-
-        // 2. Filter these candidates to find which ones ACTUALLY contain the point (the polygons)
-        List<CachedBoundary> newHierarchy = new ArrayList<>();
-        for (Long id : allCandidateIds) {
-            CachedBoundary cb = fetchAndPrepare(id, point);
-            if (cb != null) {
-                newHierarchy.add(cb);
+    private boolean layersStillValid(double lon, double lat) {
+        if (levelCache.isEmpty()) return false;
+        // All currently cached layers must still contain the point
+        for (List<CachedBoundary> boundaries : levelCache.values()) {
+            for (CachedBoundary cb : boundaries) {
+                if (!cb.contains(lon, lat)) return false;
             }
-        }
-
-        if (!newHierarchy.isEmpty()) {
-            this.lastHierarchy = newHierarchy;
-            this.lastCandidateCount = allCandidateIds.size();
-
-            // 3. THE FIX: The Safe Zone is the intersection of the boundaries we ARE in...
-            Envelope safeEntry = calculateIntersectionEnvelope(newHierarchy);
-
-            // ...MINUS the proximity of any boundary we ARE NOT in.
-            // To keep it simple and fast, if we are in an area where
-            // other boundaries are nearby, we must shrink the safe zone
-            // to not touch the bounding boxes of those other boundaries.
-            this.lastEnvelope = computeTrueSafeZone(safeEntry, allCandidateIds, point);
-        } else {
-            clear();
-        }
-
-        return extractInfo(newHierarchy);
-    }
-
-    private Envelope computeTrueSafeZone(Envelope intersection, List<Long> currentCandidates, Point point) {
-        // We want to find the distance to the nearest 'neighbor' boundary
-        // that we are NOT currently inside of.
-
-        // Start with the intersection of our current hierarchy
-        Envelope safe = new Envelope(intersection);
-
-        // For every boundary that the index said was "near" but fetchAndPrepare said "not inside":
-        // We should technically not trust the area near their borders.
-        // Optimization: If the currentCandidates match our hierarchy size,
-        // the current intersection is perfectly safe.
-        if (currentCandidates.size() == lastHierarchy.size()) {
-            return safe;
-        }
-
-        // If there are more candidates in the index than in our hierarchy,
-        // we are in a "dangerous" zone. We reduce the safe envelope to a tiny
-        // radius around the current point to force a refresh very soon.
-        double tinyBuffer = 0.0001; // Approx 10 meters
-        return new Envelope(
-                point.getX() - tinyBuffer, point.getX() + tinyBuffer,
-                point.getY() - tinyBuffer, point.getY() + tinyBuffer
-        );
-    }
-
-    private int getBoundaryCandidateCount(Point p) {
-        // This is extremely fast (O(log n) in the R-Tree)
-        return globalIndex.query(p.getEnvelopeInternal()).size();
-    }
-
-    private List<CachedBoundary> findHierarchyFromIndex(Point poiPoint) {
-        List<CachedBoundary> hierarchy = new ArrayList<>();
-        // Query index for Bounding Box overlaps
-        @SuppressWarnings("unchecked")
-        List<Long> candidates = globalIndex.query(poiPoint.getEnvelopeInternal());
-
-        for (Long boundaryId : candidates) {
-            CachedBoundary cb = fetchAndPrepare(boundaryId, poiPoint);
-            if (cb != null) {
-                hierarchy.add(cb);
-            }
-        }
-
-        // Sort: Country (2) -> State (4) -> City (8) -> Neighborhood (10/11)
-        hierarchy.sort(Comparator.comparingInt(CachedBoundary::level));
-        return hierarchy;
-    }
-
-    private CachedBoundary fetchAndPrepare(long id, Point p) {
-        try {
-            byte[] data = boundariesDb.get(s2Helper.longToByteArray(id));
-            if (data == null) return null;
-
-            Boundary b = Boundary.getRootAsBoundary(ByteBuffer.wrap(data));
-            Geometry fbGeom = b.geometry();
-
-            // Optimization: Quick BBox check before WKB parsing
-            // (Assumes you stored the extent in the FlatBuffer for speed)
-
-            byte[] wkb = new byte[fbGeom.dataLength()];
-            fbGeom.dataAsByteBuffer().get(wkb);
-            org.locationtech.jts.geom.Geometry jtsGeom = wkbReader.read(wkb);
-
-            if (jtsGeom.contains(p)) {
-                return new CachedBoundary(
-                        b.level(),
-                        b.name(),
-                        b.osmId(),
-                        PreparedGeometryFactory.prepare(jtsGeom)
-                );
-            }
-        } catch (Exception ignored) {}
-        return null;
-    }
-
-    private Envelope calculateIntersectionEnvelope(List<CachedBoundary> hierarchy) {
-        Envelope res = new Envelope();
-        for (CachedBoundary cb : hierarchy) {
-            Envelope env = cb.geometry.getGeometry().getEnvelopeInternal();
-            if (res.isNull()) res.init(env);
-            else res.intersection(env);
-        }
-        return res;
-    }
-
-    private boolean matchesAll(List<CachedBoundary> hierarchy, Point p) {
-        if (hierarchy == null) return false;
-        for (CachedBoundary b : hierarchy) {
-            if (!b.geometry.contains(p)) return false;
         }
         return true;
     }
 
-    public void clear() {
-        this.lastHierarchy = null;
-        this.lastEnvelope = null;
-        this.lastCandidateCount = -1;
+    private CachedBoundary findInExistingCache(long osmId) {
+        return levelCache.values().stream()
+                .flatMap(List::stream)
+                .filter(cb -> cb.osmId == osmId)
+                .findFirst()
+                .orElse(null);
     }
 
-    private List<SimpleHierarchyItem> extractInfo(List<CachedBoundary> h) {
-        return h.stream()
-                .map(b -> new SimpleHierarchyItem(b.level, "administrative", b.name, b.osmId))
+    private CachedBoundary fetchFromDb(long id) {
+        try {
+            byte[] data = boundariesDb.get(s2Helper.longToByteArray(id));
+            if (data == null) return null;
+            Boundary b = Boundary.getRootAsBoundary(ByteBuffer.wrap(data));
+
+            Envelope mir = b.mirMinX() != 0 ? new Envelope(b.mirMinX(), b.mirMaxX(), b.mirMinY(), b.mirMaxY()) : null;
+            Envelope mbr = new Envelope(b.minX(), b.maxX(), b.minY(), b.maxY());
+
+            ByteBuffer wkbBuf = b.geometry().dataAsByteBuffer();
+            byte[] wkb = new byte[wkbBuf.remaining()];
+            wkbBuf.get(wkb);
+
+            IndexedPointInAreaLocator locator = new IndexedPointInAreaLocator(wkbReader.read(wkb));
+            return new CachedBoundary(b.level(), b.name(), b.osmId(), mir, mbr, locator);
+        } catch (Exception e) { return null; }
+    }
+
+    private long[] fetchGridCandidates(long cellId) {
+        try {
+            byte[] data = gridIndexDb.get(s2Helper.longToByteArray(cellId));
+            return (data == null) ? null : s2Helper.byteArrayToLongArray(data);
+        } catch (Exception e) { return null; }
+    }
+
+    private List<SimpleHierarchyItem> extractInfo() {
+        return levelCache.entrySet().stream()
+                .sorted(Map.Entry.comparingByKey()) // Sort by admin_level
+                .flatMap(entry -> entry.getValue().stream()
+                        .map(cb -> new SimpleHierarchyItem(cb.level, "administrative", cb.name, cb.osmId)))
                 .toList();
     }
 
-    private record CachedBoundary(int level, String name, long osmId, PreparedGeometry geometry) {}
+    private record CachedBoundary(int level, String name, long osmId, Envelope mir, Envelope mbr, IndexedPointInAreaLocator locator) {
+        public boolean contains(double lon, double lat) {
+            if (mir != null && mir.contains(lon, lat)) return true;
+            if (!mbr.contains(lon, lat)) return false;
+            return locator.locate(new Coordinate(lon, lat)) != Location.EXTERIOR;
+        }
+    }
+
     public record SimpleHierarchyItem(int level, String type, String name, long osmId) {}
 }

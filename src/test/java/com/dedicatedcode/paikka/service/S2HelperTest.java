@@ -89,7 +89,7 @@ class S2HelperTest {
         double lat = 52.5200;
         double lon = 13.4050;
         
-        var cellId = s2Helper.getCellId(lat, lon);
+        var cellId = s2Helper.getCellId(lat, lon, 14);
         
         assertNotNull(cellId);
         assertTrue(cellId.isValid());

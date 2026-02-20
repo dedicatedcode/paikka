@@ -4,79 +4,72 @@ import com.google.common.geometry.S2CellId;
 import com.google.common.geometry.S2LatLng;
 import org.springframework.stereotype.Service;
 
+import java.nio.ByteBuffer;
+import java.nio.LongBuffer;
+
 /**
- * Helper service for S2 geometry operations.
- * Handles spatial indexing using S2 cells at level 14 for POI sharding.
+ * Optimized S2 Geometry helper for Planet-scale spatial indexing.
  */
 @Service
 public class S2Helper {
-    
-    private static final int SHARD_LEVEL = 14;
-    
+
+    private static final int SHARD_LEVEL = 14;   // For POIs
+    public static final int GRID_LEVEL = 12;    // For Boundary Indexing
+
     /**
-     * Get the S2 cell ID at level 14 for the given coordinates.
-     * This is used as the shard key for storing POIs.
-     * 
-     * @param lat Latitude in degrees
-     * @param lon Longitude in degrees
-     * @return S2 cell ID as long
+     * Get S2 cell ID for POI sharding.
      */
     public long getShardId(double lat, double lon) {
-        S2LatLng latLng = S2LatLng.fromDegrees(lat, lon);
-        S2CellId cellId = S2CellId.fromLatLng(latLng);
-        return cellId.parent(SHARD_LEVEL).id();
-    }
-    
-    /**
-     * Get the S2 cell ID for a point.
-     * 
-     * @param lat Latitude in degrees
-     * @param lon Longitude in degrees
-     * @return S2CellId object
-     */
-    public S2CellId getCellId(double lat, double lon) {
-        S2LatLng latLng = S2LatLng.fromDegrees(lat, lon);
-        return S2CellId.fromLatLng(latLng).parent(SHARD_LEVEL);
+        return S2CellId.fromLatLng(S2LatLng.fromDegrees(lat, lon)).parent(SHARD_LEVEL).id();
     }
 
+    /**
+     * Returns the long ID for a specific coordinate and level.
+     * Used by HierarchyCache to identify the 3km grid cell.
+     */
+    public long getS2CellId(double lon, double lat, int level) {
+        // Note: OSM/JTS uses (Lon, Lat/X, Y). S2 uses (Lat, Lon).
+        // Be careful with the order here to ensure consistency.
+        return S2CellId.fromLatLng(S2LatLng.fromDegrees(lat, lon)).parent(level).id();
+    }
+
+    /**
+     * Helper to get S2CellId object if needed for library calls.
+     */
     public S2CellId getCellId(double lat, double lon, int level) {
-        S2LatLng latLng = S2LatLng.fromDegrees(lat, lon);
-        return S2CellId.fromLatLng(latLng).parent(level);
+        return S2CellId.fromLatLng(S2LatLng.fromDegrees(lat, lon)).parent(level);
+    }
+
+    // --- ROCKSDB CONVERSIONS ---
+
+    public byte[] longToByteArray(long value) {
+        return ByteBuffer.allocate(Long.BYTES).putLong(value).array();
+    }
+
+    public long byteArrayToLong(byte[] bytes) {
+        if (bytes == null || bytes.length < Long.BYTES) return -1;
+        return ByteBuffer.wrap(bytes).getLong();
     }
 
     /**
-     * Convert long to byte array for RocksDB key.
-     * 
-     * @param value Long value to convert
-     * @return Byte array representation
+     * Converts a long array (list of OsmIds) to a byte array for RocksDB storage.
+     * This is essential for the GridIndex [CellID -> List<OsmID>].
      */
-    public byte[] longToByteArray(long value) {
-        return new byte[] {
-            (byte) (value >>> 56),
-            (byte) (value >>> 48),
-            (byte) (value >>> 40),
-            (byte) (value >>> 32),
-            (byte) (value >>> 24),
-            (byte) (value >>> 16),
-            (byte) (value >>> 8),
-            (byte) value
-        };
+    public byte[] longArrayToByteArray(long[] values) {
+        ByteBuffer buffer = ByteBuffer.allocate(values.length * Long.BYTES);
+        buffer.asLongBuffer().put(values);
+        return buffer.array();
     }
-    
+
     /**
-     * Convert byte array back to long for RocksDB key.
-     * 
-     * @param bytes Byte array to convert
-     * @return Long value
+     * Converts bytes from RocksDB back into a long array.
+     * This array will be used by the SIMD vector API in the Cache.
      */
-    public long byteArrayToLong(byte[] bytes) {
-        return ((long) bytes[0] << 56) |
-               ((long) (bytes[1] & 0xFF) << 48) |
-               ((long) (bytes[2] & 0xFF) << 40) |
-               ((long) (bytes[3] & 0xFF) << 32) |
-               ((long) (bytes[4] & 0xFF) << 24) |
-               ((long) (bytes[5] & 0xFF) << 16) |
-               ((long) (bytes[6] & 0xFF) << 8) |
-               ((long) (bytes[7] & 0xFF));
+    public long[] byteArrayToLongArray(byte[] bytes) {
+        if (bytes == null) return new long[0];
+        LongBuffer lb = ByteBuffer.wrap(bytes).asLongBuffer();
+        long[] res = new long[lb.capacity()];
+        lb.get(res);
+        return res;
     }
 }

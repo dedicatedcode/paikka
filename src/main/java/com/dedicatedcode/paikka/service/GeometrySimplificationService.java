@@ -12,10 +12,10 @@ import org.springframework.stereotype.Service;
 public class GeometrySimplificationService {
     
     // Tolerance guidelines from implementation blueprint
-    private static final double COUNTRY_TOLERANCE = 50.0; // 50 meters for country borders
-    private static final double STATE_TOLERANCE = 10.0;   // 10 meters for state/city
-    private static final double POI_TOLERANCE = 2.0;      // 2 meters for POI boundaries
-    private static final double DEFAULT_TOLERANCE = 5.0;  // 5 meters default
+    private static final double COUNTRY_TOLERANCE = 0.00045; // 50 meters for country borders
+    private static final double STATE_TOLERANCE = 0.00009;   // 10 meters for state/city
+    private static final double POI_TOLERANCE = 0.000018;      // 2 meters for POI boundaries
+    private static final double DEFAULT_TOLERANCE = 0.000045;  // 5 meters default
     
     /**
      * Simplify geometry using Douglas-Peucker algorithm with default tolerance.

@@ -2,12 +2,13 @@ package com.dedicatedcode.paikka.service;
 
 import com.dedicatedcode.paikka.flatbuffers.*;
 import com.dedicatedcode.paikka.flatbuffers.Geometry;
+import com.google.common.geometry.*;
 import com.google.flatbuffers.FlatBufferBuilder;
 import de.topobyte.osm4j.core.access.OsmIterator;
 import de.topobyte.osm4j.core.model.iface.*;
 import de.topobyte.osm4j.pbf.seq.PbfIterator;
+import org.locationtech.jts.algorithm.construct.MaximumInscribedCircle;
 import org.locationtech.jts.geom.*;
-import org.locationtech.jts.index.strtree.STRtree;
 import org.locationtech.jts.io.WKBReader;
 import org.locationtech.jts.io.WKBWriter;
 import org.roaringbitmap.longlong.Roaring64Bitmap;
@@ -51,8 +52,7 @@ public class ImportService {
     private record AddressData(String street, String houseNumber, String postcode, String city, String country) {
     }
 
-    private record BoundaryResult(OsmRelation relation, org.locationtech.jts.geom.Geometry geometry,
-                                  WKBWriter wkbWriter) {
+    private record BoundaryResult(OsmRelation relation, org.locationtech.jts.geom.Geometry geometry) {
     }
 
     @FunctionalInterface
@@ -74,6 +74,7 @@ public class ImportService {
         dataDirectory.toFile().mkdirs();
         Path shardsDbPath = dataDirectory.resolve("poi_shards");
         Path boundariesDbPath = dataDirectory.resolve("boundaries");
+        Path gridIndexDbPath = dataDirectory.resolve("grid_index");
 
         RocksDB.loadLibrary();
         ImportStatistics stats = new ImportStatistics();
@@ -82,14 +83,14 @@ public class ImportService {
                 .setCompressionType(CompressionType.LZ4_COMPRESSION);
              RocksDB shardsDb = RocksDB.open(options, shardsDbPath.toString());
              RocksDB boundariesDb = RocksDB.open(options, boundariesDbPath.toString());
+             RocksDB gridIndexDb = RocksDB.open(options, gridIndexDbPath.toString());
              RocksDB nodeCache = createNodeCache(dataDirectory)) {
 
             printPhaseHeader("PASS 1: Node Harvesting & Admin Boundaries");
-            STRtree adminTree = new STRtree();
-            pass1NodeHarvestingAndAdminProcessing(pbfFile, nodeCache, adminTree, boundariesDb, stats);
+            pass1NodeHarvestingAndAdminProcessing(pbfFile, nodeCache, gridIndexDb, boundariesDb, stats);
 
             printPhaseHeader("PASS 2: POI Sharding & Hierarchy Baking");
-            pass2PoiShardingAndBaking(pbfFile, nodeCache, adminTree, shardsDb, boundariesDb, stats);
+            pass2PoiShardingAndBaking(pbfFile, nodeCache, gridIndexDb, shardsDb, boundariesDb, stats);
 
             stats.setTotalTime(System.currentTimeMillis() - totalStartTime);
             printFinalStatistics(stats);
@@ -102,7 +103,31 @@ public class ImportService {
         }
     }
 
-    private void pass1NodeHarvestingAndAdminProcessing(Path pbfFile, RocksDB nodeCache, STRtree adminTree, RocksDB boundariesDb, ImportStatistics stats) throws Exception {
+    private void updateGridIndexEntry(RocksDB gridIndexDb, long cellId, long osmId) throws Exception {
+        byte[] key = s2Helper.longToByteArray(cellId);
+
+        // Using a synchronized block or a Stripe-lock if doing parallel imports
+        // to prevent race conditions on the same S2 Cell.
+        synchronized (this) {
+            byte[] existingData = gridIndexDb.get(key);
+            long[] newArray;
+
+            if (existingData == null) {
+                newArray = new long[]{osmId};
+            } else {
+                long[] oldArray = s2Helper.byteArrayToLongArray(existingData);
+                // Check if ID is already there (to prevent duplicates if re-running import)
+                if (Arrays.stream(oldArray).anyMatch(id -> id == osmId)) return;
+
+                newArray = Arrays.copyOf(oldArray, oldArray.length + 1);
+                newArray[oldArray.length] = osmId;
+            }
+
+            gridIndexDb.put(key, s2Helper.longArrayToByteArray(newArray));
+        }
+    }
+
+    private void pass1NodeHarvestingAndAdminProcessing(Path pbfFile, RocksDB nodeCache, RocksDB gridIndexDb, RocksDB boundariesDb, ImportStatistics stats) throws Exception {
         Map<Long, List<Long>> wayNodeSequences = new ConcurrentHashMap<>();
 
         printSubPhase("1.1: Harvesting node coordinates, way data, and admin relations");
@@ -114,13 +139,13 @@ public class ImportService {
 
         printSubPhase("1.2: Processing administrative boundaries");
         AtomicLong boundaryCount = new AtomicLong(0);
-        processAdministrativeBoundariesParallel(nodeCache, wayNodeSequences, adminTree, boundariesDb, boundaryCount, adminRelations);
+        processAdministrativeBoundariesParallel(nodeCache, wayNodeSequences, gridIndexDb, boundariesDb, boundaryCount, adminRelations);
         stats.setBoundariesProcessed(boundaryCount.get());
 
-        printPassComplete(nodeCount.get(), wayNodeSequences.size(), adminTree.size());
+        printPassComplete(nodeCount.get(), wayNodeSequences.size(), boundaryCount.get());
     }
 
-    private void pass2PoiShardingAndBaking(Path pbfFile, RocksDB nodeCache, STRtree adminTree,
+    private void pass2PoiShardingAndBaking(Path pbfFile, RocksDB nodeCache, RocksDB gridIndexDb,
                                            RocksDB shardsDb, RocksDB boundariesDb, ImportStatistics stats) throws Exception {
         long startTime = System.currentTimeMillis();
         printSubPhase("2.1: Processing POIs and building shards (Planet-Scale Mode)");
@@ -158,7 +183,7 @@ public class ImportService {
         
         try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
             final ThreadLocal<HierarchyCache> hierarchyCacheThreadLocal = ThreadLocal.withInitial(
-                () -> new HierarchyCache(adminTree, boundariesDb, s2Helper)
+                    () -> new HierarchyCache(boundariesDb, gridIndexDb, s2Helper)
             );
 
             Thread readerThread = Thread.ofVirtual().start(() -> {
@@ -190,7 +215,6 @@ public class ImportService {
             for (int i = 0; i < numProcessors; i++) {
                 executor.submit(() -> {
                     final Map<Long, List<PoiData>> localShardBuffer = new HashMap<>();
-                    final WKBReader wkbReader = new WKBReader();
                     final GeometryFactory geometryFactory = new GeometryFactory();
                     final HierarchyCache hierarchyCache = hierarchyCacheThreadLocal.get();
                     try {
@@ -199,14 +223,14 @@ public class ImportService {
                             EntityContainer container = entityQueue.take();
                             if (isPoisonPill(container)) break;
                             try {
-                                PoiData poiData = processPoi(container.getEntity(), nodeCache, hierarchyCache, geometryFactory, wkbReader);
+                                PoiData poiData = processPoi(container.getEntity(), nodeCache, hierarchyCache, geometryFactory);
                                 if (poiData != null) {
                                     localShardBuffer.computeIfAbsent(s2Helper.getShardId(poiData.lat(), poiData.lon()), k -> new ArrayList<>()).add(poiData);
                                 }
                             } catch (Exception e) { /* Skip failed POI */ }
 
                             long count = processedCount.incrementAndGet();
-                            if (count > 0 && count % 25000 == 0) {
+                            if (count > 0 && count % 5000 == 0) {
                                 updateProgress(startTime, readerCount.get(), count, entityQueue.size());
                             }
                             if (localShardBuffer.size() > 5000) {
@@ -369,41 +393,61 @@ public class ImportService {
         System.out.println();
     }
 
-    private void processAdministrativeBoundariesParallel(RocksDB nodeCache, Map<Long, List<Long>> wayNodeSequences, STRtree adminTree,
+    private void processAdministrativeBoundariesParallel(RocksDB nodeCache, Map<Long, List<Long>> wayNodeSequences, RocksDB gridsIndexDb,
                                                          RocksDB boundariesDb, AtomicLong boundaryCount, List<OsmRelation> adminRelations) throws Exception {
         if (adminRelations.isEmpty()) return;
         System.out.println("Processing " + adminRelations.size() + " administrative boundaries...");
-        
-        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
-            List<Future<BoundaryResult>> futures = new ArrayList<>();
-            adminRelations.forEach(relation -> futures.add(executor.submit(() -> {
-                org.locationtech.jts.geom.Geometry geometry = buildGeometryFromRelation(relation, nodeCache, wayNodeSequences);
-                if (geometry != null && geometry.isValid()) {
-                    org.locationtech.jts.geom.Geometry simplified = geometrySimplificationService.simplifyByAdminLevel(geometry, getAdminLevel(relation));
-                    return new BoundaryResult(relation, simplified, new WKBWriter());
-                }
-                return null;
-            })));
 
+        int maxConcurrentGeometries = 100;
+        Semaphore semaphore = new Semaphore(maxConcurrentGeometries);
+
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            ExecutorCompletionService<BoundaryResult> completionService = new ExecutorCompletionService<>(executor);
+
+            // 2. Submit tasks
+            for (OsmRelation relation : adminRelations) {
+                completionService.submit(() -> {
+                    semaphore.acquire(); // Limit number of active "inflated" geometries
+                    try {
+                        org.locationtech.jts.geom.Geometry geometry = buildGeometryFromRelation(relation, nodeCache, wayNodeSequences);
+                        if (geometry != null && geometry.isValid()) {
+                            org.locationtech.jts.geom.Geometry simplified = geometrySimplificationService.simplifyByAdminLevel(geometry, getAdminLevel(relation));
+                            return new BoundaryResult(relation, simplified);
+                        }
+                    } finally {
+                        // We don't release here; we release after storing in DB
+                    }
+                    semaphore.release();
+                    return null;
+                });
+            }
+
+            // 3. Consume results as they finish
             int count = 0;
-            for (Future<BoundaryResult> future : futures) {
+            for (int i = 0; i < adminRelations.size(); i++) {
                 try {
+                    Future<BoundaryResult> future = completionService.take(); // Waits for next finished task
                     BoundaryResult result = future.get();
+
                     if (result != null) {
-                        storeBoundary(result.relation(), result.geometry(), result.wkbWriter(), boundariesDb);
-                        adminTree.insert(result.geometry().getEnvelopeInternal(), result.relation().getId());
+                        storeBoundary(result.relation(), result.geometry(), boundariesDb, gridsIndexDb);
+
+                        // CRITICAL: Geometry is now in RocksDB. Nullify and release semaphore.
+                        semaphore.release();
+
                         if (++count % 100 == 0) System.out.printf("\r  Boundaries indexed: %,d", count);
                     }
-                } catch (Exception e) { /* Skip */ }
+                } catch (Exception e) {
+                    semaphore.release(); // Ensure we don't deadlock on errors
+                }
             }
+
             System.out.printf("\r  Boundaries indexed: %,d\n", count);
             boundaryCount.set(count);
         }
-        System.out.println("Building STR-Tree index for boundaries...");
-        adminTree.build();
     }
 
-    private PoiData processPoi(OsmEntity entity, RocksDB nodeCache, HierarchyCache hierarchyCache, GeometryFactory geometryFactory, WKBReader wkbReader) {
+    private PoiData processPoi(OsmEntity entity, RocksDB nodeCache, HierarchyCache hierarchyCache, GeometryFactory geometryFactory) {
         double[] coordinates = getPoiCoordinates(entity, nodeCache);
         if (coordinates == null) return null;
         double lat = coordinates[0], lon = coordinates[1];
@@ -545,7 +589,7 @@ public class ImportService {
                     byte[] boundaryWkb = poi.boundaryWkb();
                     if (boundaryWkb != null && boundaryWkb.length > 0) {
                         int boundaryDataOff = Geometry.createDataVector(builder, boundaryWkb);
-                        boundaryOff = Geometry.createGeometry(builder, builder.createString("Polygon"), boundaryDataOff);
+                        boundaryOff = Geometry.createGeometry(builder, boundaryDataOff);
                     }
 
                     POI.startPOI(builder);
@@ -755,13 +799,65 @@ public class ImportService {
         return rings;
     }
 
-    private void storeBoundary(OsmRelation relation, org.locationtech.jts.geom.Geometry geometry, WKBWriter wkbWriter, RocksDB boundariesDb) throws Exception {
-        FlatBufferBuilder builder = new FlatBufferBuilder(1024);
-        int wkbOffset = Geometry.createDataVector(builder, wkbWriter.write(geometry));
-        int geomOffset = Geometry.createGeometry(builder, builder.createString(geometry.getGeometryType()), wkbOffset);
-        int boundaryOffset = Boundary.createBoundary(builder, relation.getId(), getAdminLevel(relation), builder.createString(getBoundaryName(relation)), geomOffset);
-        builder.finish(boundaryOffset);
-        boundariesDb.put(s2Helper.longToByteArray(relation.getId()), builder.sizedByteArray());
+    private void storeBoundary(OsmRelation relation, org.locationtech.jts.geom.Geometry geometry, RocksDB boundariesDb, RocksDB gridsIndexDb) throws Exception {
+        FlatBufferBuilder fbb = new FlatBufferBuilder(1024);
+        // 1. Prepare WKB
+        byte[] wkb = new WKBWriter().write(geometry);
+        int geomDataOffset = Geometry.createDataVector(fbb, wkb);
+        int geomOffset = Geometry.createGeometry(fbb, geomDataOffset);
+
+        // 2. Prepare Metadata
+        Envelope mbr = geometry.getEnvelopeInternal();
+
+        // Option 3: Calculate MIR (Maximum Interior Rectangle)
+        // We use a 1-meter tolerance (approx 0.00001 degrees)
+        MaximumInscribedCircle mic = new MaximumInscribedCircle(geometry, 0.00001);
+        double radius = mic.getRadiusLine().getLength();
+        Coordinate center = mic.getCenter().getCoordinate();
+        double offset = radius / Math.sqrt(2); // Inscribed square side half-length
+
+        int nameOffset = fbb.createString(getBoundaryName(relation));
+        long osmId = relation.getId();
+
+        // 3. Assemble Boundary
+        Boundary.startBoundary(fbb);
+        Boundary.addOsmId(fbb, osmId);
+        Boundary.addLevel(fbb, getAdminLevel(relation));
+        Boundary.addName(fbb, nameOffset);
+
+        // MBR (Outer)
+        Boundary.addMinX(fbb, mbr.getMinX());
+        Boundary.addMinY(fbb, mbr.getMinY());
+        Boundary.addMaxX(fbb, mbr.getMaxX());
+        Boundary.addMaxY(fbb, mbr.getMaxY());
+
+        // MIR (Inner - The Fast Pass)
+        if (radius > 0) {
+            Boundary.addMirMinX(fbb, center.x - offset);
+            Boundary.addMirMinY(fbb, center.y - offset);
+            Boundary.addMirMaxX(fbb, center.x + offset);
+            Boundary.addMirMaxY(fbb, center.y + offset);
+        }
+
+        Boundary.addGeometry(fbb, geomOffset);
+        int root = Boundary.endBoundary(fbb);
+        fbb.finish(root);
+        S2LatLng low = S2LatLng.fromDegrees(mbr.getMinY(), mbr.getMinX());
+        S2LatLng high = S2LatLng.fromDegrees(mbr.getMaxY(), mbr.getMaxX());
+        S2LatLngRect rect = S2LatLngRect.fromPointPair(low, high);;
+
+        S2RegionCoverer coverer = S2RegionCoverer.builder()
+                .setMinLevel(S2Helper.GRID_LEVEL)
+                .setMaxLevel(S2Helper.GRID_LEVEL)
+                .build();
+
+        ArrayList<S2CellId> covering = new ArrayList<>();
+        // S2 math for a Rect is exponentially cheaper than for a Polygon
+        coverer.getCovering(rect, covering);
+        for (S2CellId cellId : covering) {
+            updateGridIndexEntry(gridsIndexDb, cellId.id(), osmId);
+        }
+        boundariesDb.put(s2Helper.longToByteArray(osmId), fbb.sizedByteArray());
     }
 
     private RocksDB createNodeCache(Path dataDir) throws Exception {
