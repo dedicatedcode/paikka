@@ -319,7 +319,7 @@ public class ImportService {
             );
 
             Thread readerThread = Thread.ofVirtual().start(() -> {
-                List<EntityContainer> batch = new ArrayList<>(500);
+                List<EntityContainer> spatialBuffer = new ArrayList<>(50000);
                 try {
                     withPbfIterator(pbfFile, iterator -> {
                         while (iterator.hasNext()) {
@@ -327,15 +327,19 @@ public class ImportService {
                             stats.incrementEntitiesRead();
                             OsmEntity entity = container.getEntity();
                             if ((entity instanceof OsmNode && isPoi(entity)) || (entity instanceof OsmWay && isPoi(entity))) {
-                                batch.add(container);
-                                if (batch.size() >= 500) {
-                                    entityBatchQueue.put(new ArrayList<>(batch));
-                                    stats.setQueueSize(entityBatchQueue.size());
-                                    batch.clear();
+                                spatialBuffer.add(container);
+                                if (spatialBuffer.size() >= 50000) {
+                                    double[] coordinate = getCoordinate(entity, nodeCache);
+                                    spatialBuffer.sort(Comparator.comparingLong(c -> s2Helper.getS2CellId(coordinate[1], coordinate[0], S2Helper.GRID_LEVEL)));
+                                    queueBuffer(stats, entityBatchQueue, spatialBuffer, 500);
+                                    spatialBuffer.clear();
                                 }
+
                             }
                         }
-                        if (!batch.isEmpty()) entityBatchQueue.put(batch);
+                        if (!spatialBuffer.isEmpty())  {
+                            queueBuffer(stats, entityBatchQueue, spatialBuffer, 500);
+                        }
                     });
                 } catch (Exception e) {
                     // Reader failed
@@ -360,25 +364,6 @@ public class ImportService {
                     try {
                         while (true) {
                             List<EntityContainer> batch = entityBatchQueue.take();
-                            for (int j = 0; j < Math.min(10, batch.size()); j++) {
-                                OsmEntity entity = batch.get(j).getEntity();
-                                double lat = 0, lon = 0;
-
-                                if (entity instanceof OsmNode n) {
-                                    lat = n.getLatitude();
-                                    lon = n.getLongitude();
-                                } else if (entity instanceof OsmWay w) {
-                                    // If it's a way, we just grab the first node's coords for the test
-                                    // Assuming your processPoi handles way geometry already
-                                    continue;
-                                }
-
-                                long cellId = s2Helper.getS2CellId(lon, lat, S2Helper.GRID_LEVEL);
-
-                                // Print as Hex to easily see the prefix (MSB)
-                                System.out.printf("[Worker-%d] Entity: %d | S2Cell: %016x | Lat: %.4f, Lon: %.4f%n",
-                                                  Thread.currentThread().getId(), entity.getId(), cellId, lat, lon);
-                            }
                             stats.setQueueSize(entityBatchQueue.size());
                             if (isPoisonPill(batch)) break;
                             for (EntityContainer container : batch) {
@@ -419,6 +404,29 @@ public class ImportService {
         if (!flushingExecutor.awaitTermination(5, TimeUnit.MINUTES)) flushingExecutor.shutdownNow();
         flushTask.run();
     }
+
+    private void queueBuffer(ImportStatistics stats, BlockingQueue<List<EntityContainer>> entityBatchQueue, List<EntityContainer> spatialBuffer, int queueSize) throws InterruptedException {
+        for (int i = 0; i < spatialBuffer.size(); i += queueSize) {
+            int end = Math.min(i + queueSize, spatialBuffer.size());
+            // Create a new list for the batch to avoid modification issues
+            List<EntityContainer> batch = new ArrayList<>(spatialBuffer.subList(i, end));
+            entityBatchQueue.put(new ArrayList<>(batch));
+            stats.setQueueSize(entityBatchQueue.size());
+        }
+    }
+
+    private double[] getCoordinate(OsmEntity entity, RocksDB nodeCache) throws RocksDBException {
+        if (entity instanceof OsmNode node) {
+            return new double[]{node.getLatitude(), node.getLongitude()};
+        } else if (entity instanceof OsmWay way) {
+            long firstNodeId = way.getNodeId(0);
+            byte[] value = nodeCache.get(s2Helper.longToByteArray(firstNodeId));
+            ByteBuffer buffer = ByteBuffer.wrap(value);
+            return new double[]{buffer.getDouble(8), buffer.getDouble(0)};
+        }
+        return new double[]{0, 0};
+    }
+
 
     private void harvestNodeCoordinatesWaysAndRelationsParallel(Path pbfFile, RocksDB nodeCache, Map<Long, List<Long>> wayNodeSequences,
                                                                 List<OsmRelation> adminRelations, ImportStatistics stats) throws Exception {
@@ -461,7 +469,7 @@ public class ImportService {
                     withPbfIterator(pbfFile, iterator -> {
                         while (iterator.hasNext()) {
                             EntityContainer container = iterator.next();
-                            if (container.getType() == EntityType.Node && usedNodes.contains(((OsmNode) container.getEntity()).getId())) {
+                            if (container.getType() == EntityType.Node && usedNodes.contains(container.getEntity().getId())) {
                                 nodeQueue.put(container);
                                 stats.setQueueSize(nodeQueue.size());
                             }

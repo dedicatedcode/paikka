@@ -75,7 +75,11 @@ public class HierarchyCache {
     }
 
     private boolean layersStillValid(double lon, double lat) {
-        if (levelCache.isEmpty()) return false;
+        if (levelCache.isEmpty()) {
+            // If we are in a "void" (no admin boundaries), the result
+            // is technically valid until we leave the S2 cell.
+            return true;
+        }
         // All currently cached layers must still contain the point
         for (List<CachedBoundary> boundaries : levelCache.values()) {
             for (CachedBoundary cb : boundaries) {

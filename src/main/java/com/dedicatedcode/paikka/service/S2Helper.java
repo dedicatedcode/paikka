@@ -33,13 +33,6 @@ public class S2Helper {
         return S2CellId.fromLatLng(S2LatLng.fromDegrees(lat, lon)).parent(level).id();
     }
 
-    /**
-     * Helper to get S2CellId object if needed for library calls.
-     */
-    public S2CellId getCellId(double lat, double lon, int level) {
-        return S2CellId.fromLatLng(S2LatLng.fromDegrees(lat, lon)).parent(level);
-    }
-
     // --- ROCKSDB CONVERSIONS ---
 
     public byte[] longToByteArray(long value) {
