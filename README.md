@@ -10,7 +10,7 @@ PAIKKA provides fast, scalable reverse geocoding capabilities by processing Open
 
 Standard geocoding solutions often fall short for specific personal tracking needs. PAIKKA was built to solve these challenges:
 
-- **Meaningful Results:** Optimized for the specific usage patterns and location dataDir from the location data for Reitti.
+- **Meaningful Results:** Optimized for the specific usage patterns and location data needed for Reitti.
 - **Boundary Intelligence:** Unlike many light geocoders, PAIKKA includes administrative boundaries on nodes when available.
 - **Resource Efficient:** A computationally light solution that doesn't require massive infrastructure.
 - **Portable Data:** Designed so prepared exports can be easily copied to and served from lightweight machines.
@@ -65,7 +65,7 @@ PAIKKA includes helper scripts to simplify data preparation:
 
 2. **Import the data**:
    ```bash
-   ./scripts/import.sh filtered.osm.pbf [data_dir] [memory] [threads]
+   ./scripts/import.sh filtered.osm.pbf
    ```
 
 ### Running with Docker
@@ -79,22 +79,22 @@ Alternatively, you can use Docker to prepare and import data. The container incl
 
 #### Prepare the data (filter OSM data)
 
-Run the prepare script to filter the OSM data. Mount a local directory containing your input PBF file and specify the output filename:
+Run the `prepare` script to filter the OSM data. Mount a local directory containing your input PBF file and specify the output filename:
 
 ```bash
 docker run -v /path/to/your/data:/data paikka prepare input.osm.pbf filtered.osm.pbf
 ```
 
 - Replace `/path/to/your/data` with the absolute path to your local directory
-- `input.osm.pbf` is your source OSM data file
+- `input.osm.pbf` is your source OSM data file and should be located inside the mounted directory
 - `filtered.osm.pbf` is the output filtered file that will be created in your mounted directory
 
 #### Import the data
 
-Run the import script to import the filtered data into the data directory:
+Run the `import` script to import the filtered data into the data directory:
 
 ```bash
-docker run -v /path/to/your/data:/data paikka import filtered.osm.pbf /data
+sudo docker run -ti -v /path/to/your/data:/data dedicatedcode/paikka:latest import filtered.osm.pbf
 ```
 
 - `filtered.osm.pbf` is the filtered PBF file from the previous step
@@ -125,7 +125,7 @@ The data directory is mounted at `/data` inside the container, and the service r
 
 # Import planet data with custom settings
 ./scripts/filter_osm.sh planet-latest.osm.pbf planet-filtered.osm.pbf
-./scripts/import.sh planet-filtered.osm.pbf /opt/paikka/data 32g 8
+./scripts/import.sh planet-filtered.osm.pbf /opt/paikka/data --memory 32g --threads 8
 ```
 
 The scripts handle all the technical details including memory management, JVM optimization, and cleanup.
@@ -215,17 +215,17 @@ To use PAIKKA with Reitti, configure the geocoding service in Reitti's settings:
 
 There are multiple ways of getting support:
 
-- Create a [new issue](https://github.com/dedicatedcode/reitti/issues/new/choose) in the main Reitti repository
+- Create a [new issue](https://github.com/dedicatedcode/paikka/issues/new/choose) in the repository
 - Tag me on [Lemmy](https://discuss.tchncs.de/u/danielgraf)
 - Join **#reitti** on [irc.dedicatedcode.com](https://irc.dedicatedcode.com)
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request to the main [Reitti repository](https://github.com/dedicatedcode/reitti).
+Contributions are welcome! Please feel free to submit a Pull Request to [repository](https://github.com/dedicatedcode/paikka).
 
 ## Technology Stack
 
-- **Java 21** – Modern Java runtime with performance improvements
+- **Java 25** – Modern Java runtime with performance improvements
 - **Spring Boot** – Application framework with embedded web server
 - **RocksDB** – High-performance embedded database for spatial data
 - **FlatBuffers** – Efficient serialization for geocoding data

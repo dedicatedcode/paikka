@@ -26,7 +26,7 @@ usage() {
     echo "  $0 --data-dir ./data --memory 16g germany-latest.osm.pbf"
     echo ""
     echo "Requirements:"
-    echo "  - Java 21 or higher"
+    echo "  - Java 25 or higher"
     echo "  - PAIKKA jar file in target/ directory or provided via --jar-file"
     echo "  - Sufficient RAM (recommended: 32GB+ for planet)"
     exit 1

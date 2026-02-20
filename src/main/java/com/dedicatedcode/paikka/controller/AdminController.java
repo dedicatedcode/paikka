@@ -1,10 +1,9 @@
 package com.dedicatedcode.paikka.controller;
 
-import com.dedicatedcode.paikka.service.SearchService;
+import com.dedicatedcode.paikka.service.ReverseGeocodingService;
 import com.dedicatedcode.paikka.service.BoundaryService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -22,12 +21,14 @@ public class AdminController {
     
     private static final Logger logger = LoggerFactory.getLogger(AdminController.class);
     
-    @Autowired
-    private SearchService searchService;
-    
-    @Autowired
-    private BoundaryService boundaryService;
-    
+    private final ReverseGeocodingService reverseGeocodingService;
+    private final BoundaryService boundaryService;
+
+    public AdminController(ReverseGeocodingService reverseGeocodingService, BoundaryService boundaryService) {
+        this.reverseGeocodingService = reverseGeocodingService;
+        this.boundaryService = boundaryService;
+    }
+
     /**
      * Refresh the RocksDB databases by reloading them from the data directory.
      * This is useful when a new data folder has been uploaded or updated.
@@ -46,7 +47,7 @@ public class AdminController {
         try {
             // Reload the search service (POI shards database)
             logger.info("Reloading POI shards database...");
-            searchService.reloadDatabase();
+            reverseGeocodingService.reloadDatabase();
             
             // Reload the boundary service (boundaries database)
             logger.info("Reloading boundaries database...");
