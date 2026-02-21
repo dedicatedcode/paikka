@@ -36,16 +36,16 @@ Standard geocoding solutions often fall short for specific personal tracking nee
   - `historic` (e.g., monument, archaeological_site)
   - `natural` (e.g., peak, cave, waterfall)
   - `man_made` (e.g., tower, pier, windmill)
-  - `place` (e.g., city, town, village, neighbourhood)
+  - `place` (e.g., city, town, village, neighborhood)
   - `sport` (e.g., tennis, swimming, fitness)
   - `public_transport` (e.g., stop_position, station)
   - `railway` (stations only)
   - `aeroway` (e.g., aerodrome, helipad)
-  - `building` (commercial, retail, industrial, office - but not residential or generic "yes")
+  - `building` (commercial, retail, industrial, office – but not residential or generic "yes")
   
   Many common OSM features are explicitly excluded, such as:
-  - Residential buildings and landuse
   - Natural features like trees and grass
+  - Man-made structures like electric-poles, trash cans
   - Amenities like benches, drinking water, and picnic tables
   - Swimming pools and fountains
   
@@ -53,8 +53,7 @@ Standard geocoding solutions often fall short for specific personal tracking nee
 
 ## Features
 
-- **Planet-scale data processing** - Import and process complete OpenStreetMap datasets
-- **High-performance geocoding** – Fast and efficient reverse geocoding
+- **High performance geocoding** – Fast and efficient reverse geocoding
 - **RESTful API** – Simple HTTP endpoints for geocoding operations
 - **Web Dashboard** – Administrative interface for monitoring and statistics
 - **Boundary support** – Administrative boundary data for hierarchical location information
