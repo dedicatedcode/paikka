@@ -22,13 +22,12 @@ import java.io.InputStream;
 import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
+import java.nio.file.*;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.stream.Stream;
 
 /**
  * Service responsible for importing OSM data into the Paikka spatial engine.
@@ -76,7 +75,7 @@ public class ImportService {
         tmpDirectory.toFile().mkdirs();
         Path shardsDbPath = dataDirectory.resolve("poi_shards");
         Path boundariesDbPath = dataDirectory.resolve("boundaries");
-        //tmp databases only needed for the import
+        // tmp databases only needed for the import
         Path gridIndexDbPath = dataDirectory.resolve("tmp/grid_index");
         Path nodeCacheDbPath = dataDirectory.resolve("tmp/node_cache");
         Path wayIndexDbPath = dataDirectory.resolve("tmp/way_index");
@@ -135,6 +134,8 @@ public class ImportService {
                     .setMaxWriteBufferNumber(3)
                     .setLevel0FileNumCompactionTrigger(4);
 
+            boolean success = false;
+
             try (RocksDB shardsDb = RocksDB.open(persistentOpts, shardsDbPath.toString());
                  RocksDB boundariesDb = RocksDB.open(persistentOpts, boundariesDbPath.toString());
                  RocksDB gridIndexDb = RocksDB.open(gridOpts, gridIndexDbPath.toString());
@@ -152,17 +153,34 @@ public class ImportService {
                 pass2PoiShardingAndBaking(pbfFile, nodeCache, gridIndexDb, shardsDb, boundariesDb, stats);
                 printPhaseSummary("PASS 2", pass2Start, stats);
 
+                // Stop stats and record total time
                 stats.setTotalTime(System.currentTimeMillis() - totalStartTime);
                 stats.stop();
 
+                // Compute size metrics (dataset + temporary DBs)
+                recordSizeMetrics(stats,
+                                  shardsDbPath,
+                                  boundariesDbPath,
+                                  gridIndexDbPath,
+                                  nodeCacheDbPath,
+                                  wayIndexDbPath,
+                                  neededNodesDbPath);
+
                 printFinalStatistics(stats);
                 printSuccess();
+                success = true;
 
             } catch (Exception e) {
                 stats.stop();
                 printError("IMPORT FAILED: " + e.getMessage());
                 e.printStackTrace();
                 throw e;
+            }
+            try {
+                cleanupDatabase(tmpDirectory);
+                System.out.println("\n\033[1;90mTemporary databases deleted.\033[0m");
+            } catch (Exception e) {
+                System.err.println("Warning: Failed to delete temporary databases: " + e.getMessage());
             }
         }
     }
@@ -1136,6 +1154,18 @@ public class ImportService {
         return String.format("%.1fM", n / 1_000_000.0);
     }
 
+    private String formatSize(long bytes) {
+        if (bytes < 1024) return bytes + " B";
+        double kb = bytes / 1024.0;
+        if (kb < 1024) return String.format("%.1f KB", kb);
+        double mb = kb / 1024.0;
+        if (mb < 1024) return String.format("%.1f MB", mb);
+        double gb = mb / 1024.0;
+        if (gb < 1024) return String.format("%.2f GB", gb);
+        double tb = gb / 1024.0;
+        return String.format("%.2f TB", tb);
+    }
+
     private String centerText(String text) {
         int pad = (80 - text.length()) / 2;
         return " ".repeat(Math.max(0, pad)) + text;
@@ -1232,6 +1262,56 @@ public class ImportService {
         }
     }
 
+    private long computeDirectorySize(Path root) {
+        if (root == null || !Files.exists(root)) return 0L;
+        try (Stream<Path> s = Files.walk(root)) {
+            return s.filter(p -> {
+                        try {
+                            return Files.isRegularFile(p);
+                        } catch (Exception e) {
+                            return false;
+                        }
+                    })
+                    .mapToLong(p -> {
+                        try {
+                            return Files.size(p);
+                        } catch (IOException e) {
+                            return 0L;
+                        }
+                    }).sum();
+        } catch (IOException e) {
+            return 0L;
+        }
+    }
+
+    private void recordSizeMetrics(ImportStatistics stats,
+                                   Path shardsDbPath,
+                                   Path boundariesDbPath,
+                                   Path gridIndexDbPath,
+                                   Path nodeCacheDbPath,
+                                   Path wayIndexDbPath,
+                                   Path neededNodesDbPath) {
+        long shards = computeDirectorySize(shardsDbPath);
+        long boundaries = computeDirectorySize(boundariesDbPath);
+        long dataset = shards + boundaries;
+
+        long grid = computeDirectorySize(gridIndexDbPath);
+        long node = computeDirectorySize(nodeCacheDbPath);
+        long way = computeDirectorySize(wayIndexDbPath);
+        long needed = computeDirectorySize(neededNodesDbPath);
+        long tmpTotal = grid + node + way + needed;
+
+        stats.setShardsBytes(shards);
+        stats.setBoundariesBytes(boundaries);
+        stats.setDatasetBytes(dataset);
+
+        stats.setTmpGridBytes(grid);
+        stats.setTmpNodeBytes(node);
+        stats.setTmpWayBytes(way);
+        stats.setTmpNeededBytes(needed);
+        stats.setTmpTotalBytes(tmpTotal);
+    }
+
     private void printFinalStatistics(ImportStatistics stats) {
         System.out.println("\n\033[1;36m" + "═".repeat(80) + "\n" + centerText("🎯 FINAL IMPORT STATISTICS") + "\n" + "═".repeat(80) + "\033[0m");
 
@@ -1269,9 +1349,21 @@ public class ImportService {
                           formatCompactNumber(totalObjects),
                           formatCompactNumber((long)(totalObjects / totalSeconds)));
 
-        System.out.printf("\033[1;37m💾 Database Operations:\033[0m \033[1;36m%s writes\033[0m (\033[33m%s writes/sec\033[0m)%n%n",
+        System.out.printf("\033[1;37m💾 Database Operations:\033[0m \033[1;36m%s writes\033[0m (\033[33m%s writes/sec\033[0m)%n",
                           formatCompactNumber(stats.getRocksDbWrites()),
                           formatCompactNumber((long)(stats.getRocksDbWrites() / totalSeconds)));
+
+        // Sizes
+        System.out.println("\n\033[1;37m📦 Dataset Size:\033[0m " + formatSize(stats.getDatasetBytes()));
+        System.out.println("  • poi_shards:  " + formatSize(stats.getShardsBytes()));
+        System.out.println("  • boundaries:  " + formatSize(stats.getBoundariesBytes()));
+
+        System.out.println("\n\033[1;37m🧹 Temporary DBs:\033[0m " + formatSize(stats.getTmpTotalBytes()));
+        System.out.println("  • grid_index:  " + formatSize(stats.getTmpGridBytes()));
+        System.out.println("  • node_cache:  " + formatSize(stats.getTmpNodeBytes()));
+        System.out.println("  • way_index:   " + formatSize(stats.getTmpWayBytes()));
+        System.out.println("  • needed_nodes:" + formatSize(stats.getTmpNeededBytes()));
+        System.out.println();
     }
 
     private static class ImportStatistics {
@@ -1289,6 +1381,16 @@ public class ImportService {
         private volatile boolean running = true;
         private final long startTime = System.currentTimeMillis();
         private long totalTime;
+
+        // Size metrics
+        private volatile long datasetBytes;
+        private volatile long shardsBytes;
+        private volatile long boundariesBytes;
+        private volatile long tmpGridBytes;
+        private volatile long tmpNodeBytes;
+        private volatile long tmpWayBytes;
+        private volatile long tmpNeededBytes;
+        private volatile long tmpTotalBytes;
 
         public long getEntitiesRead() { return entitiesRead.get(); }
         public void incrementEntitiesRead() { entitiesRead.incrementAndGet(); }
@@ -1318,6 +1420,24 @@ public class ImportService {
         public long getStartTime() { return startTime; }
         public long getTotalTime() { return totalTime; }
         public void setTotalTime(long t) { this.totalTime = t; }
+
+        // sizes getters/setters
+        public long getDatasetBytes() { return datasetBytes; }
+        public void setDatasetBytes(long v) { this.datasetBytes = v; }
+        public long getShardsBytes() { return shardsBytes; }
+        public void setShardsBytes(long v) { this.shardsBytes = v; }
+        public long getBoundariesBytes() { return boundariesBytes; }
+        public void setBoundariesBytes(long v) { this.boundariesBytes = v; }
+        public long getTmpGridBytes() { return tmpGridBytes; }
+        public void setTmpGridBytes(long v) { this.tmpGridBytes = v; }
+        public long getTmpNodeBytes() { return tmpNodeBytes; }
+        public void setTmpNodeBytes(long v) { this.tmpNodeBytes = v; }
+        public long getTmpWayBytes() { return tmpWayBytes; }
+        public void setTmpWayBytes(long v) { this.tmpWayBytes = v; }
+        public long getTmpNeededBytes() { return tmpNeededBytes; }
+        public void setTmpNeededBytes(long v) { this.tmpNeededBytes = v; }
+        public long getTmpTotalBytes() { return tmpTotalBytes; }
+        public void setTmpTotalBytes(long v) { this.tmpTotalBytes = v; }
 
         public String getMemoryStats() {
             Runtime r = Runtime.getRuntime();
