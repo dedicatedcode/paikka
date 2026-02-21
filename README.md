@@ -102,7 +102,7 @@ wget https://download.geofabrik.de/europe/germany-latest.osm.pbf
 
 For planet-scale imports, download the full planet file:
 - [Planet PBF](https://planet.openstreetmap.org/pbf/) – Updated weekly
-- [Planet mirrors](https://wiki.openstreetmap.org/wiki/Planet.osm.pbf#Mirrors) – Various download mirrors
+- [Planet Mirrors](https://wiki.openstreetmap.org/wiki/Planet.osm#Planet.osm_mirrors) – Various download mirrors
 
 **Warning:** The planet file is extremely large (tens of gigabytes). Processing it requires significant time and resources. For most use cases, a regional extract from Geofabrik is sufficient.
 
