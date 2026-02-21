@@ -45,31 +45,24 @@ public class ImportService {
 
     // Simple cache to deduplicate common tag strings and reduce heap pressure
     private final Map<String, String> tagCache = new ConcurrentHashMap<>(1000);
-
-    // ======== Data-Holding Records for Processing Pipeline ========
-    private record PoiData(long id, double lat, double lon, String type, String subtype, List<NameData> names,
-                           AddressData address, List<HierarchyCache.SimpleHierarchyItem> hierarchy,
-                           byte[] boundaryWkb) {
-    }
-
-    private record NameData(String lang, String text) {
-    }
-
-    private record AddressData(String street, String houseNumber, String postcode, String city, String country) {
-    }
-
-    private record BoundaryResult(OsmRelation relation, org.locationtech.jts.geom.Geometry geometry) {
-    }
-
-    @FunctionalInterface
-    private interface ConsumerWithException<T> {
-        void accept(T t) throws Exception;
-    }
+    private final int fileReadWindowSize;
 
     public ImportService(S2Helper s2Helper, GeometrySimplificationService geometrySimplificationService, PaikkaConfiguration config) {
         this.s2Helper = s2Helper;
         this.geometrySimplificationService = geometrySimplificationService;
         this.config = config;
+        this.fileReadWindowSize = calculateFileReadWindowSize();
+    }
+
+    private int calculateFileReadWindowSize() {
+        long maxHeap = Runtime.getRuntime().maxMemory();
+        if (maxHeap > 24L * 1024 * 1024 * 1024) {
+            return  256 * 1024 * 1024;  // 256MB for 32GB+ heap
+        } else if (maxHeap > 8L * 1024 * 1024 * 1024) {
+            return  96 * 1024 * 1024;   // 96MB for 8-32GB heap
+        } else {
+            return 48 * 1024 * 1024;   // 48MB for <8GB heap
+        }
     }
 
     public void importData(String pbfFilePath, String dataDir) throws Exception {
@@ -941,22 +934,69 @@ public class ImportService {
     }
 
     private void withPbfIterator(Path pbfFile, ConsumerWithException<OsmIterator> consumer) throws Exception {
-        try (RandomAccessFile file = new RandomAccessFile(pbfFile.toFile(), "r"); FileChannel channel = file.getChannel()) {
-            ByteBuffer mappedBuffer = channel.map(FileChannel.MapMode.READ_ONLY, 0, channel.size());
+        try (RandomAccessFile file = new RandomAccessFile(pbfFile.toFile(), "r");
+             FileChannel channel = file.getChannel()) {
+
+            long fileSize = channel.size();
+
+            // Use a custom InputStream that reads through the channel in chunks
             InputStream inputStream = new InputStream() {
+                private long position = 0;
+                private ByteBuffer currentBuffer = null;
+
+                private void refillBuffer() throws IOException {
+                    if (position >= fileSize) {
+                        currentBuffer = null;
+                        return;
+                    }
+
+                    // Calculate how much to read
+                    long remaining = fileSize - position;
+                    int toRead = (int) Math.min(fileReadWindowSize, remaining);
+
+                    currentBuffer = ByteBuffer.allocate(toRead);
+                    int bytesRead = channel.read(currentBuffer, position);
+
+                    if (bytesRead <= 0) {
+                        currentBuffer = null;
+                        return;
+                    }
+
+                    currentBuffer.flip();
+                    position += bytesRead;
+                }
+
                 @Override
-                public int read() { return mappedBuffer.hasRemaining() ? mappedBuffer.get() & 0xFF : -1; }
+                public int read() throws IOException {
+                    if (currentBuffer == null || !currentBuffer.hasRemaining()) {
+                        refillBuffer();
+                        if (currentBuffer == null || !currentBuffer.hasRemaining()) {
+                            return -1;
+                        }
+                    }
+                    return currentBuffer.get() & 0xFF;
+                }
+
                 @Override
-                public int read(byte[] b, int off, int len) {
-                    if (!mappedBuffer.hasRemaining()) return -1;
-                    len = Math.min(len, mappedBuffer.remaining());
-                    mappedBuffer.get(b, off, len);
-                    return len;
+                public int read(byte[] b, int off, int len) throws IOException {
+                    if (currentBuffer == null || !currentBuffer.hasRemaining()) {
+                        refillBuffer();
+                        if (currentBuffer == null || !currentBuffer.hasRemaining()) {
+                            return -1;
+                        }
+                    }
+
+                    int available = currentBuffer.remaining();
+                    int toRead = Math.min(len, available);
+                    currentBuffer.get(b, off, toRead);
+                    return toRead;
                 }
             };
+
             consumer.accept(new PbfIterator(inputStream, false));
         }
     }
+
 
     private String formatTime(long ms) {
         long s = ms / 1000;
@@ -975,13 +1015,14 @@ public class ImportService {
     }
 
     private void printHeader(String pbfFilePath, String dataDir) {
-        System.out.println("\n\033[1;34m" + "=".repeat(80) + "\n" + centerText("PAIKKA IMPORT STARTING (JAVA 25 OPTIMIZED)") + "\n" + "=".repeat(80) + "\033[0m\n");
+        System.out.println("\n\033[1;34m" + "=".repeat(80) + "\n" + centerText("PAIKKA IMPORT STARTING") + "\n" + "=".repeat(80) + "\033[0m\n");
         System.out.println("PBF File: " + pbfFilePath);
         System.out.println("Data Dir: " + dataDir);
         System.out.println("Max Import Threads: " + config.getMaxImportThreads());
         long maxHeapBytes = Runtime.getRuntime().maxMemory();
         String maxHeapSize = (maxHeapBytes == Long.MAX_VALUE) ? "unlimited" : (maxHeapBytes / (1024 * 1024 * 1024)) + "GB";
         System.out.println("Max Heap: " + maxHeapSize);
+        System.out.println("File window size: " + (this.fileReadWindowSize / (1024 * 1024)) + "MB");
     }
 
     private void printPhaseHeader(String phase) {
@@ -1164,4 +1205,24 @@ public class ImportService {
             return String.format("%dGB/%dGB", used, max);
         }
     }
+
+    private record PoiData(long id, double lat, double lon, String type, String subtype, List<NameData> names,
+                           AddressData address, List<HierarchyCache.SimpleHierarchyItem> hierarchy,
+                           byte[] boundaryWkb) {
+    }
+
+    private record NameData(String lang, String text) {
+    }
+
+    private record AddressData(String street, String houseNumber, String postcode, String city, String country) {
+    }
+
+    private record BoundaryResult(OsmRelation relation, org.locationtech.jts.geom.Geometry geometry) {
+    }
+
+    @FunctionalInterface
+    private interface ConsumerWithException<T> {
+        void accept(T t) throws Exception;
+    }
+
 }

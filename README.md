@@ -110,6 +110,15 @@ For planet-scale imports, download the full planet file:
 
 The [OpenStreetMap website](https://www.openstreetmap.org/export/) allows you to export custom areas using their "Export" feature. This is useful if you need a specific region that isn't available as a pre-made extract.
 
+### Sizing Considerations
+
+
+| Dataset | before filtering | filtered | time taken | reduction | imported | time taken | reduction |
+|---------|------------------|----------|------------|-----------|----------|------------|-----------|
+| Planet  | 86 GB            | 33 GB    | 50m        | ~60%      |          |            |           |
+|         |                  |          |            |           |          |            |           |
+|         |                  |          |            |           |          |            |           |
+|         |                  |          |            |           |          |            |           |
 
 ### Quick Start
 
@@ -139,7 +148,7 @@ Alternatively, you can use Docker to prepare and import data. The container incl
 Run the `prepare` script to filter the OSM data. Mount a local directory containing your input PBF file and specify the output filename:
 
 ```bash
-docker run -v /path/to/your/data:/data paikka prepare input.osm.pbf filtered.osm.pbf
+docker run -v /path/to/your/data:/data dedicatedcode/paikka prepare input.osm.pbf filtered.osm.pbf
 ```
 
 - Replace `/path/to/your/data` with the absolute path to your local directory
@@ -151,7 +160,7 @@ docker run -v /path/to/your/data:/data paikka prepare input.osm.pbf filtered.osm
 Run the `import` script to import the filtered data into the data directory:
 
 ```bash
-sudo docker run -ti -v /path/to/your/data:/data dedicatedcode/paikka:latest import filtered.osm.pbf
+docker run -ti -v /path/to/your/data:/data dedicatedcode/paikka:latest import filtered.osm.pbf
 ```
 
 - `filtered.osm.pbf` is the filtered PBF file from the previous step
