@@ -110,11 +110,40 @@ To run the PAIKKA service itself:
 docker run -d \
   -v /path/to/your/data:/data \
   -p 8080:8080 \
-  -e PAIKKA_ADMIN_PASSWORD=your-secure-password \
+  -e ADMIN_PASSWORD=your-secure-password \
   paikka
 ```
 
 The data directory is mounted at `/data` inside the container, and the service runs on port 8080.
+
+#### Docker Environment Variables
+
+When running with Docker, you can configure the service using environment variables:
+
+| Environment Variable | Purpose | Default Value |
+|---------------------|---------|---------------|
+| `DATA_DIR` | Directory where processed data is stored | `./data` |
+| `MAX_IMPORT_THREADS` | Maximum number of threads for data import | `10` |
+| `MAX_RESULTS` | Maximum number of results returned by API | `500` |
+| `DEFAULT_RESULTS` | Default number of results when not specified | `10` |
+| `BASE_URL` | Base URL for the service (used in responses) | `http://localhost:8080` |
+| `STATS_DB_PATH` | Path to the statistics database | `./data/stats.db` |
+| `ADMIN_PASSWORD` | Password for admin interface access | _(empty)_ |
+| `APP_LOG_LEVEL` | Log level for the application | `INFO` |
+
+Example with custom configuration:
+
+```bash
+docker run -d \
+  -v /path/to/your/data:/data \
+  -p 8080:8080 \
+  -e DATA_DIR=/data \
+  -e MAX_RESULTS=1000 \
+  -e DEFAULT_RESULTS=20 \
+  -e ADMIN_PASSWORD=your-secure-password \
+  -e APP_LOG_LEVEL=DEBUG \
+  paikka
+```
 
 ### Examples
 
