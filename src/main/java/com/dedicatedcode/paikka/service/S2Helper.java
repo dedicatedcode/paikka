@@ -77,4 +77,44 @@ public class S2Helper {
         cellId.getAllNeighbors(SHARD_LEVEL, allNeighbours);
         return new HashSet<>(allNeighbours.stream().map(S2CellId::id).toList());
     }
+
+    /**
+     * Get expanding rings of neighboring S2 cell IDs around the given shard.
+     * Returns shards in rings of increasing distance from the center.
+     * 
+     * @param centerShardId The center shard ID
+     * @param maxRings Maximum number of rings to expand (1 = immediate neighbors only)
+     * @return Map where key is ring number (1, 2, 3...) and value is set of shard IDs in that ring
+     */
+    public Map<Integer, Set<Long>> getExpandingNeighborRings(long centerShardId, int maxRings) {
+        Map<Integer, Set<Long>> rings = new HashMap<>();
+        Set<Long> visited = new HashSet<>();
+        visited.add(centerShardId); // Don't include center in any ring
+        
+        Set<Long> currentRing = Set.of(centerShardId);
+        
+        for (int ring = 1; ring <= maxRings; ring++) {
+            Set<Long> nextRing = new HashSet<>();
+            
+            // For each shard in current ring, get its neighbors
+            for (long shardId : currentRing) {
+                Set<Long> neighbors = getNeighborShards(shardId);
+                for (long neighbor : neighbors) {
+                    if (!visited.contains(neighbor)) {
+                        nextRing.add(neighbor);
+                        visited.add(neighbor);
+                    }
+                }
+            }
+            
+            if (nextRing.isEmpty()) {
+                break; // No more neighbors to expand to
+            }
+            
+            rings.put(ring, nextRing);
+            currentRing = nextRing;
+        }
+        
+        return rings;
+    }
 }

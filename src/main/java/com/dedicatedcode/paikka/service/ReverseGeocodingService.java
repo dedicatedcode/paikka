@@ -29,6 +29,7 @@ public class ReverseGeocodingService {
     
     private static final Logger logger = LoggerFactory.getLogger(ReverseGeocodingService.class);
     private static final double SEARCH_RADIUS_KM = 10.0; // Search within 10km radius
+    private static final int MAX_SEARCH_RINGS = 3; // Maximum rings of neighboring shards to search
 
     private final PaikkaConfiguration config;
     private final S2Helper s2Helper;
@@ -132,19 +133,50 @@ public class ReverseGeocodingService {
                 throw new RuntimeException("RocksDB not available for reverse geocoding - database not initialized");
             }
             
-            // Get the S2 cell ID for the coordinate and its neighbors
+            // Start with center shard
             long centerShardId = s2Helper.getShardId(lat, lon);
-            Set<Long> shardIds = s2Helper.getNeighborShards(centerShardId);
-            shardIds.add(centerShardId); // Include the center shard
+            List<POIData> allPOIs = new ArrayList<>();
+            Set<Long> searchedShards = new HashSet<>();
             
-            // Load POIs from all relevant shards
-            List<POIData> nearbyPOIs = new ArrayList<>();
-            for (long shardId : shardIds) {
-                nearbyPOIs.addAll(loadPOIsFromShard(shardId));
+            // Load POIs from center shard first
+            allPOIs.addAll(loadPOIsFromShard(centerShardId));
+            searchedShards.add(centerShardId);
+            
+            // Get expanding rings of neighbor shards
+            Map<Integer, Set<Long>> neighborRings = s2Helper.getExpandingNeighborRings(centerShardId, MAX_SEARCH_RINGS);
+            
+            // Search ring by ring until we have enough results or hit max radius
+            for (int ring = 1; ring <= MAX_SEARCH_RINGS; ring++) {
+                Set<Long> ringShards = neighborRings.get(ring);
+                if (ringShards == null || ringShards.isEmpty()) {
+                    logger.debug("No more shards in ring {}, stopping expansion", ring);
+                    break;
+                }
+                
+                // Load POIs from this ring
+                List<POIData> ringPOIs = new ArrayList<>();
+                for (long shardId : ringShards) {
+                    if (!searchedShards.contains(shardId)) {
+                        ringPOIs.addAll(loadPOIsFromShard(shardId));
+                        searchedShards.add(shardId);
+                    }
+                }
+                
+                allPOIs.addAll(ringPOIs);
+                logger.debug("Ring {}: searched {} shards, found {} POIs, total POIs: {}", 
+                    ring, ringShards.size(), ringPOIs.size(), allPOIs.size());
+                
+                // Check if we have enough candidates within radius
+                List<POIData> candidatesWithinRadius = findClosestPOIs(allPOIs, lat, lon, limit * 2); // Get more candidates than needed
+                if (candidatesWithinRadius.size() >= limit) {
+                    logger.debug("Found sufficient POIs ({}) within radius after ring {}, stopping expansion", 
+                        candidatesWithinRadius.size(), ring);
+                    break;
+                }
             }
             
             // Find the closest POIs up to the limit
-            List<POIData> closestPOIs = findClosestPOIs(nearbyPOIs, lat, lon, limit);
+            List<POIData> closestPOIs = findClosestPOIs(allPOIs, lat, lon, limit);
             
             // Convert POIs to response format
             List<POIResponse> results = new ArrayList<>();
@@ -152,6 +184,7 @@ public class ReverseGeocodingService {
                 results.add(convertPOIToResponse(poi, lat, lon, lang));
             }
             
+            logger.debug("Final result: {} POIs found from {} searched shards", results.size(), searchedShards.size());
             return results;
             
         } catch (RocksDBException e) {
