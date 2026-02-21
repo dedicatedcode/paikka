@@ -17,9 +17,6 @@ public class PaikkaApplication implements CommandLineRunner {
     @Autowired
     private ImportService importService;
 
-    @Value("${paikka.admin.password}")
-    private String adminPassword;
-    
     public static void main(String[] args) {
         SpringApplication app = new SpringApplication(PaikkaApplication.class);
         
@@ -57,8 +54,6 @@ public class PaikkaApplication implements CommandLineRunner {
         logger.info("  curl 'http://localhost:8080/api/v1/reverse?lat=43.740382&lon=7.426712'");
         logger.info("  curl 'http://localhost:8080/api/v1/geometry/12345'");
         logger.info("");
-        logger.info("Admin password: {}", adminPassword);
-
     }
     
     @Override

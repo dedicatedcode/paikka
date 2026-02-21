@@ -45,7 +45,6 @@ class ImportServiceTest {
 
         PaikkaConfiguration config = new PaikkaConfiguration();
         config.setMaxImportThreads(2);
-        config.setS2Level(12);
 
         GeometrySimplificationService geometrySimplificationService = new GeometrySimplificationService();
 
@@ -54,7 +53,7 @@ class ImportServiceTest {
     }
 
     @AfterEach
-    void tearDown() throws IOException {
+    void tearDown() {
         if (tempDataDir != null && tempDataDir.toFile().exists()) {
             deleteDirectory(tempDataDir.toFile());
         }
