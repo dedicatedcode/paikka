@@ -1,5 +1,6 @@
 package com.dedicatedcode.paikka.service;
 
+import com.dedicatedcode.paikka.config.PaikkaConfiguration;
 import com.dedicatedcode.paikka.flatbuffers.*;
 import com.dedicatedcode.paikka.flatbuffers.Geometry;
 import com.google.common.geometry.S2CellId;
@@ -40,6 +41,7 @@ public class ImportService {
     private static final GeometryFactory GEOMETRY_FACTORY = new GeometryFactory();
     private final S2Helper s2Helper;
     private final GeometrySimplificationService geometrySimplificationService;
+    private final PaikkaConfiguration config;
 
     // Simple cache to deduplicate common tag strings and reduce heap pressure
     private final Map<String, String> tagCache = new ConcurrentHashMap<>(1000);
@@ -64,9 +66,10 @@ public class ImportService {
         void accept(T t) throws Exception;
     }
 
-    public ImportService(S2Helper s2Helper, GeometrySimplificationService geometrySimplificationService) {
+    public ImportService(S2Helper s2Helper, GeometrySimplificationService geometrySimplificationService, PaikkaConfiguration config) {
         this.s2Helper = s2Helper;
         this.geometrySimplificationService = geometrySimplificationService;
+        this.config = config;
     }
 
     public void importData(String pbfFilePath, String dataDir) throws Exception {
@@ -282,10 +285,10 @@ public class ImportService {
         flushingExecutor.scheduleAtFixedRate(flushTask, 10, 10, TimeUnit.SECONDS);
 
         BlockingQueue<List<EntityContainer>> entityBatchQueue = new LinkedBlockingQueue<>(10_000);
-        int numProcessors = Runtime.getRuntime().availableProcessors() * 2;
+        int numProcessors = config.getMaxImportThreads();
         CountDownLatch latch = new CountDownLatch(numProcessors);
         
-        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
+        try (ExecutorService executor = createExecutorService(numProcessors)) {
             final ThreadLocal<HierarchyCache> hierarchyCacheThreadLocal = ThreadLocal.withInitial(
                     () -> new HierarchyCache(boundariesDb, gridIndexDb, s2Helper)
             );
@@ -435,10 +438,10 @@ public class ImportService {
 
         stats.setCurrentPhase("1.1.2: Caching node coordinates");
         BlockingQueue<EntityContainer> nodeQueue = new LinkedBlockingQueue<>(200_000);
-        int numProcessors = Runtime.getRuntime().availableProcessors();
+        int numProcessors = config.getMaxImportThreads();
         CountDownLatch latch = new CountDownLatch(numProcessors);
 
-        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
+        try (ExecutorService executor = createExecutorService(numProcessors)) {
             Thread readerThread = Thread.ofVirtual().start(() -> {
                 try {
                     withPbfIterator(pbfFile, iterator -> {
@@ -508,7 +511,7 @@ public class ImportService {
         int maxConcurrentGeometries = 100;
         Semaphore semaphore = new Semaphore(maxConcurrentGeometries);
 
-        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
+        try (ExecutorService executor = createExecutorService(config.getMaxImportThreads())) {
             ExecutorCompletionService<BoundaryResult> completionService = new ExecutorCompletionService<>(executor);
 
             for (OsmRelation relation : adminRelations) {
@@ -975,7 +978,7 @@ public class ImportService {
         System.out.println("\n\033[1;34m" + "=".repeat(80) + "\n" + centerText("PAIKKA IMPORT STARTING (JAVA 25 OPTIMIZED)") + "\n" + "=".repeat(80) + "\033[0m\n");
         System.out.println("PBF File: " + pbfFilePath);
         System.out.println("Data Dir: " + dataDir);
-        System.out.println("Threads: Virtual Threads Enabled");
+        System.out.println("Max Import Threads: " + config.getMaxImportThreads());
         long maxHeapBytes = Runtime.getRuntime().maxMemory();
         String maxHeapSize = (maxHeapBytes == Long.MAX_VALUE) ? "unlimited" : (maxHeapBytes / (1024 * 1024 * 1024)) + "GB";
         System.out.println("Max Heap: " + maxHeapSize);
@@ -1023,6 +1026,24 @@ public class ImportService {
                     formatCompactNumber(stats.getRocksDbWrites()));
         } else {
             System.out.printf("\033[1;32m✓ %s\033[0m \033[2m(%s)\033[0m%n", subPhaseName, formatTime(subPhaseTime));
+        }
+    }
+
+    /**
+     * Clean up existing RocksDB database directory to ensure fresh start.
+     * Recursively deletes the directory and all its contents if it exists.
+     */
+    /**
+     * Creates an appropriate ExecutorService based on the configured thread limit.
+     * Uses virtual threads when no limit is set, platform threads with fixed pool when limited.
+     */
+    private ExecutorService createExecutorService(int maxThreads) {
+        if (maxThreads <= 0) {
+            // No limit set, use virtual threads for maximum concurrency
+            return Executors.newVirtualThreadPerTaskExecutor();
+        } else {
+            // Limited threads, use platform thread pool to respect CPU limits
+            return Executors.newFixedThreadPool(maxThreads);
         }
     }
 
