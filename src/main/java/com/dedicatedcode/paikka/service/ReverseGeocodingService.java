@@ -132,11 +132,16 @@ public class ReverseGeocodingService {
                 throw new RuntimeException("RocksDB not available for reverse geocoding - database not initialized");
             }
             
-            // Get the S2 cell ID for the coordinate
-            long shardId = s2Helper.getShardId(lat, lon);
+            // Get the S2 cell ID for the coordinate and its neighbors
+            long centerShardId = s2Helper.getShardId(lat, lon);
+            Set<Long> shardIds = s2Helper.getNeighborShards(centerShardId);
+            shardIds.add(centerShardId); // Include the center shard
             
-            // Load POIs from the appropriate shard
-            List<POIData> nearbyPOIs = loadPOIsFromShard(shardId);
+            // Load POIs from all relevant shards
+            List<POIData> nearbyPOIs = new ArrayList<>();
+            for (long shardId : shardIds) {
+                nearbyPOIs.addAll(loadPOIsFromShard(shardId));
+            }
             
             // Find the closest POIs up to the limit
             List<POIData> closestPOIs = findClosestPOIs(nearbyPOIs, lat, lon, limit);
