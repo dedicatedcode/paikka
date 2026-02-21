@@ -24,11 +24,36 @@ Standard geocoding solutions often fall short for specific personal tracking nee
 - Boundary data is dependent on availability within the source nodes.
 - Optimized for read-heavy serving; updates require re-importing prepared data.
 - Focused strictly on reverse geocoding (coordinates to place).
+- **Highly Opinionated POI Selection:** PAIKKA is deliberately selective about which Points of Interest it imports. It only includes POIs with the following OSM tags:
+  - `amenity` (e.g., restaurant, school, hospital, fuel, atm)
+  - `shop` (e.g., supermarket, clothes, bakery)
+  - `tourism` (e.g., hotel, museum, attraction)
+  - `leisure` (e.g., fitness_centre, playground, park)
+  - `office` (e.g., company, government, insurance)
+  - `craft` (e.g., carpenter, electrician, painter)
+  - `healthcare` (e.g., hospital, pharmacy, clinic)
+  - `emergency` (e.g., ambulance_station, fire_hydrant)
+  - `historic` (e.g., monument, archaeological_site)
+  - `natural` (e.g., peak, cave, waterfall)
+  - `man_made` (e.g., tower, pier, windmill)
+  - `place` (e.g., city, town, village, neighborhood)
+  - `sport` (e.g., tennis, swimming, fitness)
+  - `public_transport` (e.g., stop_position, station)
+  - `railway` (stations only)
+  - `aeroway` (e.g., aerodrome, helipad)
+  - `building` (commercial, retail, industrial, office – but not residential or generic "yes")
+  
+  Many common OSM features are explicitly excluded, such as:
+  - Natural features like trees and grass
+  - Man-made structures like electric-poles, trash cans
+  - Amenities like benches, drinking water, and picnic tables
+  - Swimming pools and fountains
+  
+  If you need comprehensive POI coverage including all OSM features, **Nominatim** would be a better fit for your use case. While it would be technically possible to import the complete unfiltered dataset, this was never the intended design and has not been tested.
 
 ## Features
 
-- **Planet-scale data processing** - Import and process complete OpenStreetMap datasets
-- **High-performance geocoding** – Fast and efficient reverse geocoding
+- **High performance geocoding** – Fast and efficient reverse geocoding
 - **RESTful API** – Simple HTTP endpoints for geocoding operations
 - **Web Dashboard** – Administrative interface for monitoring and statistics
 - **Boundary support** – Administrative boundary data for hierarchical location information
@@ -150,7 +175,7 @@ docker run -d \
 ```bash
 # Filter and import a country extract
 ./scripts/filter_osm.sh germany-latest.osm.pbf germany-filtered.osm.pbf
-./scripts/import.sh germany-filtered.osm.pbf ./data 16g
+./scripts/import.sh germany-filtered.osm.pbf  --data-dir ./data --memory 16g
 
 # Import planet data with custom settings
 ./scripts/filter_osm.sh planet-latest.osm.pbf planet-filtered.osm.pbf
@@ -230,15 +255,7 @@ curl 'http://localhost:8080/api/v1/geometry/12345'
 
 ## Integration with Reitti
 
-To use PAIKKA with Reitti, configure the geocoding service in Reitti's settings:
-
-1. Start PAIKKA service on your server
-2. Set the admin password in your configuration
-3. In Reitti, go to Settings → Geocoding
-4. Add a new geocoding service:
-   - **Name**: PAIKKA
-   - **URL**: `http://your-paikka-server:8080/api/v1/reverse?lat={lat}&lon={lon}`
-   - **Priority**: Set as primary service
+TBA
 
 ## Getting Support
 
