@@ -56,11 +56,3 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-      - name: Build and push tile-cache image
-        uses: docker/build-push-action@v6
-        with:
-          context: ./docker/tiles-cache
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta-tile-cache.outputs.tags }}
-          labels: ${{ steps.meta-tile-cache.outputs.labels }}
