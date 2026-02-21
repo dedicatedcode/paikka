@@ -79,6 +79,38 @@ Standard geocoding solutions often fall short for specific personal tracking nee
 - Java 25 or higher
 - osmium-tool (for filtering OSM data)
 
+### Obtaining OSM Data
+
+Before you can import data into PAIKKA, you need to obtain an OSM PBF file. Here are the main sources:
+
+#### Geofabrik (Recommended for regional extracts)
+
+[Geofabrik](https://download.geofabrik.de/) provides regularly updated OSM extracts for various regions. Their data is already clipped to geographic boundaries, making it ideal for country or regional imports.
+
+**Popular downloads:**
+- [Europe](https://download.geofabrik.de/europe.html) – Individual countries and regions
+- [North America](https://download.geofabrik.de/north-america.html) – Countries and states
+- [Asia](https://download.geofabrik.de/asia.html) – Countries and regions
+- [Planet file](https://download.geofabrik.de/planet.html) – Complete global dataset
+
+**Example:** To download Germany:
+```bash
+wget https://download.geofabrik.de/europe/germany-latest.osm.pbf
+```
+
+#### Planet file (Full global dataset)
+
+For planet-scale imports, download the full planet file:
+- [Planet PBF](https://planet.openstreetmap.org/pbf/) – Updated weekly
+- [Planet mirrors](https://wiki.openstreetmap.org/wiki/Planet.osm.pbf#Mirrors) – Various download mirrors
+
+**Warning:** The planet file is extremely large (tens of gigabytes). Processing it requires significant time and resources. For most use cases, a regional extract from Geofabrik is sufficient.
+
+#### OSM.org (Direct exports)
+
+The [OpenStreetMap website](https://www.openstreetmap.org/export/) allows you to export custom areas using their "Export" feature. This is useful if you need a specific region that isn't available as a pre-made extract.
+
+
 ### Quick Start
 
 PAIKKA includes helper scripts to simplify data preparation:
