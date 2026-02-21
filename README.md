@@ -24,6 +24,32 @@ Standard geocoding solutions often fall short for specific personal tracking nee
 - Boundary data is dependent on availability within the source nodes.
 - Optimized for read-heavy serving; updates require re-importing prepared data.
 - Focused strictly on reverse geocoding (coordinates to place).
+- **Highly Opinionated POI Selection:** PAIKKA is deliberately selective about which Points of Interest it imports. It only includes POIs with the following OSM tags:
+  - `amenity` (e.g., restaurant, school, hospital, fuel, atm)
+  - `shop` (e.g., supermarket, clothes, bakery)
+  - `tourism` (e.g., hotel, museum, attraction)
+  - `leisure` (e.g., fitness_centre, playground, park)
+  - `office` (e.g., company, government, insurance)
+  - `craft` (e.g., carpenter, electrician, painter)
+  - `healthcare` (e.g., hospital, pharmacy, clinic)
+  - `emergency` (e.g., ambulance_station, fire_hydrant)
+  - `historic` (e.g., monument, archaeological_site)
+  - `natural` (e.g., peak, cave, waterfall)
+  - `man_made` (e.g., tower, pier, windmill)
+  - `place` (e.g., city, town, village, neighbourhood)
+  - `sport` (e.g., tennis, swimming, fitness)
+  - `public_transport` (e.g., stop_position, station)
+  - `railway` (stations only)
+  - `aeroway` (e.g., aerodrome, helipad)
+  - `building` (commercial, retail, industrial, office - but not residential or generic "yes")
+  
+  Many common OSM features are explicitly excluded, such as:
+  - Residential buildings and landuse
+  - Natural features like trees and grass
+  - Amenities like benches, drinking water, and picnic tables
+  - Swimming pools and fountains
+  
+  If you need comprehensive POI coverage including all OSM features, **Nominatim** would be a better fit for your use case. While it would be technically possible to import the complete unfiltered dataset, this was never the intended design and has not been tested.
 
 ## Features
 
