@@ -150,7 +150,7 @@ docker run -d \
 ```bash
 # Filter and import a country extract
 ./scripts/filter_osm.sh germany-latest.osm.pbf germany-filtered.osm.pbf
-./scripts/import.sh germany-filtered.osm.pbf ./data 16g
+./scripts/import.sh germany-filtered.osm.pbf  --data-dir ./data --memory 16g
 
 # Import planet data with custom settings
 ./scripts/filter_osm.sh planet-latest.osm.pbf planet-filtered.osm.pbf
@@ -230,15 +230,7 @@ curl 'http://localhost:8080/api/v1/geometry/12345'
 
 ## Integration with Reitti
 
-To use PAIKKA with Reitti, configure the geocoding service in Reitti's settings:
-
-1. Start PAIKKA service on your server
-2. Set the admin password in your configuration
-3. In Reitti, go to Settings → Geocoding
-4. Add a new geocoding service:
-   - **Name**: PAIKKA
-   - **URL**: `http://your-paikka-server:8080/api/v1/reverse?lat={lat}&lon={lon}`
-   - **Priority**: Set as primary service
+TBA
 
 ## Getting Support
 
