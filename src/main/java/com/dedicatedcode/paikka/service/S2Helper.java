@@ -65,4 +65,36 @@ public class S2Helper {
         lb.get(res);
         return res;
     }
+
+    /**
+     * Get neighboring S2 cell IDs at the same level as the given shard.
+     * This returns the 8 adjacent cells (north, south, east, west, and 4 diagonals).
+     */
+    public Set<Long> getNeighborShards(long shardId) {
+        Set<Long> neighbors = new HashSet<>();
+        
+        S2CellId cellId = new S2CellId(shardId);
+        
+        // Get all edge neighbors (4 direct neighbors)
+        S2CellId[] edgeNeighbors = new S2CellId[4];
+        cellId.getEdgeNeighbors(edgeNeighbors);
+        
+        for (S2CellId neighbor : edgeNeighbors) {
+            if (neighbor != null) {
+                neighbors.add(neighbor.id());
+            }
+        }
+        
+        // Get vertex neighbors (diagonal neighbors)
+        S2CellId[] vertexNeighbors = new S2CellId[4];
+        cellId.getVertexNeighbors(SHARD_LEVEL, vertexNeighbors);
+        
+        for (S2CellId neighbor : vertexNeighbors) {
+            if (neighbor != null) {
+                neighbors.add(neighbor.id());
+            }
+        }
+        
+        return neighbors;
+    }
 }
