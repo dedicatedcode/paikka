@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Paikka API Statistics</title>
+    <link rel="stylesheet" href="/css/dark-theme.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Paikka API Statistics</h1>
+            <p>Monitor API usage, performance, and trends</p>
+        </div>
+        
+        <div class="nav-links">
+            <a href="/admin/stats" class="active">Statistics</a>
+            <a href="/admin/map">Query Map</a>
+        </div>
+        
+        <div class="admin-actions">
+            <button 
+                hx-post="/admin/refresh-db" 
+                hx-target="#refresh-status"
+                hx-indicator="#refresh-spinner"
+                class="refresh-button">
+                Refresh Database
+            </button>
+            <span id="refresh-spinner" class="htmx-indicator">Refreshing...</span>
+            <div id="refresh-status"></div>
+        </div>
+        
+        <form hx-get="/admin/stats" hx-target="body" hx-trigger="submit" class="controls">
+            <div class="filter-group">
+                <label for="startDate">Start Date</label>
+                <input type="date" id="startDate" name="startDate" th:value="${startDate}">
+            </div>
+            
+            <div class="filter-group">
+                <label for="endDate">End Date</label>
+                <input type="date" id="endDate" name="endDate" th:value="${endDate}">
+            </div>
+            
+            <div class="filter-group">
+                <label for="endpoint">Endpoint</label>
+                <select id="endpoint" name="endpoint">
+                    <option value="">All endpoints</option>
+                    <option th:each="ep : ${availableEndpoints}" 
+                            th:value="${ep}" 
+                            th:text="${ep}"
+                            th:selected="${ep == selectedEndpoint}"></option>
+                </select>
+            </div>
+            
+            <div class="filter-group">
+                <label for="view">View</label>
+                <select id="view" name="view">
+                    <option value="daily" th:selected="${view == 'daily'}">Daily</option>
+                    <option value="hourly" th:selected="${view == 'hourly'}">Hourly</option>
+                </select>
+            </div>
+            
+            <div class="filter-group">
+                <label>&nbsp;</label>
+                <button type="submit">Update Stats</button>
+            </div>
+        </form>
+        
+        <div class="stats-grid">
+                <div class="stat-card">
+                    <h3>Query Volume</h3>
+                    <div class="chart-container">
+                        <canvas id="queryChart" width="400" height="200"></canvas>
+                    </div>
+                </div>
+                
+                <div class="stat-card">
+                    <h3>Response Time</h3>
+                    <div class="chart-container">
+                        <canvas id="responseTimeChart" width="400" height="200"></canvas>
+                    </div>
+                </div>
+                
+                <div class="stat-card">
+                    <h3>Status Codes</h3>
+                    <div class="chart-container">
+                        <canvas id="statusChart" width="400" height="200"></canvas>
+                    </div>
+                </div>
+            </div>
+            
+            <table class="stats-table">
+                <thead>
+                    <tr>
+                        <th th:text="${view == 'hourly' ? 'Hour' : 'Date'}">Date</th>
+                        <th class="metric">Queries</th>
+                        <th class="metric">Avg Response (ms)</th>
+                        <th class="metric">Avg Results</th>
+                        <th class="metric">Max Response (ms)</th>
+                        <th class="metric">Min Response (ms)</th>
+                        <th class="metric">Success</th>
+                        <th class="metric">Errors</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr th:each="stat : ${stats}">
+                        <td th:text="${view == 'hourly' ? (stat.date + ' ' + stat.hour + ':00') : stat.date}"></td>
+                        <td class="metric" th:text="${stat.queryCount}"></td>
+                        <td class="metric" th:text="${#numbers.formatDecimal(stat.avgResponseTime, 1, 1)}"></td>
+                        <td class="metric" th:text="${#numbers.formatDecimal(stat.avgResultCount, 1, 1)}"></td>
+                        <td class="metric" th:text="${stat.maxResponseTime}"></td>
+                        <td class="metric" th:text="${stat.minResponseTime}"></td>
+                        <td class="metric" th:text="${stat.successCount}"></td>
+                        <td class="metric" th:text="${stat.errorCount}"></td>
+                    </tr>
+                </tbody>
+            </table>
+    </div>
+    
+    <script th:inline="javascript">
+        (function() {
+            // Prepare data for charts
+            const statsData = /*[[${stats}]]*/ [];
+            const viewType = /*[[${view}]]*/ 'daily';
+            
+            const chartLabels = statsData.map(s => {
+                if (viewType === 'hourly') {
+                    const date = s.date || 'Unknown';
+                    const hour = s.hour !== null && s.hour !== undefined ? s.hour : 0;
+                    return `${date} ${hour.toString().padStart(2, '0')}:00`;
+                } else {
+                    return s.date || 'Unknown';
+                }
+            });
+            const queryCountsData = statsData.map(s => s.queryCount);
+            const responseTimesData = statsData.map(s => s.avgResponseTime);
+            const successData = statsData.map(s => s.successCount || 0);
+            const errorData = statsData.map(s => s.errorCount || 0);
+            
+            // Wait for Chart.js to be fully loaded
+            if (typeof Chart === 'undefined') {
+                console.error('Chart.js not loaded');
+                return;
+            }
+            
+            // Destroy existing charts if they exist
+            if (window.queryChart && typeof window.queryChart.destroy === 'function') {
+                window.queryChart.destroy();
+            }
+            if (window.responseTimeChart && typeof window.responseTimeChart.destroy === 'function') {
+                window.responseTimeChart.destroy();
+            }
+            if (window.statusChart && typeof window.statusChart.destroy === 'function') {
+                window.statusChart.destroy();
+            }
+            
+            // Query Volume Chart
+            window.queryChart = new Chart(document.getElementById('queryChart'), {
+                type: 'line',
+                data: {
+                    labels: chartLabels,
+                    datasets: [{
+                        label: 'Query Count',
+                        data: queryCountsData,
+                        borderColor: '#4a9eff',
+                        backgroundColor: 'rgba(74, 158, 255, 0.2)',
+                        tension: 0.1,
+                        fill: true
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            labels: {
+                                color: '#b0b0b0'
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            grid: {
+                                color: '#404040'
+                            },
+                            ticks: {
+                                color: '#b0b0b0'
+                            }
+                        },
+                        y: {
+                            beginAtZero: true,
+                            grid: {
+                                color: '#404040'
+                            },
+                            ticks: {
+                                color: '#b0b0b0'
+                            }
+                        }
+                    }
+                }
+            });
+            
+            // Response Time Chart
+            window.responseTimeChart = new Chart(document.getElementById('responseTimeChart'), {
+                type: 'line',
+                data: {
+                    labels: chartLabels,
+                    datasets: [{
+                        label: 'Avg Response Time (ms)',
+                        data: responseTimesData,
+                        borderColor: '#ff8800',
+                        backgroundColor: 'rgba(255, 136, 0, 0.2)',
+                        tension: 0.1,
+                        fill: true
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            labels: {
+                                color: '#b0b0b0'
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            grid: {
+                                color: '#404040'
+                            },
+                            ticks: {
+                                color: '#b0b0b0'
+                            }
+                        },
+                        y: {
+                            beginAtZero: true,
+                            grid: {
+                                color: '#404040'
+                            },
+                            ticks: {
+                                color: '#b0b0b0'
+                            }
+                        }
+                    }
+                }
+            });
+            
+            // Status Code Chart
+            window.statusChart = new Chart(document.getElementById('statusChart'), {
+                type: 'bar',
+                data: {
+                    labels: chartLabels,
+                    datasets: [{
+                        label: 'Success (2xx)',
+                        data: successData,
+                        backgroundColor: 'rgba(76, 175, 80, 0.8)',
+                        borderColor: '#4caf50',
+                        borderWidth: 1
+                    }, {
+                        label: 'Errors (4xx/5xx)',
+                        data: errorData,
+                        backgroundColor: 'rgba(244, 67, 54, 0.8)',
+                        borderColor: '#f44336',
+                        borderWidth: 1
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            labels: {
+                                color: '#b0b0b0'
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            stacked: true,
+                            grid: {
+                                color: '#404040'
+                            },
+                            ticks: {
+                                color: '#b0b0b0'
+                            }
+                        },
+                        y: {
+                            stacked: true,
+                            beginAtZero: true,
+                            grid: {
+                                color: '#404040'
+                            },
+                            ticks: {
+                                color: '#b0b0b0'
+                            }
+                        }
+                    }
+                }
+            });
+            
+            // Handle refresh database response
+            document.body.addEventListener('htmx:afterRequest', function(event) {
+                if (event.detail.pathInfo.requestPath === '/admin/refresh-db') {
+                    const statusDiv = document.getElementById('refresh-status');
+                    if (event.detail.successful) {
+                        const response = JSON.parse(event.detail.xhr.responseText);
+                        if (response.success) {
+                            statusDiv.innerHTML = '<span style="color: #4caf50;">✓ ' + response.message + '</span>';
+                        } else {
+                            statusDiv.innerHTML = '<span style="color: #f44336;">✗ ' + response.message + '</span>';
+                        }
+                    } else {
+                        statusDiv.innerHTML = '<span style="color: #f44336;">✗ Failed to refresh database</span>';
+                    }
+                    
+                    // Clear status message after 5 seconds
+                    setTimeout(function() {
+                        statusDiv.innerHTML = '';
+                    }, 5000);
+                }
+            });
+        })();
+    </script>
+    
+    <style>
+        .admin-actions {
+            margin: 20px 0;
+            padding: 15px;
+            background: #2a2a2a;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+        
+        .refresh-button {
+            padding: 10px 20px;
+            background: #4a9eff;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+        }
+        
+        .refresh-button:hover {
+            background: #3a8eef;
+        }
+        
+        .htmx-indicator {
+            display: none;
+            color: #ff8800;
+            font-style: italic;
+        }
+        
+        .htmx-request .htmx-indicator {
+            display: inline;
+        }
+        
+        #refresh-status {
+            font-size: 14px;
+        }
+    </style>
+</body>
+</html>

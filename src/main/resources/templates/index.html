@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Paikka - About</title>
+    <link rel="icon" th:href="@{/img/logo.svg}">
+    <link rel="apple-touch-icon" th:href="@{/img/logo.svg}">
+    <link rel="shortcut icon" type="image/x-icon" th:href="@{/img/logo.svg}">
+    <link rel="stylesheet" th:href="@{/css/leaflet.css}">
+    <script th:src="@{/js/vendor/leaflet.js}"></script>
+    <script th:src="@{/js/vendor/TileLayer.Grayscale.js}"></script>
+    <style>
+        :root {
+            --color-highlight: #F5DEB3FF;
+            --color-background-dark: #3b3b3b;
+            --color-background-dark-light: #4a4a4a;
+            --color-text-white: #e3e3e3;
+            --color-text-muted: #b0b0b0;
+        }
+        
+        body {
+            font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+            height: 100vh;
+            overflow: hidden;
+            position: relative;
+            background-color: #111;
+        }
+        
+        #index-map {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+        
+        .overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+            background: rgba(17, 17, 17, 0.6);
+            backdrop-filter: blur(8px);
+            -webkit-backdrop-filter: blur(8px);
+        }
+        
+        .container {
+            display: flex;
+            flex-direction: column;
+            background-color: var(--color-background-dark);
+            padding: 50px;
+            border-radius: 12px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.5);
+            width: 100%;
+            max-width: 650px;
+            max-height: 85vh;
+            overflow-y: auto;
+            border: 1px solid rgba(245, 222, 179, 0.3);
+        }
+
+        .logo {
+            width: 80px;
+            height: 80px;
+            margin: 0 auto 20px;
+            display: block;
+        }
+        
+        h1 {
+            text-align: center;
+            color: var(--color-highlight);
+            margin: 0 0 40px 0;
+            font-family: "Fraunces", serif;
+            font-size: 3.5rem;
+            font-weight: 200;
+            letter-spacing: -1px;
+        }
+        
+        h2 {
+            color: var(--color-highlight);
+            font-size: 1.4rem;
+            margin: 35px 0 15px 0;
+            font-weight: 500;
+            border-bottom: 1px solid rgba(245, 222, 179, 0.1);
+            padding-bottom: 8px;
+        }
+        
+        p {
+            color: var(--color-text-white);
+            line-height: 1.7;
+            margin-bottom: 20px;
+            font-size: 1.05rem;
+        }
+
+        a {
+            color: var(--color-highlight);
+            text-decoration: none;
+            border-bottom: 1px solid transparent;
+            transition: border-color 0.2s;
+        }
+
+        a:hover {
+            border-bottom-color: var(--color-highlight);
+        }
+        
+        ul {
+            padding-left: 20px;
+            margin-bottom: 25px;
+        }
+        
+        li {
+            color: var(--color-text-white);
+            margin-bottom: 12px;
+            line-height: 1.6;
+        }
+
+        strong {
+            color: var(--color-highlight);
+            font-weight: 600;
+        }
+        
+        .footer-actions {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+            margin-top: 40px;
+        }
+
+        .btn {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            padding: 14px;
+            border-radius: 6px;
+            font-weight: 500;
+            transition: all 0.3s;
+            font-size: 1rem;
+        }
+
+        .btn-primary {
+            background-color: var(--color-highlight);
+            color: var(--color-background-dark);
+            border: 1px solid var(--color-highlight);
+        }
+
+        .btn-primary:hover {
+            background-color: transparent;
+            color: var(--color-highlight);
+        }
+
+        .btn-outline {
+            background-color: transparent;
+            color: var(--color-highlight);
+            border: 1px solid var(--color-highlight);
+        }
+
+        .btn-outline:hover {
+            background-color: var(--color-highlight);
+            color: var(--color-background-dark);
+        }
+        
+        .limitations {
+            background-color: rgba(255, 107, 107, 0.05);
+            padding: 20px;
+            border-radius: 8px;
+            margin-top: 20px;
+            border-left: 4px solid #ff6b6b;
+        }
+        
+        .limitations h2 {
+            margin-top: 0;
+            color: #ff6b6b;
+            border-bottom: none;
+        }
+
+        /* Custom Scrollbar */
+        .container::-webkit-scrollbar {
+            width: 8px;
+        }
+        .container::-webkit-scrollbar-track {
+            background: var(--color-background-dark);
+        }
+        .container::-webkit-scrollbar-thumb {
+            background: var(--color-background-dark-light);
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body>
+    <div id="index-map"></div>
+    
+    <div class="overlay">
+        <div class="container">
+            <img class="logo" th:src="@{/img/logo.svg}" alt="Paikka logo">
+            <h1>Paikka</h1>
+            
+            <p>Paikka is a specialized reverse geocoding service designed to provide high-performance location resolution for <a href="https://github.com/dedicatedcode/reitti" target="_blank">Reitti</a>. The name comes from the Finnish word for "place" and is pronounced [ˈpɑi̯kːɑ].</p>
+            
+            <h2>Why Paikka?</h2>
+            <p>Standard geocoding solutions often fall short for specific personal tracking needs. Paikka was built to solve these challenges:</p>
+            <ul>
+                <li><strong>Meaningful Results:</strong> Optimized for the specific usage patterns and location data used by Reitti.</li>
+                <li><strong>Boundary Intelligence:</strong> Unlike many light geocoders, Paikka includes administrative boundaries on nodes when available.</li>
+                <li><strong>Resource Efficient:</strong> A computationally light solution that doesn't require massive infrastructure.</li>
+                <li><strong>Portable Data:</strong> Designed so prepared exports can be easily copied to and served from lightweight machines.</li>
+            </ul>
+            
+            <h2>Relation to Reitti</h2>
+            <p><a href="https://github.com/dedicatedcode/reitti" target="_blank">Reitti</a> is a comprehensive personal location tracking and analysis application that helps you understand your movement patterns and significant places. Paikka acts as the dedicated "location engine" for Reitti, converting raw GPS coordinates into human-readable context.</p>
+            
+            <div class="limitations">
+                <h2>Limitations</h2>
+                <ul>
+                    <li>Boundary data is dependent on availability within the source nodes.</li>
+                    <li>Optimized for read-heavy serving; updates require re-importing prepared data.</li>
+                    <li>Focused strictly on reverse geocoding (coordinates to place).</li>
+                </ul>
+            </div>
+            
+            <div class="footer-actions">
+                <a href="/admin/stats" class="btn btn-primary">Login to Dashboard</a>
+                <a href="https://github.com/dedicatedcode/paikka" target="_blank" class="btn btn-outline">View on GitHub</a>
+            </div>
+        </div>
+    </div>
+
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        const cities = [
+            { lat: 48.8566, lng: 2.3522, zoom: 12 },
+            { lat: 35.6762, lng: 139.6503, zoom: 11 },
+            { lat: 40.7128, lng: -74.0060, zoom: 11 },
+            { lat: 51.5074, lng: -0.1278, zoom: 11 },
+            { lat: 60.1699, lng: 24.9384, zoom: 12 } // Helsinki
+        ];
+        
+        const randomCity = cities[Math.floor(Math.random() * cities.length)];
+        const map = L.map('index-map', {
+            zoomControl: false,
+            attributionControl: false
+        }).setView([randomCity.lat, randomCity.lng], randomCity.zoom);
+        
+        L.tileLayer.grayscale('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 19
+        }).addTo(map);
+        
+        L.circleMarker([randomCity.lat, randomCity.lng], {
+            radius: 8,
+            fillColor: '#F5DEB3',
+            color: '#fff',
+            weight: 2,
+            opacity: 0.8,
+            fillOpacity: 0.4
+        }).addTo(map);
+        
+        map.dragging.disable();
+        map.touchZoom.disable();
+        map.doubleClickZoom.disable();
+        map.scrollWheelZoom.disable();
+    });
+</script>
+</body>
+</html>

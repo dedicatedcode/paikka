@@ -1,0 +1,27 @@
+namespace com.dedicatedcode.paikka.flatbuffers;
+
+table Geometry {
+  data: [ubyte];
+}
+
+table Boundary {
+  osm_id: long;
+  level: int;
+  name: string;
+  
+  // Minimum Bounding Rectangle (The "Outer" box)
+  min_x: double;
+  min_y: double;
+  max_x: double;
+  max_y: double;
+
+  // Maximum Interior Rectangle (The "Inner" box - The Fast Pass)
+  mir_min_x: double;
+  mir_min_y: double;
+  mir_max_x: double;
+  mir_max_y: double;
+
+  geometry: Geometry;
+}
+
+root_type Boundary;

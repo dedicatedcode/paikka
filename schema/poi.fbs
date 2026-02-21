@@ -1,0 +1,49 @@
+namespace com.dedicatedcode.paikka.flatbuffers;
+
+// Names (localized)
+table Name {
+  lang:string;
+  text:string;
+}
+
+// Address information
+table Address {
+  street:string;
+  house_number:string;
+  postcode:string;
+  city:string;
+  country:string;
+}
+
+// Administrative Hierarchy Item
+table HierarchyItem {
+  level:int;        // e.g., 2 = country, 4 = state, 9 = suburb
+  type:string;     // e.g., "country", "state", "city"
+  name:string;     // Localized name
+  osm_id:long;     // Reference to boundary geometry
+}
+
+// POI Geometry (stored as WKB bytes)
+table Geometry {
+  data:[ubyte];    // WKB binary
+}
+
+// The Main POI Table
+table POI {
+  id:long;
+  lat:float;
+  lon:float;
+  type:string;           // e.g., "shop"
+  subtype:string;        // e.g., "barber"
+  names:[Name];          // Localized names
+  address:Address;       // Address details
+  hierarchy:[HierarchyItem];  // Baked hierarchy
+  boundary:Geometry;     // POI's own shape (optional, for large POIs)
+}
+
+// Root table for POI lists in shards
+table POIList {
+  pois:[POI];
+}
+
+root_type POIList;
