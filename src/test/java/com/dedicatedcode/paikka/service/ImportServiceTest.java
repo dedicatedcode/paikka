@@ -49,7 +49,7 @@ class ImportServiceTest {
 
         GeometrySimplificationService geometrySimplificationService = new GeometrySimplificationService();
 
-        ImportService importService = new ImportService(new S2Helper(), geometrySimplificationService);
+        ImportService importService = new ImportService(new S2Helper(), geometrySimplificationService, config);
         importService.importData(tempImportFile.toString(), tempDataDir.toString());
     }
 

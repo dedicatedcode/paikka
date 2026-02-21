@@ -58,22 +58,6 @@ public class PaikkaConfiguration {
         this.dataDir = dataDir;
     }
     
-    public long getMaxNodes() {
-        return maxNodes;
-    }
-    
-    public void setMaxNodes(long maxNodes) {
-        this.maxNodes = maxNodes;
-    }
-    
-    public int getS2Level() {
-        return s2Level;
-    }
-    
-    public void setS2Level(int s2Level) {
-        this.s2Level = s2Level;
-    }
-    
     public int getMaxImportThreads() {
         return maxImportThreads;
     }
