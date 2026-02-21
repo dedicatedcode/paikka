@@ -89,7 +89,7 @@ public class S2Helper {
     public Map<Integer, Set<Long>> getExpandingNeighborRings(long centerShardId, int maxRings) {
         Map<Integer, Set<Long>> rings = new HashMap<>();
         Set<Long> visited = new HashSet<>();
-        visited.add(centerShardId); // Don't include center in any ring
+        visited.add(centerShardId);
         
         Set<Long> currentRing = Set.of(centerShardId);
         

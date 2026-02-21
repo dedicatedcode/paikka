@@ -125,7 +125,7 @@ The data directory is mounted at `/data` inside the container, and the service r
 
 # Import planet data with custom settings
 ./scripts/filter_osm.sh planet-latest.osm.pbf planet-filtered.osm.pbf
-./scripts/import.sh planet-filtered.osm.pbf /opt/paikka/data --memory 32g --threads 8
+./scripts/import.sh planet-filtered.osm.pbf --data-dir /opt/paikka/data --memory 32g --threads 8
 ```
 
 The scripts handle all the technical details including memory management, JVM optimization, and cleanup.

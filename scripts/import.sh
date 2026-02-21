@@ -14,7 +14,7 @@ usage() {
     echo ""
     echo "Options:"
     echo "  --jar-file PATH       Path to the PAIKKA jar file (auto-detected if not provided)"
-    echo "  --data-dir PATH       Directory to store processed data (default: ./data)"
+    echo "  --data-dir PATH       Directory to store processed data (default: ./)"
     echo "  --memory SIZE         JVM heap size (default: 16g)"
     echo "  --threads NUM         Maximum number of import threads (default: half of CPU cores)"
     echo "  -h, --help            Show this help message"
@@ -34,7 +34,7 @@ usage() {
 
 # Default values
 JAR_FILE=""
-DATA_DIR="./data"
+DATA_DIR="./"
 MEMORY="16g"
 THREADS=""
 PBF_FILE=""
