@@ -17,10 +17,12 @@ import org.roaringbitmap.longlong.Roaring64Bitmap;
 import org.rocksdb.*;
 import org.springframework.stereotype.Service;
 
+import java.io.IOException;
 import java.io.InputStream;
 import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.*;
@@ -78,6 +80,12 @@ public class ImportService {
         Path boundariesDbPath = dataDirectory.resolve("boundaries");
         Path gridIndexDbPath = dataDirectory.resolve("grid_index");
         Path nodeCacheDbPath = dataDirectory.resolve("node_cache");
+
+        // Clean up existing databases to ensure fresh start
+        cleanupDatabase(shardsDbPath);
+        cleanupDatabase(boundariesDbPath);
+        cleanupDatabase(gridIndexDbPath);
+        cleanupDatabase(nodeCacheDbPath);
 
         RocksDB.loadLibrary();
         ImportStatistics stats = new ImportStatistics();
@@ -1015,6 +1023,29 @@ public class ImportService {
                     formatCompactNumber(stats.getRocksDbWrites()));
         } else {
             System.out.printf("\033[1;32m✓ %s\033[0m \033[2m(%s)\033[0m%n", subPhaseName, formatTime(subPhaseTime));
+        }
+    }
+
+    /**
+     * Clean up existing RocksDB database directory to ensure fresh start.
+     * Recursively deletes the directory and all its contents if it exists.
+     */
+    private void cleanupDatabase(Path dbPath) {
+        if (Files.exists(dbPath)) {
+            try {
+                Files.walk(dbPath)
+                    .sorted((a, b) -> b.compareTo(a)) // Delete files before directories
+                    .forEach(path -> {
+                        try {
+                            Files.delete(path);
+                        } catch (IOException e) {
+                            System.err.println("Warning: Could not delete " + path + ": " + e.getMessage());
+                        }
+                    });
+                System.out.println("Cleaned up existing database: " + dbPath.getFileName());
+            } catch (IOException e) {
+                System.err.println("Warning: Could not clean up database " + dbPath + ": " + e.getMessage());
+            }
         }
     }
 
