@@ -22,6 +22,7 @@ public class SecurityConfig {
                         .requestMatchers("/api/**", "/css/**", "/js/**", "/images/**", "/img/**", "/fonts/**").permitAll()
                         .anyRequest().authenticated()
                 )
+                .csrf(csrf -> csrf.disable())
                 .formLogin(form -> form
                         .loginPage("/login")
                 )
@@ -43,6 +44,7 @@ public class SecurityConfig {
     public UserDetailsService userDetailsService(@Value("${paikka.admin.password}") String password) {
         UserDetails user = User.builder()
                 .username("admin")
+                .authorities("ROLE_ADMIN")
                 .password("{noop}"  + password)
                 .build();
         return new InMemoryUserDetailsManager(user);
