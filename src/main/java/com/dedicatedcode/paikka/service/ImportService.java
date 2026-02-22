@@ -198,7 +198,8 @@ public class ImportService {
         Thread.ofPlatform().daemon().start(() -> {
             while (stats.isRunning()) {
                 long elapsed = System.currentTimeMillis() - stats.getStartTime();
-                double seconds = elapsed / 1000.0;
+                long phaseElapsed = System.currentTimeMillis() - stats.getPhaseStartTime();
+                double phaseSeconds = phaseElapsed / 1000.0;
 
                 String phase = stats.getCurrentPhase();
                 StringBuilder sb = new StringBuilder();
@@ -208,7 +209,7 @@ public class ImportService {
                 }
 
                 if (phase.contains("1.1.1")) {
-                    long pbfPerSec = seconds > 0 ? (long)(stats.getEntitiesRead() / seconds) : 0;
+                    long pbfPerSec = phaseSeconds > 0 ? (long)(stats.getEntitiesRead() / phaseSeconds) : 0;
                     sb.append(String.format("\033[1;36m[%s]\033[0m \033[1mScanning PBF Structure\033[0m", formatTime(elapsed)));
                     sb.append(String.format(" │ \033[32mPBF Entities:\033[0m %s \033[33m(%s/s)\033[0m",
                                             formatCompactNumber(stats.getEntitiesRead()), formatCompactRate(pbfPerSec)));
@@ -217,7 +218,7 @@ public class ImportService {
                     sb.append(String.format(" │ \033[35mRelations:\033[0m %s", formatCompactNumber(stats.getRelationsFound())));
 
                 } else if (phase.contains("1.1.2")) {
-                    long nodesPerSec = seconds > 0 ? (long)(stats.getNodesCached() / seconds) : 0;
+                    long nodesPerSec = phaseSeconds > 0 ? (long)(stats.getNodesCached() / phaseSeconds) : 0;
                     sb.append(String.format("\033[1;36m[%s]\033[0m \033[1mCaching Node Coordinates\033[0m", formatTime(elapsed)));
                     sb.append(String.format(" │ \033[32mNodes Cached:\033[0m %s \033[33m(%s/s)\033[0m",
                                             formatCompactNumber(stats.getNodesCached()), formatCompactRate(nodesPerSec)));
@@ -225,14 +226,14 @@ public class ImportService {
                     sb.append(String.format(" │ \033[37mThreads:\033[0m %d", stats.getActiveThreads()));
 
                 } else if (phase.contains("1.2")) {
-                    long boundsPerSec = seconds > 0 ? (long)(stats.getBoundariesProcessed() / seconds) : 0;
+                    long boundsPerSec = phaseSeconds > 0 ? (long)(stats.getBoundariesProcessed() / phaseSeconds) : 0;
                     sb.append(String.format("\033[1;36m[%s]\033[0m \033[1mProcessing Admin Boundaries\033[0m", formatTime(elapsed)));
                     sb.append(String.format(" │ \033[32mBoundaries:\033[0m %s \033[33m(%s/s)\033[0m",
                                             formatCompactNumber(stats.getBoundariesProcessed()), formatCompactRate(boundsPerSec)));
                     sb.append(String.format(" │ \033[37mThreads:\033[0m %d", stats.getActiveThreads()));
 
                 } else if (phase.contains("2.1")) {
-                    long poisPerSec = seconds > 0 ? (long)(stats.getPoisProcessed() / seconds) : 0;
+                    long poisPerSec = phaseSeconds > 0 ? (long)(stats.getPoisProcessed() / phaseSeconds) : 0;
                     sb.append(String.format("\033[1;36m[%s]\033[0m \033[1mProcessing POIs & Sharding\033[0m", formatTime(elapsed)));
                     sb.append(String.format(" │ \033[32mPOIs Processed:\033[0m %s \033[33m(%s/s)\033[0m",
                                             formatCompactNumber(stats.getPoisProcessed()), formatCompactRate(poisPerSec)));
@@ -593,15 +594,15 @@ public class ImportService {
                                 buf.add((OsmNode) c.getEntity());
                                 if (buf.size() >= BATCH_SIZE) {
                                     nodeBatchQueue.put(new ArrayList<>(buf));
-                                    buf.clear();
                                     stats.setQueueSize(nodeBatchQueue.size());
+                                    buf.clear();
                                 }
                             }
                         }
                         if (!buf.isEmpty()) {
                             nodeBatchQueue.put(new ArrayList<>(buf));
-                            buf.clear();
                             stats.setQueueSize(nodeBatchQueue.size());
+                            buf.clear();
                         }
                     });
                 } catch (Exception e) {
@@ -625,8 +626,8 @@ public class ImportService {
                     try {
                         while (true) {
                             List<OsmNode> nodes = nodeBatchQueue.take();
-                            stats.setQueueSize(nodeBatchQueue.size());
                             if (nodes.isEmpty()) break;
+                            stats.setQueueSize(nodeBatchQueue.size());
 
                             List<byte[]> keys = new ArrayList<>(nodes.size());
                             for (OsmNode n : nodes) keys.add(s2Helper.longToByteArray(n.getId()));
@@ -1305,6 +1306,7 @@ public class ImportService {
         private volatile String currentPhase = "Initializing";
         private volatile boolean running = true;
         private final long startTime = System.currentTimeMillis();
+        private volatile long phaseStartTime = System.currentTimeMillis();
         private long totalTime;
 
         private volatile long datasetBytes;
@@ -1340,7 +1342,11 @@ public class ImportService {
         public void incrementActiveThreads() { activeThreads.incrementAndGet(); }
         public void decrementActiveThreads() { activeThreads.decrementAndGet(); }
         public String getCurrentPhase() { return currentPhase; }
-        public void setCurrentPhase(String phase) { this.currentPhase = phase; }
+        public void setCurrentPhase(String phase) { 
+            this.currentPhase = phase; 
+            this.phaseStartTime = System.currentTimeMillis();
+        }
+        public long getPhaseStartTime() { return phaseStartTime; }
         public boolean isRunning() { return running; }
         public void stop() { this.running = false; }
         public long getStartTime() { return startTime; }
