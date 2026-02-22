@@ -116,7 +116,7 @@ The [OpenStreetMap website](https://www.openstreetmap.org/export/) allows you to
 | Dataset | before filtering | filtered | time taken | reduction | imported | time taken | reduction |
 |---------|------------------|----------|------------|-----------|----------|------------|-----------|
 | Planet  | 86 GB            | 33 GB    | 50m        | ~60%      |          |            |           |
-|         |                  |          |            |           |          |            |           |
+| Germany | 4.7 GB           | 1.7 GB   | 2m         | ~61%      | 818MB    | 1h 40m     |           |
 |         |                  |          |            |           |          |            |           |
 |         |                  |          |            |           |          |            |           |
 
