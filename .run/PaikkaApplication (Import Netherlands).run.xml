@@ -1,0 +1,11 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="PaikkaApplication (Import Netherlands)" type="SpringBootApplicationConfigurationType" factoryName="Spring Boot">
+    <option name="ACTIVE_PROFILES" value="dev" />
+    <module name="paikka" />
+    <option name="PROGRAM_PARAMETERS" value="--import --pbf-file netherlands-filtered.pbf --data-dir data/" />
+    <option name="SPRING_BOOT_MAIN_CLASS" value="com.dedicatedcode.paikka.PaikkaApplication" />
+    <method v="2">
+      <option name="Make" enabled="true" />
+    </method>
+  </configuration>
+</component>
