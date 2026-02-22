@@ -23,7 +23,9 @@ import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.*;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -209,7 +211,7 @@ public class ImportService {
                     long pbfPerSec = seconds > 0 ? (long)(stats.getEntitiesRead() / seconds) : 0;
                     sb.append(String.format("\033[1;36m[%s]\033[0m \033[1mScanning PBF Structure\033[0m", formatTime(elapsed)));
                     sb.append(String.format(" │ \033[32mPBF Entities:\033[0m %s \033[33m(%s/s)\033[0m",
-                                            formatCompactNumber(stats.getEntitiesRead()), formatCompactNumber(pbfPerSec)));
+                                            formatCompactNumber(stats.getEntitiesRead()), formatCompactRate(pbfPerSec)));
                     sb.append(String.format(" │ \033[34mWays Found:\033[0m %s", formatCompactNumber(stats.getWaysProcessed())));
                     sb.append(String.format(" │ \033[37mNodes Found:\033[0m %s", formatCompactNumber(stats.getNodesFound())));
                     sb.append(String.format(" │ \033[35mRelations:\033[0m %s", formatCompactNumber(stats.getRelationsFound())));
@@ -218,7 +220,7 @@ public class ImportService {
                     long nodesPerSec = seconds > 0 ? (long)(stats.getNodesCached() / seconds) : 0;
                     sb.append(String.format("\033[1;36m[%s]\033[0m \033[1mCaching Node Coordinates\033[0m", formatTime(elapsed)));
                     sb.append(String.format(" │ \033[32mNodes Cached:\033[0m %s \033[33m(%s/s)\033[0m",
-                                            formatCompactNumber(stats.getNodesCached()), formatCompactNumber(nodesPerSec)));
+                                            formatCompactNumber(stats.getNodesCached()), formatCompactRate(nodesPerSec)));
                     sb.append(String.format(" │ \033[36mQueue:\033[0m %s", formatCompactNumber(stats.getQueueSize())));
                     sb.append(String.format(" │ \033[37mThreads:\033[0m %d", stats.getActiveThreads()));
 
@@ -226,14 +228,14 @@ public class ImportService {
                     long boundsPerSec = seconds > 0 ? (long)(stats.getBoundariesProcessed() / seconds) : 0;
                     sb.append(String.format("\033[1;36m[%s]\033[0m \033[1mProcessing Admin Boundaries\033[0m", formatTime(elapsed)));
                     sb.append(String.format(" │ \033[32mBoundaries:\033[0m %s \033[33m(%s/s)\033[0m",
-                                            formatCompactNumber(stats.getBoundariesProcessed()), formatCompactNumber(boundsPerSec)));
+                                            formatCompactNumber(stats.getBoundariesProcessed()), formatCompactRate(boundsPerSec)));
                     sb.append(String.format(" │ \033[37mThreads:\033[0m %d", stats.getActiveThreads()));
 
                 } else if (phase.contains("2.1")) {
                     long poisPerSec = seconds > 0 ? (long)(stats.getPoisProcessed() / seconds) : 0;
                     sb.append(String.format("\033[1;36m[%s]\033[0m \033[1mProcessing POIs & Sharding\033[0m", formatTime(elapsed)));
                     sb.append(String.format(" │ \033[32mPOIs Processed:\033[0m %s \033[33m(%s/s)\033[0m",
-                                            formatCompactNumber(stats.getPoisProcessed()), formatCompactNumber(poisPerSec)));
+                                            formatCompactNumber(stats.getPoisProcessed()), formatCompactRate(poisPerSec)));
                     sb.append(String.format(" │ \033[36mQueue:\033[0m %s", formatCompactNumber(stats.getQueueSize())));
                     sb.append(String.format(" │ \033[37mThreads:\033[0m %d", stats.getActiveThreads()));
 
@@ -244,10 +246,10 @@ public class ImportService {
                 sb.append(String.format(" │ \033[31mHeap:\033[0m %s", stats.getMemoryStats()));
 
                 if (isTty) {
-                    System.out.print(sb.toString());
+                    System.out.print(sb);
                     System.out.flush();
                 } else {
-                    System.out.println(sb.toString());
+                    System.out.println(sb);
                 }
 
                 try {
@@ -300,6 +302,8 @@ public class ImportService {
                         OsmNode node = (OsmNode) container.getEntity();
                         if (isPoi(node)) {
                             PoiIndexRec rec = buildPoiIndexRecFromEntity(node);
+                            rec.lat = node.getLatitude();
+                            rec.lon = node.getLongitude();
                             byte[] key = buildPoiKey((byte) 'N', node.getId());
                             poiWriter.put(key, encodePoiIndexRec(rec));
                             neededWriter.put(s2Helper.longToByteArray(node.getId()), ONE);
@@ -322,6 +326,7 @@ public class ImportService {
                             wayWriter.put(s2Helper.longToByteArray(way.getId()), s2Helper.longArrayToByteArray(nodeIds));
                             if (isPoi) {
                                 PoiIndexRec rec = buildPoiIndexRecFromEntity(way);
+                                // lat/lon remain NaN for ways — resolved in Pass 2 reader
                                 byte[] key = buildPoiKey((byte) 'W', way.getId());
                                 poiWriter.put(key, encodePoiIndexRec(rec));
                             }
@@ -369,11 +374,11 @@ public class ImportService {
                 if (!bufferToFlush.isEmpty()) {
                     writeShardBatch(bufferToFlush, shardsDb, stats);
                 }
-            } catch (Exception e) {
+            } catch (Exception _) {
             }
         };
 
-        try (PeriodicFlusher shardFlusher = PeriodicFlusher.start("shard-buffer-flush", 10, 10, flushTask)) {
+        try (PeriodicFlusher _ = PeriodicFlusher.start("shard-buffer-flush", 10, 10, flushTask)) {
             BlockingQueue<List<PoiQueueItem>> queue = new LinkedBlockingQueue<>(5000);
             int numProcessors = Math.max(1, config.getMaxImportThreads());
             CountDownLatch latch = new CountDownLatch(numProcessors);
@@ -383,8 +388,11 @@ public class ImportService {
                         () -> new HierarchyCache(boundariesDb, gridIndexDb, s2Helper)
                 );
 
+                // ─── Reader thread: read chunks, sort each by S2CellId, emit ───
                 Thread readerThread = Thread.ofVirtual().start(() -> {
-                    List<PoiQueueItem> buf = new ArrayList<>(2000);
+                    final int SORT_CHUNK_SIZE = 500_000;
+                    List<PoiQueueItem> chunk = new ArrayList<>(SORT_CHUNK_SIZE);
+
                     try (RocksIterator it = poiIndexDb.newIterator()) {
                         it.seekToFirst();
                         while (it.isValid()) {
@@ -395,19 +403,31 @@ public class ImportService {
                             PoiIndexRec rec = decodePoiIndexRec(value);
                             rec.kind = kind;
                             rec.id = id;
-                            buf.add(new PoiQueueItem(rec));
-                            if (buf.size() >= 2000) {
-                                queue.put(new ArrayList<>(buf));
-                                buf.clear();
-                                stats.setQueueSize(queue.size());
+
+                            // For way POIs, lat/lon is NaN — resolve from nodeCache/wayIndexDb
+                            if (Double.isNaN(rec.lat) && kind == 'W') {
+                                resolveWayCenter(rec, nodeCache, wayIndexDb);
                             }
+
+                            if (!Double.isNaN(rec.lat) && !Double.isNaN(rec.lon)) {
+                                PoiQueueItem item = new PoiQueueItem(rec, S2CellId.fromLatLng(S2LatLng.fromDegrees(rec.lat, rec.lon)).id());
+                                chunk.add(item);
+                            }
+
+                            if (chunk.size() >= SORT_CHUNK_SIZE) {
+                                sortAndEmitChunk(chunk, queue, stats);
+                                chunk.clear();
+                            }
+
                             it.next();
                         }
-                        if (!buf.isEmpty()) {
-                            queue.put(new ArrayList<>(buf));
-                            buf.clear();
-                            stats.setQueueSize(queue.size());
+
+                        // Emit remaining items
+                        if (!chunk.isEmpty()) {
+                            sortAndEmitChunk(chunk, queue, stats);
+                            chunk.clear();
                         }
+
                     } catch (Exception ignored) {
                     } finally {
                         for (int i = 0; i < numProcessors; i++) {
@@ -421,6 +441,7 @@ public class ImportService {
                     }
                 });
 
+                // ─── Worker threads: hierarchy resolution + sharding (unchanged) ───
                 for (int i = 0; i < numProcessors; i++) {
                     executor.submit(() -> {
                         stats.incrementActiveThreads();
@@ -436,16 +457,12 @@ public class ImportService {
                                 for (PoiQueueItem item : batch) {
                                     try {
                                         PoiIndexRec rec = item.rec;
-                                        double lat, lon;
+                                        double lat = rec.lat;
+                                        double lon = rec.lon;
                                         byte[] boundaryWkb = null;
 
-                                        if (rec.kind == 'N') {
-                                            byte[] v = nodeCache.get(s2Helper.longToByteArray(rec.id));
-                                            if (v == null || v.length != 16) continue;
-                                            ByteBuffer bb = ByteBuffer.wrap(v);
-                                            lat = bb.getDouble(0);
-                                            lon = bb.getDouble(8);
-                                        } else {
+                                        // For way POIs, still compute boundary WKB geometry
+                                        if (rec.kind == 'W') {
                                             List<Coordinate> coords = buildCoordinatesFromWay(rec.id, nodeCache, wayIndexDb);
                                             if (coords != null && coords.size() >= 3) {
                                                 if (!coords.getFirst().equals2D(coords.getLast())) {
@@ -455,27 +472,9 @@ public class ImportService {
                                                     LinearRing shell = geometryFactory.createLinearRing(coords.toArray(new Coordinate[0]));
                                                     Polygon poly = geometryFactory.createPolygon(shell);
                                                     if (poly.isValid()) {
-                                                        Coordinate c = poly.getCentroid().getCoordinate();
-                                                        lat = c.y; lon = c.x;
                                                         boundaryWkb = new WKBWriter().write(poly);
-                                                    } else {
-                                                        Coordinate c = coords.get(0);
-                                                        lon = c.x; lat = c.y;
                                                     }
-                                                } else {
-                                                    Coordinate c = coords.get(0);
-                                                    lon = c.x; lat = c.y;
                                                 }
-                                            } else {
-                                                byte[] wayNodes = wayIndexDb.get(s2Helper.longToByteArray(rec.id));
-                                                if (wayNodes == null) continue;
-                                                long[] nids = s2Helper.byteArrayToLongArray(wayNodes);
-                                                if (nids.length == 0) continue;
-                                                byte[] v = nodeCache.get(s2Helper.longToByteArray(nids[0]));
-                                                if (v == null || v.length != 16) continue;
-                                                ByteBuffer bb = ByteBuffer.wrap(v);
-                                                lat = bb.getDouble(0);
-                                                lon = bb.getDouble(8);
                                             }
                                         }
 
@@ -484,7 +483,8 @@ public class ImportService {
                                         PoiData poiData = createPoiDataFromIndex(rec, lat, lon, hierarchy, boundaryWkb);
                                         localShardBuffer.computeIfAbsent(s2Helper.getShardId(poiData.lat(), poiData.lon()), k -> new ArrayList<>()).add(poiData);
                                         stats.incrementPoisProcessed();
-                                    } catch (Exception ignored) { }
+                                    } catch (Exception ignored) {
+                                    }
                                 }
 
                                 if (localShardBuffer.size() > 5000) {
@@ -514,6 +514,67 @@ public class ImportService {
         }
     }
 
+    /**
+     * Sorts a chunk of POI items by S2CellId (Hilbert curve order) for spatial
+     * locality, then emits to the processing queue in batches.
+     * Memory stays bounded: only one chunk is in memory at a time.
+     */
+    private void sortAndEmitChunk(List<PoiQueueItem> chunk,
+                                  BlockingQueue<List<PoiQueueItem>> queue,
+                                  ImportStatistics stats) throws InterruptedException {
+        chunk.sort((a, b) -> Long.compareUnsigned(a.s2SortKey, b.s2SortKey));
+
+        List<PoiQueueItem> buf = new ArrayList<>(2000);
+        for (PoiQueueItem item : chunk) {
+            buf.add(item);
+            if (buf.size() >= 2000) {
+                queue.put(new ArrayList<>(buf));
+                buf.clear();
+                stats.setQueueSize(queue.size());
+            }
+        }
+        if (!buf.isEmpty()) {
+            queue.put(new ArrayList<>(buf));
+            buf.clear();
+            stats.setQueueSize(queue.size());
+        }
+    }
+
+    private void resolveWayCenter(PoiIndexRec rec, RocksDB nodeCache, RocksDB wayIndexDb) {
+        try {
+            byte[] wayNodes = wayIndexDb.get(s2Helper.longToByteArray(rec.id));
+            if (wayNodes == null) return;
+            long[] nids = s2Helper.byteArrayToLongArray(wayNodes);
+            if (nids.length == 0) return;
+
+            List<byte[]> keys = new ArrayList<>(nids.length);
+            for (long nid : nids) keys.add(s2Helper.longToByteArray(nid));
+            List<byte[]> values = nodeCache.multiGetAsList(keys);
+
+            double minX = Double.MAX_VALUE, maxX = -Double.MAX_VALUE;
+            double minY = Double.MAX_VALUE, maxY = -Double.MAX_VALUE;
+            int found = 0;
+
+            for (byte[] v : values) {
+                if (v != null && v.length == 16) {
+                    ByteBuffer bb = ByteBuffer.wrap(v);
+                    double lat = bb.getDouble(0);
+                    double lon = bb.getDouble(8);
+                    if (lat < minY) minY = lat;
+                    if (lat > maxY) maxY = lat;
+                    if (lon < minX) minX = lon;
+                    if (lon > maxX) maxX = lon;
+                    found++;
+                }
+            }
+
+            if (found > 0) {
+                rec.lat = (minY + maxY) / 2.0;
+                rec.lon = (minX + maxX) / 2.0;
+            }
+        } catch (Exception ignored) {
+        }
+    }
     private void cacheNeededNodeCoordinates(Path pbfFile, RocksDB neededNodesDb, RocksDB nodeCache, ImportStatistics stats) throws Exception {
         final int BATCH_SIZE = 50_000;
 
@@ -1038,6 +1099,11 @@ public class ImportService {
 
     private String formatCompactNumber(long n) {
         if (n < 1000) return String.valueOf(n);
+        if (n < 1_000_000) return String.format("%.2fk", n / 1000.0);
+        return String.format("%.3fM", n / 1_000_000.0);
+    }
+    private String formatCompactRate(long n) {
+        if (n < 1000) return String.valueOf(n);
         if (n < 1_000_000) return String.format("%.1fk", n / 1000.0);
         return String.format("%.1fM", n / 1_000_000.0);
     }
@@ -1335,7 +1401,7 @@ public class ImportService {
         private final ImportStatistics stats;
         private final int maxOps;
         private final Object lock = new Object();
-        private WriteBatch batch = new WriteBatch();
+        private final WriteBatch batch = new WriteBatch();
         private int ops = 0;
 
         RocksBatchWriter(RocksDB db, int maxOps, ImportStatistics stats) {
@@ -1348,16 +1414,6 @@ public class ImportService {
         public void put(byte[] key, byte[] value) throws RocksDBException {
             synchronized (lock) {
                 batch.put(key, value);
-                ops++;
-                if (ops >= maxOps) {
-                    flushInternal();
-                }
-            }
-        }
-
-        public void delete(byte[] key) throws RocksDBException {
-            synchronized (lock) {
-                batch.delete(key);
                 ops++;
                 if (ops >= maxOps) {
                     flushInternal();
@@ -1432,6 +1488,8 @@ public class ImportService {
     private static class PoiIndexRec {
         byte kind;
         long id;
+        double lat = Double.NaN;
+        double lon = Double.NaN;
         String type;
         String subtype;
         List<NameData> names;
@@ -1442,9 +1500,7 @@ public class ImportService {
         String country;
     }
 
-    private static class PoiQueueItem {
-        final PoiIndexRec rec;
-        PoiQueueItem(PoiIndexRec rec) { this.rec = rec; }
+    private record PoiQueueItem(PoiIndexRec rec, long s2SortKey) {
     }
 
     private static class RelRec {
@@ -1536,9 +1592,12 @@ public class ImportService {
         byte[] pcB = bytes(rec.postcode);
         byte[] cityB = bytes(rec.city);
         byte[] countryB = bytes(rec.country);
-        int cap = 4 + typeB.length + 4 + subtypeB.length + namesSize
+        int cap = 16 // ← NEW: 8 bytes lat + 8 bytes lon
+                + 4 + typeB.length + 4 + subtypeB.length + namesSize
                 + 4 + streetB.length + 4 + hnB.length + 4 + pcB.length + 4 + cityB.length + 4 + countryB.length;
         ByteBuffer bb = ByteBuffer.allocate(cap);
+        bb.putDouble(rec.lat);
+        bb.putDouble(rec.lon);
         putBytes(bb, typeB);
         putBytes(bb, subtypeB);
         bb.putInt(rec.names != null ? rec.names.size() : 0);
@@ -1559,6 +1618,8 @@ public class ImportService {
     private PoiIndexRec decodePoiIndexRec(byte[] b) {
         ByteBuffer bb = ByteBuffer.wrap(b);
         PoiIndexRec rec = new PoiIndexRec();
+        rec.lat = bb.getDouble();
+        rec.lon = bb.getDouble();
         rec.type = getString(bb);
         rec.subtype = getString(bb);
         int n = bb.getInt();
