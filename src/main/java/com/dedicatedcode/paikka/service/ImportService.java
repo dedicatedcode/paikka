@@ -594,15 +594,15 @@ public class ImportService {
                                 buf.add((OsmNode) c.getEntity());
                                 if (buf.size() >= BATCH_SIZE) {
                                     nodeBatchQueue.put(new ArrayList<>(buf));
-                                    stats.setQueueSize(nodeBatchQueue.size());
                                     buf.clear();
+                                    stats.setQueueSize(nodeBatchQueue.size());
                                 }
                             }
                         }
                         if (!buf.isEmpty()) {
                             nodeBatchQueue.put(new ArrayList<>(buf));
-                            stats.setQueueSize(nodeBatchQueue.size());
                             buf.clear();
+                            stats.setQueueSize(nodeBatchQueue.size());
                         }
                     });
                 } catch (Exception e) {
@@ -626,8 +626,8 @@ public class ImportService {
                     try {
                         while (true) {
                             List<OsmNode> nodes = nodeBatchQueue.take();
-                            if (nodes.isEmpty()) break;
                             stats.setQueueSize(nodeBatchQueue.size());
+                            if (nodes.isEmpty()) break;
 
                             List<byte[]> keys = new ArrayList<>(nodes.size());
                             for (OsmNode n : nodes) keys.add(s2Helper.longToByteArray(n.getId()));
