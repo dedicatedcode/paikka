@@ -26,7 +26,7 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.httpBasic;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
@@ -74,12 +74,9 @@ class GeocodingControllerIntegrationTest {
 
             // Perform admin refresh using MockMvc
             String adminRefreshUrl = "/admin/refresh-db";
-            String auth = "admin:testpassword";
-            String encodedAuth = Base64.getEncoder().encodeToString(auth.getBytes());
 
             MvcResult adminResult = staticMockMvc.perform(post(adminRefreshUrl)
-                            .header("Authorization", "Basic " + encodedAuth)
-                            .with(csrf()) // Add CSRF token for POST request
+                            .with(httpBasic("admin", "testpassword")) // Use httpBasic for authentication
                             .contentType(MediaType.APPLICATION_JSON))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.success").value(true))
@@ -144,7 +141,7 @@ class GeocodingControllerIntegrationTest {
                 .andReturn();
 
         Map<String, Object> responseBody = objectMapper.readValue(result.getResponse().getContentAsString(), Map.class);
-        List<Map<String, Object>> results = (List<Map<String, Object>>) responseBody.get("results");
+        List<Map<String, Object>> results = (List<String, Object>>) responseBody.get("results");
 
         // Assert that results contain something related to Monaco
         boolean foundMonaco = results.stream()
