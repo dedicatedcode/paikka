@@ -3,6 +3,7 @@ package com.dedicatedcode.paikka.service;
 import com.dedicatedcode.paikka.config.PaikkaConfiguration;
 import com.dedicatedcode.paikka.flatbuffers.*;
 import com.dedicatedcode.paikka.flatbuffers.Geometry;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.geometry.S2CellId;
 import com.google.common.geometry.S2LatLng;
 import com.google.common.geometry.S2LatLngRect;
@@ -26,6 +27,9 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.time.Instant;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -176,7 +180,7 @@ public class ImportService {
 
                 printFinalStatistics(stats);
                 printSuccess();
-
+                writeMetadataFile(pbfFile, dataDirectory);
             } catch (Exception e) {
                 stats.stop();
                 printError("IMPORT FAILED: " + e.getMessage());
@@ -190,6 +194,24 @@ public class ImportService {
                 System.err.println("Warning: Failed to delete temporary databases: " + e.getMessage());
             }
         }
+    }
+
+    private void writeMetadataFile(Path pbfFile, Path dataDirectory) throws IOException {
+        Path metadataPath = dataDirectory.resolve("paikka_metadata.json");
+        Instant now = Instant.now();
+        String importTimestamp = DateTimeFormatter.ISO_INSTANT.format(now);
+        String dataVersion = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss").withZone(ZoneOffset.UTC).format(now);
+        ObjectMapper objectMapper = new ObjectMapper();
+        PaikkaMetadata metadata = new PaikkaMetadata(
+                importTimestamp,
+                dataVersion,
+                pbfFile.getFileName().toString(),
+                S2Helper.GRID_LEVEL,
+                "1.0.0"
+        );
+
+        objectMapper.writeValue(metadataPath.toFile(), metadata);
+        System.out.println("\n\033[1;32mMetadata file written to: " + metadataPath + "\033[0m");
     }
 
     private void startProgressReporter(ImportStatistics stats) {
@@ -1699,4 +1721,5 @@ public class ImportService {
         bb.get(dst);
         return new String(dst, StandardCharsets.UTF_8);
     }
+
 }

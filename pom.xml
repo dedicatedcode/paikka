@@ -126,6 +126,14 @@
             <groupId>org.thymeleaf.extras</groupId>
             <artifactId>thymeleaf-extras-springsecurity6</artifactId>
         </dependency>
+
+        <!-- Test dependencies for tar.gz extraction -->
+        <dependency>
+            <groupId>org.apache.commons</groupId>
+            <artifactId>commons-compress</artifactId>
+            <version>1.26.1</version>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>
