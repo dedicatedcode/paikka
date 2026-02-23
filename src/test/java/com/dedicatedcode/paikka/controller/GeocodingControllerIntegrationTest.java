@@ -17,7 +17,6 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
-import org.testcontainers.junit.jupiter.Testcontainers; // Keep Testcontainers annotation for consistency, though not strictly needed for this specific use case anymore
 
 import java.io.BufferedInputStream;
 import java.io.IOException;
@@ -32,7 +31,6 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
-@Testcontainers // Keeping this annotation, as Testcontainers might be used for other purposes in the future, or if we decide to use it for a real container.
 class GeocodingControllerIntegrationTest {
 
     @LocalServerPort
@@ -51,7 +49,7 @@ class GeocodingControllerIntegrationTest {
         dataDirectory = hostTempDir; // Store it for later use in BeforeAll
 
         // Point Spring Boot's data-dir to the temporary directory
-        registry.add("paikka.data-dir", () -> hostTempDir.toString());
+        registry.add("paikka.data-dir", hostTempDir::toString);
         registry.add("paikka.import-mode", () -> "false");
         registry.add("paikka.admin.password", () -> "testpassword"); // Set a password for admin endpoint
     }
@@ -63,7 +61,7 @@ class GeocodingControllerIntegrationTest {
             Files.createDirectories(dataDirectory);
 
             // Extract data.tar.gz to the temporary data directory
-            Path tarGzPath = Paths.get("src/test/resources/data.tar.gz");
+            Path tarGzPath = Paths.get("src/test/resources/data-monaco.tar.xz");
             if (!Files.exists(tarGzPath)) {
                 throw new IllegalStateException("Test resource data.tar.gz not found at " + tarGzPath.toAbsolutePath());
             }
