@@ -1,8 +1,8 @@
 package com.dedicatedcode.paikka.controller;
 
-import org.apache.commons.compress.archivers.tar.TarArchiveEntry;
-import org.apache.commons.compress.archivers.tar.TarArchiveInputStream;
-import org.apache.commons.compress.compressors.gzip.GzipCompressorInputStream;
+import org.apache.commons.compress.archivers.tar.TarArchiveEntry; // This import will be removed as it's no longer needed
+import org.apache.commons.compress.archivers.tar.TarArchiveInputStream; // This import will be removed as it's no longer needed
+import org.apache.commons.compress.compressors.gzip.GzipCompressorInputStream; // This import will be removed as it's no longer needed
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -27,6 +27,8 @@ import java.nio.file.Paths;
 import java.util.Base64;
 import java.util.List;
 import java.util.Map;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -60,13 +62,13 @@ class GeocodingControllerIntegrationTest {
             // Ensure the data directory exists (it should, as created in DynamicPropertySource)
             Files.createDirectories(dataDirectory);
 
-            // Extract data.tar.gz to the temporary data directory
-            Path tarGzPath = Paths.get("src/test/resources/data-monaco.tar.xz");
-            if (!Files.exists(tarGzPath)) {
-                throw new IllegalStateException("Test resource data.tar.gz not found at " + tarGzPath.toAbsolutePath());
+            // Extract data-monaco.zip to the temporary data directory
+            Path zipPath = Paths.get("src/test/resources/data-monaco.zip");
+            if (!Files.exists(zipPath)) {
+                throw new IllegalStateException("Test resource data-monaco.zip not found at " + zipPath.toAbsolutePath());
             }
-            extractTarGz(tarGzPath, dataDirectory);
-            System.out.println("Extracted data.tar.gz to: " + dataDirectory.toAbsolutePath());
+            extractZip(zipPath, dataDirectory);
+            System.out.println("Extracted data-monaco.zip to: " + dataDirectory.toAbsolutePath());
 
             // Perform admin refresh using TestRestTemplate
             String adminRefreshUrl = "http://localhost:" + staticPort + "/admin/refresh-db";
@@ -89,18 +91,13 @@ class GeocodingControllerIntegrationTest {
         }
     }
 
-    private static void extractTarGz(Path tarGzFilePath, Path destinationDir) throws IOException {
-        try (InputStream fi = Files.newInputStream(tarGzFilePath);
+    private static void extractZip(Path zipFilePath, Path destinationDir) throws IOException {
+        try (InputStream fi = Files.newInputStream(zipFilePath);
              BufferedInputStream bi = new BufferedInputStream(fi);
-             GzipCompressorInputStream gzi = new GzipCompressorInputStream(bi);
-             TarArchiveInputStream tar = new TarArchiveInputStream(gzi)) {
+             ZipInputStream zip = new ZipInputStream(bi)) {
 
-            TarArchiveEntry entry;
-            while ((entry = tar.getNextTarEntry()) != null) {
-                if (!tar.canReadEntryData(entry)) {
-                    System.err.println("Cannot read entry " + entry.getName());
-                    continue;
-                }
+            ZipEntry entry;
+            while ((entry = zip.getNextEntry()) != null) {
                 Path file = destinationDir.resolve(entry.getName()).normalize();
                 if (!file.startsWith(destinationDir)) {
                     // Security check: prevent path traversal
@@ -110,8 +107,9 @@ class GeocodingControllerIntegrationTest {
                     Files.createDirectories(file);
                 } else {
                     Files.createDirectories(file.getParent());
-                    Files.copy(tar, file);
+                    Files.copy(zip, file);
                 }
+                zip.closeEntry();
             }
         }
     }
