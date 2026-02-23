@@ -170,7 +170,6 @@ public class ImportService {
                 currentStep = 4;
                 stats.setCurrentPhase("2.1: Processing POIs & Sharding");
                 pass2PoiShardingFromIndex(nodeCache, wayIndexDb, shardsDb, boundariesDb, poiIndexDb, gridIndexDb, stats);
-
                 printPhaseSummary("PASS 2", pass2Start, stats);
 
                 stats.setTotalTime(System.currentTimeMillis() - totalStartTime);
