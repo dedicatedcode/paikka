@@ -13,6 +13,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Instant;
+import java.time.format.DateTimeParseException;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
@@ -28,12 +29,12 @@ public class MetadataService {
     private final PaikkaConfiguration config;
     private final ObjectMapper objectMapper;
 
-    private volatile Map<String, Object> metadata;
+    private volatile PaikkaMetadata metadata; // Change type to PaikkaMetadata
 
     public MetadataService(PaikkaConfiguration config, ObjectMapper objectMapper) {
         this.config = config;
         this.objectMapper = objectMapper;
-        this.metadata = Collections.emptyMap(); // Initialize with empty map
+        this.metadata = null; // Initialize with null, will be loaded in @PostConstruct
     }
 
     @PostConstruct
@@ -50,16 +51,16 @@ public class MetadataService {
 
         if (!Files.exists(metadataPath)) {
             logger.warn("Metadata file not found at {}. Running without metadata.", metadataPath);
-            this.metadata = Collections.emptyMap();
+            this.metadata = null; // Set to null if file not found
             return;
         }
 
         try {
-            this.metadata = objectMapper.readValue(metadataPath.toFile(), Map.class);
+            this.metadata = objectMapper.readValue(metadataPath.toFile(), PaikkaMetadata.class); // Deserialize to PaikkaMetadata
             logger.info("Metadata loaded successfully from {}", metadataPath);
         } catch (IOException e) {
             logger.error("Failed to load metadata from {}: {}", metadataPath, e.getMessage());
-            this.metadata = Collections.emptyMap();
+            this.metadata = null; // Set to null on error
         }
     }
 
@@ -76,16 +77,27 @@ public class MetadataService {
      * If metadata is not available, returns a default "unknown" version.
      */
     public String getDataVersion() {
-        return Optional.ofNullable(metadata.get("dataVersion"))
-                .map(Object::toString)
+        return Optional.ofNullable(metadata)
+                .map(PaikkaMetadata::dataVersion)
                 .orElse("unknown");
     }
 
     /**
      * Returns the full metadata map.
+     * Converts the PaikkaMetadata record to a Map for compatibility with existing consumers.
      */
     public Map<String, Object> getMetadata() {
-        return Collections.unmodifiableMap(metadata);
+        if (metadata == null) {
+            return Collections.emptyMap();
+        }
+        // Convert PaikkaMetadata record to a Map
+        Map<String, Object> metadataMap = new HashMap<>();
+        metadataMap.put("importTimestamp", metadata.importTimestamp());
+        metadataMap.put("dataVersion", metadata.dataVersion());
+        metadataMap.put("file", metadata.file());
+        metadataMap.put("gridLevel", metadata.gridLevel());
+        metadataMap.put("paikkaVersion", metadata.paikkaVersion());
+        return Collections.unmodifiableMap(metadataMap);
     }
 
     /**
@@ -93,12 +105,12 @@ public class MetadataService {
      * If metadata is not available or timestamp is invalid, returns Optional.empty().
      */
     public Optional<Instant> getImportTimestamp() {
-        return Optional.ofNullable(metadata.get("importTimestamp"))
-                .map(Object::toString)
+        return Optional.ofNullable(metadata)
+                .map(PaikkaMetadata::importTimestamp)
                 .flatMap(timestampStr -> {
                     try {
                         return Optional.of(Instant.parse(timestampStr));
-                    } catch (java.time.format.DateTimeParseException e) {
+                    } catch (DateTimeParseException e) {
                         logger.warn("Invalid importTimestamp format in metadata: {}", timestampStr);
                         return Optional.empty();
                     }
@@ -109,8 +121,8 @@ public class MetadataService {
      * Returns the PAIKKA application version that generated the data.
      */
     public String getPaikkaVersion() {
-        return Optional.ofNullable(metadata.get("paikkaVersion"))
-                .map(Object::toString)
+        return Optional.ofNullable(metadata)
+                .map(PaikkaMetadata::paikkaVersion)
                 .orElse("unknown");
     }
 }
