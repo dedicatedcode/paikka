@@ -1,6 +1,5 @@
 package com.dedicatedcode.paikka.controller;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -9,7 +8,6 @@ import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMock
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
-import org.springframework.test.web.servlet.MvcResult;
 
 import java.io.BufferedInputStream;
 import java.io.IOException;
@@ -18,11 +16,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Comparator;
-import java.util.List;
-import java.util.Map;
+import java.util.stream.Stream;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
-import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
@@ -36,10 +32,6 @@ class GeocodingControllerIntegrationTest {
 
     @Autowired
     private MockMvc mockMvc;
-
-    // ObjectMapper is no longer needed for parsing responses in tests, but kept for potential future use or other tests
-    // @Autowired
-    // private ObjectMapper objectMapper; 
 
     @Value("${paikka.data-dir}")
     private Path dataDirectory;
@@ -117,23 +109,20 @@ class GeocodingControllerIntegrationTest {
 
     @Test
     void testReverseGeocodingKnownLocationMonaco() throws Exception {
-        // Coordinates for Monaco
-        double lat = 43.7384;
-        double lon = 7.4246;
+        double lat = 43.728410;
+        double lon = 7.417274;
 
         mockMvc.perform(get("/api/v1/reverse")
                         .param("lat", String.valueOf(lat))
                         .param("lon", String.valueOf(lon))
                         .param("lang", "en"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.results").isArray())
-                .andExpect(jsonPath("$.results").isNotEmpty())
-                // Assert that results contain something related to Monaco
-                // Using jsonPath to check for any name containing "Monaco" or "Monte Carlo"
-                .andExpect(jsonPath("$.results[*].name").value(org.hamcrest.Matchers.anyOf(
-                        org.hamcrest.Matchers.hasItem(org.hamcrest.Matchers.containsString("Monaco")),
-                        org.hamcrest.Matchers.hasItem(org.hamcrest.Matchers.containsString("Monte Carlo"))
-                )));
+                .andExpectAll(
+                        status().isOk(),
+                        jsonPath("$.results").isArray(),
+                        jsonPath("$.results").isNotEmpty(),
+                        jsonPath("$.results[0].display_name").value("Promethee sculpture"),
+                        jsonPath("$.results[0].hierarchy").isNotEmpty()
+                );
     }
 
     @Test

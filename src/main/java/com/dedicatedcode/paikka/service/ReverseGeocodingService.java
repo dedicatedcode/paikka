@@ -14,6 +14,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
+
 import java.nio.ByteBuffer;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -28,24 +29,22 @@ import java.util.stream.Collectors;
 public class ReverseGeocodingService {
     
     private static final Logger logger = LoggerFactory.getLogger(ReverseGeocodingService.class);
-    private static final double SEARCH_RADIUS_KM = 10.0; // Search within 10km radius
-    private static final int MAX_SEARCH_RINGS = 3; // Maximum rings of neighboring shards to search
+    private static final double SEARCH_RADIUS_KM = 10.0;
+    private static final int MAX_SEARCH_RINGS = 3;
 
     private final PaikkaConfiguration config;
     private final S2Helper s2Helper;
-    private final MetadataService metadataService; // Inject MetadataService
     private RocksDB shardsDb;
     
-    public ReverseGeocodingService(PaikkaConfiguration config, S2Helper s2Helper, MetadataService metadataService) {
+    public ReverseGeocodingService(PaikkaConfiguration config, S2Helper s2Helper) {
         this.config = config;
         this.s2Helper = s2Helper;
-        this.metadataService = metadataService; // Inject MetadataService
         initializeRocksDB();
     }
     
     private void initializeRocksDB() {
         if (shardsDb != null) {
-            return; // Already initialized
+            return;
         }
         
         try {
@@ -67,14 +66,9 @@ public class ReverseGeocodingService {
         }
     }
     
-    /**
-     * Reload the RocksDB database from the data directory.
-     * This is useful when a new data folder has been uploaded or updated.
-     */
     public synchronized void reloadDatabase() {
         logger.info("Reloading POI shards database...");
         
-        // Close existing database connection
         if (shardsDb != null) {
             try {
                 shardsDb.close();
@@ -85,7 +79,6 @@ public class ReverseGeocodingService {
             shardsDb = null;
         }
         
-        // Reinitialize the database
         initializeRocksDB();
         
         if (shardsDb != null) {
@@ -125,11 +118,10 @@ public class ReverseGeocodingService {
             
             // Start with center shard
             long centerShardId = s2Helper.getShardId(lat, lon);
-            List<POIData> allPOIs = new ArrayList<>();
             Set<Long> searchedShards = new HashSet<>();
             
             // Load POIs from center shard first
-            allPOIs.addAll(loadPOIsFromShard(centerShardId));
+            List<POIData> allPOIs = new ArrayList<>(loadPOIsFromShard(centerShardId));
             searchedShards.add(centerShardId);
             
             // Get expanding rings of neighbor shards
@@ -498,17 +490,16 @@ public class ReverseGeocodingService {
      * Build the geometry URL using the configured base URL and current data version.
      */
     private String buildGeometryUrl(long osmId) {
-        String currentDataVersion = metadataService.getDataVersion();
-        String baseUrl = config.getBaseUrl(); // Assuming config.getBaseUrl() provides the base URL like "http://localhost:8080"
+        String baseUrl = config.getBaseUrl();
 
         // Normalize base URL by removing trailing slash if present
-        if (baseUrl != null && !baseUrl.isEmpty() && baseUrl.endsWith("/")) {
+        if (baseUrl != null && baseUrl.endsWith("/")) {
             baseUrl = baseUrl.substring(0, baseUrl.length() - 1);
         } else if (baseUrl == null || baseUrl.isEmpty()) {
             baseUrl = ""; // Default to empty string for relative path if no base URL is configured
         }
 
-        return String.format("%s/api/v1/geometry/%s/%d", baseUrl, currentDataVersion, osmId);
+        return String.format("%s/api/v1/geometry/%s/%d", baseUrl, "latest", osmId);
     }
     
 }
