@@ -17,10 +17,12 @@ import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
@@ -44,24 +46,35 @@ class GeocodingControllerIntegrationTest {
 
     @BeforeEach
     void setupDataAndRefresh() throws Exception {
-            Files.createDirectories(dataDirectory);
-
-            //clear the dataDirectory before we copy AI!
-            Path zipPath = Paths.get("src/test/resources/data-monaco.zip");
-            if (!Files.exists(zipPath)) {
-                throw new IllegalStateException("Test resource data-monaco.zip not found at " + zipPath.toAbsolutePath());
+        // Clear the dataDirectory before we copy
+        if (Files.exists(dataDirectory)) {
+            try (Stream<Path> walk = Files.walk(dataDirectory)) {
+                walk.sorted(Comparator.reverseOrder())
+                    .forEach(path -> {
+                        try {
+                            Files.delete(path);
+                        } catch (IOException e) {
+                            throw new RuntimeException("Failed to delete " + path, e);
+                        }
+                    });
             }
-            extractZip(zipPath, dataDirectory);
-            System.out.println("Extracted data-monaco.zip to: " + dataDirectory.toAbsolutePath());
+        }
+        Files.createDirectories(dataDirectory);
 
-            // Perform admin refresh using MockMvc
+        Path zipPath = Paths.get("src/test/resources/data-monaco.zip");
+        if (!Files.exists(zipPath)) {
+            throw new IllegalStateException("Test resource data-monaco.zip not found at " + zipPath.toAbsolutePath());
+        }
+        extractZip(zipPath, dataDirectory);
+        System.out.println("Extracted data-monaco.zip to: " + dataDirectory.toAbsolutePath());
 
+        // Perform admin refresh using MockMvc
         mockMvc.perform(post("/admin/refresh-db")
-                            .with(user("admin"))
-                            .contentType(MediaType.APPLICATION_JSON))
-                    .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.success").value(true))
-                    .andReturn();
+                        .with(user("admin"))
+                        .contentType(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.success").value(true))
+                .andReturn();
 
     }
 
