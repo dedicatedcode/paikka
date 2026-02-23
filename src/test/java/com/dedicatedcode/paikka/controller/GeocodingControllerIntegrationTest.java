@@ -141,7 +141,7 @@ class GeocodingControllerIntegrationTest {
                 .andReturn();
 
         Map<String, Object> responseBody = objectMapper.readValue(result.getResponse().getContentAsString(), Map.class);
-        List<Map<String, Object>> results = (List<String, Object>>) responseBody.get("results");
+        List<Map<String, Object>> results = (List<Map<String, Object>>) responseBody.get("results");
 
         // Assert that results contain something related to Monaco
         boolean foundMonaco = results.stream()
