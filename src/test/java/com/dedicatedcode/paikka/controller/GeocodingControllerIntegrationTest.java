@@ -101,6 +101,11 @@ class GeocodingControllerIntegrationTest {
     }
 
     @Test
+    void contextLoads() {
+        assertThat(mockMvc).isNotNull();
+    }
+
+    @Test
     void testHealthEndpoint() throws Exception {
         mockMvc.perform(get("/api/v1/health"))
                 .andExpect(status().isOk())
@@ -114,9 +119,11 @@ class GeocodingControllerIntegrationTest {
         // Coordinates for Monaco
         double lat = 43.7384;
         double lon = 7.4246;
-        String url = String.format("/api/v1/reverse?lat=%f&lon=%f&lang=en", lat, lon);
 
-        MvcResult result = mockMvc.perform(get(url))
+        MvcResult result = mockMvc.perform(get("/api/v1/reverse")
+                        .param("lat", String.valueOf(lat))
+                        .param("lon", String.valueOf(lon))
+                        .param("lang", "en"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.results").isArray())
                 .andExpect(jsonPath("$.results").isNotEmpty())
@@ -138,12 +145,16 @@ class GeocodingControllerIntegrationTest {
     @Test
     void testReverseGeocodingInvalidCoordinates() throws Exception {
         // Invalid latitude
-        mockMvc.perform(get("/api/v1/reverse?lat=%f&lon=%f", 91.0, 13.0))
+        mockMvc.perform(get("/api/v1/reverse")
+                        .param("lat", String.valueOf(91.0))
+                        .param("lon", String.valueOf(13.0)))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error").value("Invalid latitude. Must be between -90 and 90."));
 
         // Invalid longitude
-        mockMvc.perform(get("/api/v1/reverse?lat=%f&lon=%f", 52.0, 181.0))
+        mockMvc.perform(get("/api/v1/reverse")
+                        .param("lat", String.valueOf(52.0))
+                        .param("lon", String.valueOf(181.0)))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error").value("Invalid longitude. Must be between -180 and 180."));
     }
@@ -153,9 +164,11 @@ class GeocodingControllerIntegrationTest {
         double lat = 43.7384; // Monaco
         double lon = 7.4246; // Monaco
         int limit = 2;
-        String url = String.format("/api/v1/reverse?lat=%f&lon=%f&limit=%d", lat, lon, limit);
 
-        MvcResult result = mockMvc.perform(get(url))
+        MvcResult result = mockMvc.perform(get("/api/v1/reverse")
+                        .param("lat", String.valueOf(lat))
+                        .param("lon", String.valueOf(lon))
+                        .param("limit", String.valueOf(limit)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.results").isArray())
                 .andExpect(jsonPath("$.results.length()").value(limit))
