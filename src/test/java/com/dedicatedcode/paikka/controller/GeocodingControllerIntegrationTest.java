@@ -37,8 +37,9 @@ class GeocodingControllerIntegrationTest {
     @Autowired
     private MockMvc mockMvc;
 
-    @Autowired
-    private ObjectMapper objectMapper; // To parse JSON responses from MockMvc
+    // ObjectMapper is no longer needed for parsing responses in tests, but kept for potential future use or other tests
+    // @Autowired
+    // private ObjectMapper objectMapper; 
 
     @Value("${paikka.data-dir}")
     private Path dataDirectory;
@@ -120,26 +121,19 @@ class GeocodingControllerIntegrationTest {
         double lat = 43.7384;
         double lon = 7.4246;
 
-        MvcResult result = mockMvc.perform(get("/api/v1/reverse")
+        mockMvc.perform(get("/api/v1/reverse")
                         .param("lat", String.valueOf(lat))
                         .param("lon", String.valueOf(lon))
                         .param("lang", "en"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.results").isArray())
                 .andExpect(jsonPath("$.results").isNotEmpty())
-                .andReturn();
-
-        Map<String, Object> responseBody = objectMapper.readValue(result.getResponse().getContentAsString(), Map.class);
-        List<Map<String, Object>> results = (List<Map<String, Object>>) responseBody.get("results");
-
-        // Assert that results contain something related to Monaco
-        boolean foundMonaco = results.stream()
-                .anyMatch(poi -> {
-                    String name = (String) poi.get("name");
-                    // Assuming the Monaco dataset will return "Monaco" or a place within Monaco
-                    return name != null && (name.contains("Monaco") || name.contains("Monte Carlo"));
-                });
-        assertThat(foundMonaco).isTrue();
+                // Assert that results contain something related to Monaco
+                // Using jsonPath to check for any name containing "Monaco" or "Monte Carlo"
+                .andExpect(jsonPath("$.results[*].name").value(org.hamcrest.Matchers.anyOf(
+                        org.hamcrest.Matchers.hasItem(org.hamcrest.Matchers.containsString("Monaco")),
+                        org.hamcrest.Matchers.hasItem(org.hamcrest.Matchers.containsString("Monte Carlo"))
+                )));
     }
 
     @Test
@@ -165,22 +159,13 @@ class GeocodingControllerIntegrationTest {
         double lon = 7.4246; // Monaco
         int limit = 2;
 
-        MvcResult result = mockMvc.perform(get("/api/v1/reverse")
+        mockMvc.perform(get("/api/v1/reverse")
                         .param("lat", String.valueOf(lat))
                         .param("lon", String.valueOf(lon))
                         .param("limit", String.valueOf(limit)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.results").isArray())
                 .andExpect(jsonPath("$.results.length()").value(limit))
-                .andExpect(header().string("X-Result-Count", String.valueOf(limit))) // Expecting exactly 'limit' if enough results
-                .andReturn();
-
-        Map<String, Object> responseBody = objectMapper.readValue(result.getResponse().getContentAsString(), Map.class);
-        List<Map<String, Object>> results = (List<Map<String, Object>>) responseBody.get("results");
-        assertThat(results.size()).isLessThanOrEqualTo(limit);
-        // The header assertion above is more precise, but this is a good double check.
-        // Note: MockMvc's header().string() expects an exact match. If the actual result count is less than limit,
-        // this assertion might fail. Let's adjust it to check the actual size.
-        assertThat(result.getResponse().getHeader("X-Result-Count")).isEqualTo(String.valueOf(results.size()));
+                .andExpect(header().string("X-Result-Count", String.valueOf(limit)));
     }
 }
