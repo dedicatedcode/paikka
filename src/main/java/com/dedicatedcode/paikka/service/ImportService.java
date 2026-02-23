@@ -47,6 +47,9 @@ public class ImportService {
     private final Map<String, String> tagCache = new ConcurrentHashMap<>(1000);
     private final int fileReadWindowSize;
 
+    private int currentStep = 0;
+    private static final int TOTAL_STEPS = 4;
+
     public ImportService(S2Helper s2Helper, GeometrySimplificationService geometrySimplificationService, PaikkaConfiguration config) {
         this.s2Helper = s2Helper;
         this.geometrySimplificationService = geometrySimplificationService;
@@ -146,23 +149,27 @@ public class ImportService {
                  RocksDB relIndexDb = RocksDB.open(wayIndexOpts, relIndexDbPath.toString());
                  RocksDB poiIndexDb = RocksDB.open(wayIndexOpts, poiIndexDbPath.toString())) {
 
+                // PASS 1: Discovery & Indexing
+                currentStep = 1;
                 printPhaseHeader("PASS 1: Discovery & Indexing");
                 long pass1Start = System.currentTimeMillis();
                 stats.setCurrentPhase("1.1.1: Discovery & Indexing");
                 pass1DiscoveryAndIndexing(pbfFile, wayIndexDb, neededNodesDb, relIndexDb, poiIndexDb, stats);
                 printPhaseSummary("PASS 1", pass1Start, stats);
 
+                // PASS 2: Nodes Cache, Boundaries, POIs
+                currentStep = 2;
                 printPhaseHeader("PASS 2: Nodes Cache, Boundaries, POIs");
                 long pass2Start = System.currentTimeMillis();
                 stats.setCurrentPhase("1.1.2: Caching node coordinates");
                 cacheNeededNodeCoordinates(pbfFile, neededNodesDb, nodeCache, stats);
 
+                currentStep = 3;
                 stats.setCurrentPhase("1.2: Processing administrative boundaries");
                 processAdministrativeBoundariesFromIndex(relIndexDb, nodeCache, wayIndexDb, gridIndexDb, boundariesDb, stats);
-
+                currentStep = 4;
                 stats.setCurrentPhase("2.1: Processing POIs & Sharding");
                 pass2PoiShardingFromIndex(nodeCache, wayIndexDb, shardsDb, boundariesDb, poiIndexDb, gridIndexDb, stats);
-
                 printPhaseSummary("PASS 2", pass2Start, stats);
 
                 stats.setTotalTime(System.currentTimeMillis() - totalStartTime);
@@ -229,6 +236,9 @@ public class ImportService {
                 if (isTty) {
                     sb.append("\r\033[K");
                 }
+
+                // Add step indicator
+                sb.append(String.format("\033[1;90m[%d/%d]\033[0m ", currentStep, TOTAL_STEPS));
 
                 if (phase.contains("1.1.1")) {
                     long pbfPerSec = phaseSeconds > 0 ? (long)(stats.getEntitiesRead() / phaseSeconds) : 0;
