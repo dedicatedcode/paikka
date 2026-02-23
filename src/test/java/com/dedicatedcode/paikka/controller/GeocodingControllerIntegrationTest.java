@@ -7,6 +7,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
+import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
@@ -176,7 +177,7 @@ class GeocodingControllerIntegrationTest {
         MvcResult result = mockMvc.perform(get(url))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.results").isArray())
-                .andExpect(jsonPath("$.results.length()").isLessThanOrEqualTo(limit))
+                .andExpect(jsonPath("$.results.length()").value(limit))
                 .andExpect(header().string("X-Result-Count", String.valueOf(limit))) // Expecting exactly 'limit' if enough results
                 .andReturn();
 
