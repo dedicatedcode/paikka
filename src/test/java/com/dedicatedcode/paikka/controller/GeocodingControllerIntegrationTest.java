@@ -1,15 +1,13 @@
 package com.dedicatedcode.paikka.controller;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
-import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
-import org.springframework.test.context.DynamicPropertyRegistry;
-import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
@@ -19,19 +17,16 @@ import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 @SpringBootTest
 @AutoConfigureMockMvc
@@ -43,28 +38,15 @@ class GeocodingControllerIntegrationTest {
     @Autowired
     private ObjectMapper objectMapper; // To parse JSON responses from MockMvc
 
-    private static Path dataDirectory;
-    private static boolean setupDone = false;
+    @Value("${paikka.data-dir}")
+    private Path dataDirectory;
 
-    @DynamicPropertySource
-    static void registerProperties(DynamicPropertyRegistry registry) throws IOException {
-        // Create a temporary directory using Java's Files API
-        Path hostTempDir = Files.createTempDirectory("paikka-test-data");
-        dataDirectory = hostTempDir; // Store it for later use in BeforeAll
 
-        // Point Spring Boot's data-dir to the temporary directory
-        registry.add("paikka.data-dir", hostTempDir::toString);
-        registry.add("paikka.import-mode", () -> "false");
-        registry.add("paikka.admin.password", () -> "testpassword"); // Set a password for admin endpoint
-    }
-
-    @BeforeAll
-    static void setupDataAndRefresh(@Autowired MockMvc staticMockMvc, @Autowired ObjectMapper staticObjectMapper) throws Exception {
-        if (!setupDone) {
-            // Ensure the data directory exists (it should, as created in DynamicPropertySource)
+    @BeforeEach
+    void setupDataAndRefresh() throws Exception {
             Files.createDirectories(dataDirectory);
 
-            // Extract data-monaco.zip to the temporary data directory
+            //clear the dataDirectory before we copy AI!
             Path zipPath = Paths.get("src/test/resources/data-monaco.zip");
             if (!Files.exists(zipPath)) {
                 throw new IllegalStateException("Test resource data-monaco.zip not found at " + zipPath.toAbsolutePath());
@@ -73,24 +55,14 @@ class GeocodingControllerIntegrationTest {
             System.out.println("Extracted data-monaco.zip to: " + dataDirectory.toAbsolutePath());
 
             // Perform admin refresh using MockMvc
-            String adminRefreshUrl = "/admin/refresh-db";
-            String auth = "admin:testpassword";
-            String encodedAuth = Base64.getEncoder().encodeToString(auth.getBytes());
 
-            MvcResult adminResult = staticMockMvc.perform(post(adminRefreshUrl)
-                            .header("Authorization", "Basic " + encodedAuth)
-                            .with(csrf()) // Add CSRF token for POST request
+        mockMvc.perform(post("/admin/refresh-db")
+                            .with(user("admin"))
                             .contentType(MediaType.APPLICATION_JSON))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.success").value(true))
                     .andReturn();
 
-            Map<String, Object> adminResponse = staticObjectMapper.readValue(adminResult.getResponse().getContentAsString(), Map.class);
-            System.out.println("Admin refresh response: " + adminResponse);
-
-            // Mark setup as done
-            setupDone = true;
-        }
     }
 
     private static void extractZip(Path zipFilePath, Path destinationDir) throws IOException {
