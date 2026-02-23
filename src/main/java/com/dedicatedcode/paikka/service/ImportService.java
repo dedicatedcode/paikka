@@ -47,9 +47,8 @@ public class ImportService {
     private final Map<String, String> tagCache = new ConcurrentHashMap<>(1000);
     private final int fileReadWindowSize;
 
-    // Step tracking for import process
     private int currentStep = 0;
-    private static final int TOTAL_STEPS = 2;
+    private static final int TOTAL_STEPS = 4;
 
     public ImportService(S2Helper s2Helper, GeometrySimplificationService geometrySimplificationService, PaikkaConfiguration config) {
         this.s2Helper = s2Helper;
@@ -152,7 +151,7 @@ public class ImportService {
 
                 // PASS 1: Discovery & Indexing
                 currentStep = 1;
-                printPhaseHeader("PASS 1: Discovery & Indexing", currentStep);
+                printPhaseHeader("PASS 1: Discovery & Indexing");
                 long pass1Start = System.currentTimeMillis();
                 stats.setCurrentPhase("1.1.1: Discovery & Indexing");
                 pass1DiscoveryAndIndexing(pbfFile, wayIndexDb, neededNodesDb, relIndexDb, poiIndexDb, stats);
@@ -160,14 +159,15 @@ public class ImportService {
 
                 // PASS 2: Nodes Cache, Boundaries, POIs
                 currentStep = 2;
-                printPhaseHeader("PASS 2: Nodes Cache, Boundaries, POIs", currentStep);
+                printPhaseHeader("PASS 2: Nodes Cache, Boundaries, POIs");
                 long pass2Start = System.currentTimeMillis();
                 stats.setCurrentPhase("1.1.2: Caching node coordinates");
                 cacheNeededNodeCoordinates(pbfFile, neededNodesDb, nodeCache, stats);
 
+                currentStep = 3;
                 stats.setCurrentPhase("1.2: Processing administrative boundaries");
                 processAdministrativeBoundariesFromIndex(relIndexDb, nodeCache, wayIndexDb, gridIndexDb, boundariesDb, stats);
-
+                currentStep = 4;
                 stats.setCurrentPhase("2.1: Processing POIs & Sharding");
                 pass2PoiShardingFromIndex(nodeCache, wayIndexDb, shardsDb, boundariesDb, poiIndexDb, gridIndexDb, stats);
 
@@ -1170,8 +1170,8 @@ public class ImportService {
         System.out.println("File window size: " + (this.fileReadWindowSize / (1024 * 1024)) + "MB");
     }
 
-    private void printPhaseHeader(String phase, int step) {
-        System.out.println("\n\033[1;36m" + "─".repeat(80) + "\n" + String.format("Step %d/%d: %s", step, TOTAL_STEPS, phase) + "\n" + "─".repeat(80) + "\033[0m");
+    private void printPhaseHeader(String phase) {
+        System.out.println("\n\033[1;36m" + "─".repeat(80) + "\n" + phase + "\n" + "─".repeat(80) + "\033[0m");
     }
 
     private void printSuccess() {
