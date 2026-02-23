@@ -1722,7 +1722,4 @@ public class ImportService {
         return new String(dst, StandardCharsets.UTF_8);
     }
 
-    private record PaikkaMetadata(String importTimestamp, String dataVersion, String file, int gridLevel,
-                                  String appVersion) {
-    }
 }
