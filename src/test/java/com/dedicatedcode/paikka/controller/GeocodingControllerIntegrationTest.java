@@ -1,20 +1,12 @@
 package com.dedicatedcode.paikka.controller;
 
-import org.apache.commons.compress.archivers.tar.TarArchiveEntry; // This import will be removed as it's no longer needed
-import org.apache.commons.compress.archivers.tar.TarArchiveInputStream; // This import will be removed as it's no longer needed
-import org.apache.commons.compress.compressors.gzip.GzipCompressorInputStream; // This import will be removed as it's no longer needed
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.client.TestRestTemplate;
 import org.springframework.boot.test.web.server.LocalServerPort;
-import org.springframework.http.HttpEntity;
-import org.springframework.http.HttpHeaders;
-import org.springframework.http.HttpMethod;
-import org.springframework.http.HttpStatus;
-import org.springframework.http.MediaType;
-import org.springframework.http.ResponseEntity;
+import org.springframework.http.*;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
