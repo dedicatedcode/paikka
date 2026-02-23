@@ -17,10 +17,7 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
-import org.testcontainers.containers.GenericContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
-import org.testcontainers.utility.DockerImageName;
+import org.testcontainers.junit.jupiter.Testcontainers; // Keep Testcontainers annotation for consistency, though not strictly needed for this specific use case anymore
 
 import java.io.BufferedInputStream;
 import java.io.IOException;
@@ -35,7 +32,7 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
-@Testcontainers
+@Testcontainers // Keeping this annotation, as Testcontainers might be used for other purposes in the future, or if we decide to use it for a real container.
 class GeocodingControllerIntegrationTest {
 
     @LocalServerPort
@@ -44,27 +41,16 @@ class GeocodingControllerIntegrationTest {
     @Autowired
     private TestRestTemplate restTemplate;
 
-    // Use Testcontainers to manage a temporary directory for data
-    // We use a simple alpine/git image and bind a host directory to a container path.
-    // This allows us to use a temporary directory on the host that is managed by Testcontainers.
-    @Container
-    private static final GenericContainer<?> tempDirContainer = new GenericContainer<>(DockerImageName.parse("alpine/git"))
-            .withCommand("tail -f /dev/null"); // Keep container running
-
     private static Path dataDirectory;
     private static boolean setupDone = false;
 
     @DynamicPropertySource
     static void registerProperties(DynamicPropertyRegistry registry) throws IOException {
-        // Create a temporary directory on the host
+        // Create a temporary directory using Java's Files API
         Path hostTempDir = Files.createTempDirectory("paikka-test-data");
         dataDirectory = hostTempDir; // Store it for later use in BeforeAll
 
-        // Bind this host directory to a path inside the container
-        tempDirContainer.withFileSystemBind(hostTempDir.toString(), "/tmp/paikka-data");
-
-        // Point Spring Boot's data-dir to the *host* temporary directory
-        // The application runs on the host, not inside the container for this test.
+        // Point Spring Boot's data-dir to the temporary directory
         registry.add("paikka.data-dir", () -> hostTempDir.toString());
         registry.add("paikka.import-mode", () -> "false");
         registry.add("paikka.admin.password", () -> "testpassword"); // Set a password for admin endpoint
