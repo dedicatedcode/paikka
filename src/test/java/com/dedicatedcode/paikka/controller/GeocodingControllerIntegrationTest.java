@@ -43,7 +43,6 @@ class GeocodingControllerIntegrationTest {
     @Value("${paikka.data-dir}")
     private Path dataDirectory;
 
-
     @BeforeEach
     void setupDataAndRefresh() throws Exception {
         // Clear the dataDirectory before we copy
@@ -99,11 +98,6 @@ class GeocodingControllerIntegrationTest {
                 zip.closeEntry();
             }
         }
-    }
-
-    @Test
-    void contextLoads() {
-        assertThat(mockMvc).isNotNull();
     }
 
     @Test

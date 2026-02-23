@@ -34,16 +34,7 @@ public class AdminController {
         this.metadataService = metadataService;
     }
 
-    /**
-     * Refresh the RocksDB databases by reloading them from the data directory.
-     * This is useful when a new data folder has been uploaded or updated.
-     * 
-     * Can be called via:
-     * - Browser: POST to /admin/refresh-db (returns HTML response)
-     * - API: POST to /admin/refresh-db with Accept: application/json (returns JSON)
-     * - curl: curl -X POST http://localhost:8080/admin/refresh-db -u admin:password
-     */
-    @PostMapping("/refresh-db")
+    @PostMapping(value = "/refresh-db", produces = "application/json")
     @PreAuthorize("hasRole('ADMIN')")
     @ResponseBody
     public ResponseEntity<?> refreshDatabase() {
