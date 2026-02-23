@@ -2,6 +2,7 @@ package com.dedicatedcode.paikka.controller;
 
 import com.dedicatedcode.paikka.config.PaikkaConfiguration;
 import com.dedicatedcode.paikka.dto.POIResponse;
+import com.dedicatedcode.paikka.service.MetadataService;
 import com.dedicatedcode.paikka.service.ReverseGeocodingService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -28,10 +29,12 @@ public class GeocodingController {
     
     private final ReverseGeocodingService reverseGeocodingService;
     private final PaikkaConfiguration config;
+    private final MetadataService metadataService; // Inject MetadataService
     
-    public GeocodingController(ReverseGeocodingService reverseGeocodingService, PaikkaConfiguration config) {
+    public GeocodingController(ReverseGeocodingService reverseGeocodingService, PaikkaConfiguration config, MetadataService metadataService) {
         this.reverseGeocodingService = reverseGeocodingService;
         this.config = config;
+        this.metadataService = metadataService; // Inject MetadataService
     }
     
     /**
@@ -89,6 +92,7 @@ public class GeocodingController {
         
         return ResponseEntity.ok()
             .header("X-Result-Count", String.valueOf(results.size()))
+            .header("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0") // No caching
             .body(response);
     }
     
@@ -96,10 +100,13 @@ public class GeocodingController {
      * Health check endpoint.
      */
     @GetMapping("/health")
-    public ResponseEntity<Map<String, String>> health() {
-        Map<String, String> response = new HashMap<>();
+    public ResponseEntity<Map<String, Object>> health() {
+        Map<String, Object> response = new HashMap<>();
         response.put("status", "ok");
         response.put("service", "paikka");
-        return ResponseEntity.ok(response);
+        response.put("metadata", metadataService.getMetadata()); // Include metadata
+        return ResponseEntity.ok()
+            .header("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0") // No caching
+            .body(response);
     }
 }

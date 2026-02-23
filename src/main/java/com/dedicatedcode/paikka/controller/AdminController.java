@@ -2,6 +2,7 @@ package com.dedicatedcode.paikka.controller;
 
 import com.dedicatedcode.paikka.service.ReverseGeocodingService;
 import com.dedicatedcode.paikka.service.BoundaryService;
+import com.dedicatedcode.paikka.service.MetadataService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -25,10 +26,12 @@ public class AdminController {
     
     private final ReverseGeocodingService reverseGeocodingService;
     private final BoundaryService boundaryService;
+    private final MetadataService metadataService;
 
-    public AdminController(ReverseGeocodingService reverseGeocodingService, BoundaryService boundaryService) {
+    public AdminController(ReverseGeocodingService reverseGeocodingService, BoundaryService boundaryService, MetadataService metadataService) {
         this.reverseGeocodingService = reverseGeocodingService;
         this.boundaryService = boundaryService;
+        this.metadataService = metadataService;
     }
 
     /**
@@ -54,6 +57,10 @@ public class AdminController {
             // Reload the boundary service (boundaries database)
             logger.info("Reloading boundaries database...");
             boundaryService.reloadDatabase();
+
+            // Reload metadata
+            logger.info("Reloading metadata...");
+            metadataService.reload();
             
             logger.info("Database refresh completed successfully");
             

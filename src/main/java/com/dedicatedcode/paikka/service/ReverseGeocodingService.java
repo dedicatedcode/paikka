@@ -33,24 +33,14 @@ public class ReverseGeocodingService {
 
     private final PaikkaConfiguration config;
     private final S2Helper s2Helper;
-    private final String normalizedBaseUrl;
+    private final MetadataService metadataService; // Inject MetadataService
     private RocksDB shardsDb;
     
-    public ReverseGeocodingService(PaikkaConfiguration config, S2Helper s2Helper) {
+    public ReverseGeocodingService(PaikkaConfiguration config, S2Helper s2Helper, MetadataService metadataService) {
         this.config = config;
         this.s2Helper = s2Helper;
-        this.normalizedBaseUrl = normalizeBaseUrl(config.getBaseUrl());
+        this.metadataService = metadataService; // Inject MetadataService
         initializeRocksDB();
-    }
-    
-    /**
-     * Normalize the base URL by removing trailing slash.
-     */
-    private String normalizeBaseUrl(String baseUrl) {
-        if (baseUrl != null && !baseUrl.isEmpty() && baseUrl.endsWith("/")) {
-            return baseUrl.substring(0, baseUrl.length() - 1);
-        }
-        return baseUrl;
     }
     
     private void initializeRocksDB() {
@@ -505,15 +495,20 @@ public class ReverseGeocodingService {
     }
     
     /**
-     * Build the geometry URL using the configured base URL.
+     * Build the geometry URL using the configured base URL and current data version.
      */
     private String buildGeometryUrl(long osmId) {
-        if (normalizedBaseUrl != null && !normalizedBaseUrl.isEmpty()) {
-            return normalizedBaseUrl + "/api/v1/geometry/" + osmId;
+        String currentDataVersion = metadataService.getDataVersion();
+        String baseUrl = config.getBaseUrl(); // Assuming config.getBaseUrl() provides the base URL like "http://localhost:8080"
+
+        // Normalize base URL by removing trailing slash if present
+        if (baseUrl != null && !baseUrl.isEmpty() && baseUrl.endsWith("/")) {
+            baseUrl = baseUrl.substring(0, baseUrl.length() - 1);
+        } else if (baseUrl == null || baseUrl.isEmpty()) {
+            baseUrl = ""; // Default to empty string for relative path if no base URL is configured
         }
-        
-        // Fallback to relative URL if base URL is not configured
-        return "/api/v1/geometry/" + osmId;
+
+        return String.format("%s/api/v1/geometry/%s/%d", baseUrl, currentDataVersion, osmId);
     }
     
 }
