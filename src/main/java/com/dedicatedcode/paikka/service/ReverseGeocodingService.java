@@ -490,7 +490,7 @@ public class ReverseGeocodingService {
      * Build the geometry URL using the configured base URL and current data version.
      */
     private String buildGeometryUrl(long osmId) {
-        String baseUrl = config.getBaseUrl();
+        String baseUrl = config.getQueryConfiguration().getBaseUrl();
 
         // Normalize base URL by removing trailing slash if present
         if (baseUrl != null && baseUrl.endsWith("/")) {

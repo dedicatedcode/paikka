@@ -44,8 +44,9 @@ class ImportServiceTest {
         }
 
         PaikkaConfiguration config = new PaikkaConfiguration();
-        config.setMaxImportThreads(2);
-
+        PaikkaConfiguration.ImportConfiguration importConfiguration = new PaikkaConfiguration.ImportConfiguration();
+        importConfiguration.setThreads(2);
+        config.setImportConfiguration(importConfiguration);
         GeometrySimplificationService geometrySimplificationService = new GeometrySimplificationService();
 
         ImportService importService = new ImportService(new S2Helper(), geometrySimplificationService, config);
@@ -67,11 +68,11 @@ class ImportServiceTest {
         // Verify POIs were imported by checking the shards database
         Path shardsDbPath = tempDataDir.resolve("poi_shards");
         assertTrue(Files.exists(shardsDbPath), "Shards database should exist");
-        
+
         // Open the database and verify some POIs were stored
         try (Options options = new Options();
              RocksDB shardsDb = RocksDB.open(options, shardsDbPath.toString())) {
-            
+
             // Iterate through all shards and collect POIs
             List<Long> importedPoiIds = new ArrayList<>();
             var iterator = shardsDb.newIterator();
@@ -79,24 +80,24 @@ class ImportServiceTest {
             while (iterator.isValid()) {
                 byte[] key = iterator.key();
                 byte[] value = iterator.value();
-                
+
                 // Parse the POIList from FlatBuffers
                 ByteBuffer buffer = ByteBuffer.wrap(value);
                 POIList poiList = POIList.getRootAsPOIList(buffer);
-                
+
                 // Collect all POI IDs
                 for (int i = 0; i < poiList.poisLength(); i++) {
                     POI poi = poiList.pois(i);
                     importedPoiIds.add(poi.id());
                 }
-                
+
                 iterator.next();
             }
-            
+
             // Verify we imported some POIs
             assertFalse(importedPoiIds.isEmpty(), "Should have imported at least one POI");
             System.out.println("Total POIs imported: " + importedPoiIds.size());
-            
+
             // Verify specific POIs from Monaco
             // Monaco has some known POIs - let's verify a few by checking if they exist
             assertTrue(importedPoiIds.size() > 0, "Should have imported POIs");
@@ -107,20 +108,20 @@ class ImportServiceTest {
     void testImportAndRetrievePoiByOsmId() throws Exception {
         // Find a specific POI by OSM ID
         Path shardsDbPath = tempDataDir.resolve("poi_shards");
-        
+
         Long targetPoiId = null;
         POI targetPoi = null;
-        
+
         try (Options options = new Options();
              RocksDB shardsDb = RocksDB.open(options, shardsDbPath.toString())) {
-            
+
             var iterator = shardsDb.newIterator();
             iterator.seekToFirst();
             while (iterator.isValid()) {
                 byte[] value = iterator.value();
                 ByteBuffer buffer = ByteBuffer.wrap(value);
                 POIList poiList = POIList.getRootAsPOIList(buffer);
-                
+
                 for (int i = 0; i < poiList.poisLength(); i++) {
                     POI poi = poiList.pois(i);
                     if (targetPoiId == null) {
@@ -129,18 +130,18 @@ class ImportServiceTest {
                         break;
                     }
                 }
-                
+
                 if (targetPoiId != null) break;
                 iterator.next();
             }
         }
-        
+
         assertNotNull(targetPoiId, "Should have found at least one POI to test");
         assertNotNull(targetPoi, "Should have retrieved POI data");
-        
+
         // Now retrieve the POI by ID directly
         POI retrievedPoi = findPoiById(tempDataDir, targetPoiId);
-        
+
         assertNotNull(retrievedPoi, "Should be able to find POI by OSM ID: " + targetPoiId);
         assertEquals(targetPoiId, retrievedPoi.id(), "POI ID should match");
         assertEquals(targetPoi.lat(), retrievedPoi.lat(), "POI latitude should match");
@@ -151,41 +152,41 @@ class ImportServiceTest {
     @Test
     void testImportPoiHasValidCoordinates() throws Exception {
         Path shardsDbPath = tempDataDir.resolve("poi_shards");
-        
+
         try (Options options = new Options();
              RocksDB shardsDb = RocksDB.open(options, shardsDbPath.toString())) {
-            
+
             var iterator = shardsDb.newIterator();
             iterator.seekToFirst();
-            
+
             boolean foundValidPoi = false;
             while (iterator.isValid()) {
                 byte[] value = iterator.value();
                 ByteBuffer buffer = ByteBuffer.wrap(value);
                 POIList poiList = POIList.getRootAsPOIList(buffer);
-                
+
                 for (int i = 0; i < poiList.poisLength(); i++) {
                     POI poi = poiList.pois(i);
-                    
+
                     // Verify coordinates are valid for Monaco
                     // Monaco is roughly at 43.7°N, 7.4°E
-                    assertTrue(poi.lat() >= 43.6 && poi.lat() <= 43.8, 
+                    assertTrue(poi.lat() >= 43.6 && poi.lat() <= 43.8,
                         "Latitude should be in Monaco range: " + poi.lat());
-                    assertTrue(poi.lon() >= 7.3 && poi.lon() <= 7.5, 
+                    assertTrue(poi.lon() >= 7.3 && poi.lon() <= 7.5,
                         "Longitude should be in Monaco range: " + poi.lon());
-                    
+
                     // Verify type is set
                     assertNotNull(poi.type(), "POI should have a type");
                     assertFalse(poi.type().isEmpty(), "POI type should not be empty");
-                    
+
                     foundValidPoi = true;
                     break;
                 }
-                
+
                 if (foundValidPoi) break;
                 iterator.next();
             }
-            
+
             assertTrue(foundValidPoi, "Should have found at least one POI to validate");
         }
     }
@@ -212,22 +213,22 @@ class ImportServiceTest {
     @Test
     void testImportPoiWithNames() throws Exception {
         Path shardsDbPath = tempDataDir.resolve("poi_shards");
-        
+
         try (Options options = new Options();
              RocksDB shardsDb = RocksDB.open(options, shardsDbPath.toString())) {
-            
+
             var iterator = shardsDb.newIterator();
             iterator.seekToFirst();
-            
+
             boolean foundPoiWithNames = false;
             while (iterator.isValid()) {
                 byte[] value = iterator.value();
                 ByteBuffer buffer = ByteBuffer.wrap(value);
                 POIList poiList = POIList.getRootAsPOIList(buffer);
-                
+
                 for (int i = 0; i < poiList.poisLength(); i++) {
                     POI poi = poiList.pois(i);
-                    
+
                     if (poi.namesLength() > 0) {
                         // Verify names are properly stored
                         for (int j = 0; j < poi.namesLength(); j++) {
@@ -239,11 +240,11 @@ class ImportServiceTest {
                         break;
                     }
                 }
-                
+
                 if (foundPoiWithNames) break;
                 iterator.next();
             }
-            
+
             // It's OK if no POIs have names - some POIs don't have names
             System.out.println("Found POI with names: " + foundPoiWithNames);
         }
@@ -254,29 +255,29 @@ class ImportServiceTest {
      */
     private POI findPoiById(Path dataDir, long poiId) throws RocksDBException {
         Path shardsDbPath = dataDir.resolve("poi_shards");
-        
+
         try (Options options = new Options();
              RocksDB shardsDb = RocksDB.open(options, shardsDbPath.toString())) {
-            
+
             var iterator = shardsDb.newIterator();
             iterator.seekToFirst();
-            
+
             while (iterator.isValid()) {
                 byte[] value = iterator.value();
                 ByteBuffer buffer = ByteBuffer.wrap(value);
                 POIList poiList = POIList.getRootAsPOIList(buffer);
-                
+
                 for (int i = 0; i < poiList.poisLength(); i++) {
                     POI poi = poiList.pois(i);
                     if (poi.id() == poiId) {
                         return poi;
                     }
                 }
-                
+
                 iterator.next();
             }
         }
-        
+
         return null;
     }
 

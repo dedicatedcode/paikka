@@ -32,6 +32,7 @@ import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Stream;
@@ -172,6 +173,8 @@ public class ImportService {
                 pass2PoiShardingFromIndex(nodeCache, wayIndexDb, shardsDb, boundariesDb, poiIndexDb, gridIndexDb, stats);
                 printPhaseSummary("PASS 2", pass2Start, stats);
 
+                shardsDb.compactRange();
+                boundariesDb.compactRange();
                 stats.setTotalTime(System.currentTimeMillis() - totalStartTime);
                 stats.stop();
 
@@ -266,9 +269,10 @@ public class ImportService {
 
                 } else if (phase.contains("2.1")) {
                     long poisPerSec = phaseSeconds > 0 ? (long)(stats.getPoisProcessed() / phaseSeconds) : 0;
+                    long poisReadSec = phaseSeconds > 0 ? (long)(stats.getPoiIndexRecRead() / phaseSeconds) : 0;
                     sb.append(String.format("\033[1;36m[%s]\033[0m \033[1mProcessing POIs & Sharding\033[0m", formatTime(elapsed)));
-                    sb.append(String.format(" │ \033[32mPOIs Processed:\033[0m %s \033[33m(%s/s)\033[0m",
-                                            formatCompactNumber(stats.getPoisProcessed()), formatCompactRate(poisPerSec)));
+                    sb.append(String.format(" │ \033[32mPOI Index Rec Read:\033[0m %s \033[33m%s\033[0m", formatCompactNumber(stats.getPoiIndexRecRead()), stats.isPoiIndexRecReadDone() ? "(done)" : String.format("(%s/s)",formatCompactRate(poisReadSec))));
+                    sb.append(String.format(" │ \033[32mPOIs Processed:\033[0m %s \033[33m(%s/s)\033[0m", formatCompactNumber(stats.getPoisProcessed()), formatCompactRate(poisPerSec)));
                     sb.append(String.format(" │ \033[36mQueue:\033[0m %s", formatCompactNumber(stats.getQueueSize())));
                     sb.append(String.format(" │ \033[37mThreads:\033[0m %d", stats.getActiveThreads()));
 
@@ -413,69 +417,93 @@ public class ImportService {
 
         try (PeriodicFlusher _ = PeriodicFlusher.start("shard-buffer-flush", 10, 10, flushTask)) {
             BlockingQueue<List<PoiQueueItem>> queue = new LinkedBlockingQueue<>(5000);
-            int numProcessors = Math.max(1, config.getMaxImportThreads());
-            CountDownLatch latch = new CountDownLatch(numProcessors);
+            int numReaders = Math.max(1, config.getImportConfiguration().getThreads());
+            int chunkSize = config.getImportConfiguration().getChunkSize();
+            CountDownLatch latch = new CountDownLatch(numReaders);
 
-            try (ExecutorService executor = createExecutorService(numProcessors)) {
+            try (ExecutorService executor = createExecutorService(numReaders)) {
                 final ThreadLocal<HierarchyCache> hierarchyCacheThreadLocal = ThreadLocal.withInitial(
                         () -> new HierarchyCache(boundariesDb, gridIndexDb, s2Helper)
                 );
+                List<byte[]> splitKeys = new ArrayList<>(numReaders);
 
-                // ─── Reader thread: read chunks, sort each by S2CellId, emit ───
-                Thread readerThread = Thread.ofVirtual().start(() -> {
-                    final int SORT_CHUNK_SIZE = 500_000;
-                    List<PoiQueueItem> chunk = new ArrayList<>(SORT_CHUNK_SIZE);
-
-                    try (RocksIterator it = poiIndexDb.newIterator()) {
-                        it.seekToFirst();
-                        while (it.isValid()) {
-                            byte[] key = it.key();
-                            byte[] value = it.value();
-                            byte kind = key[0];
-                            long id = bytesToLong(key, 1);
-                            PoiIndexRec rec = decodePoiIndexRec(value);
-                            rec.kind = kind;
-                            rec.id = id;
-
-                            // For way POIs, lat/lon is NaN — resolve from nodeCache/wayIndexDb
-                            if (Double.isNaN(rec.lat) && kind == 'W') {
-                                resolveWayCenter(rec, nodeCache, wayIndexDb);
-                            }
-
-                            if (!Double.isNaN(rec.lat) && !Double.isNaN(rec.lon)) {
-                                PoiQueueItem item = new PoiQueueItem(rec, S2CellId.fromLatLng(S2LatLng.fromDegrees(rec.lat, rec.lon)).id());
-                                chunk.add(item);
-                            }
-
-                            if (chunk.size() >= SORT_CHUNK_SIZE) {
-                                sortAndEmitChunk(chunk, queue, stats);
-                                chunk.clear();
-                            }
-
-                            it.next();
+                try (RocksIterator countIt = poiIndexDb.newIterator()) {
+                    countIt.seekToFirst();
+                    long count = 0;
+                    while (countIt.isValid()) {
+                        if (splitKeys.isEmpty()) {
+                            splitKeys.add(countIt.key().clone());  // First key
                         }
-
-                        // Emit remaining items
-                        if (!chunk.isEmpty()) {
-                            sortAndEmitChunk(chunk, queue, stats);
-                            chunk.clear();
-                        }
-
-                    } catch (Exception ignored) {
-                    } finally {
-                        for (int i = 0; i < numProcessors; i++) {
-                            try {
-                                queue.put(Collections.emptyList());
-                            } catch (InterruptedException e) {
-                                Thread.currentThread().interrupt();
-                                break;
+                        count++;
+                        if (count % (100_000) == 0) {  // Sample every 100k for efficiency; adjust for large DBs
+                            if (splitKeys.size() < numReaders) {
+                                splitKeys.add(countIt.key().clone());
                             }
                         }
+                        countIt.next();
                     }
-                });
+                }
+                while (splitKeys.size() < numReaders + 1) {
+                    splitKeys.add(null);  // Null means "go to end" for last ranges
+                }
+                List<Thread> readerThreads = new ArrayList<>(numReaders);
+                for (int t = 0; t < numReaders; t++) {
+                    final byte[] startKey = splitKeys.get(t);
+                    final byte[] endKey = (t + 1 < splitKeys.size()) ? splitKeys.get(t + 1) : null;  // Null = go to end
+                    // ─── Reader thread: read chunks, sort each by S2CellId, emit ───
+                    Thread readerThread = Thread.ofVirtual().name("PoiReader-" + t).start(() -> {
+                        List<PoiQueueItem> chunk = new ArrayList<>(chunkSize);
+                        try (ReadOptions ro = new ReadOptions().setReadaheadSize(2 * 1024 * 1024);) {
+                            try (RocksIterator it = poiIndexDb.newIterator(ro)) {
+                                it.seek(startKey);
+                                while (it.isValid()) {
+                                    byte[] key = it.key();
+                                    // Check if we've reached the end of this range
+                                    if (endKey != null && Arrays.compareUnsigned(key, endKey) >= 0) {
+                                        break;
+                                    }
+                                    byte[] value = it.value();
+                                    byte kind = key[0];
+                                    long id = bytesToLong(key, 1);
+                                    PoiIndexRec rec = decodePoiIndexRec(value);
+                                    stats.incrementPoiIndexRecRead();
+                                    rec.kind = kind;
+                                    rec.id = id;
+
+                                    // For way POIs, lat/lon is NaN — resolve from nodeCache/wayIndexDb
+                                    if (Double.isNaN(rec.lat) && kind == 'W') {
+                                        resolveWayCenter(rec, nodeCache, wayIndexDb);
+                                    }
+
+                                    if (!Double.isNaN(rec.lat) && !Double.isNaN(rec.lon)) {
+                                        PoiQueueItem item = new PoiQueueItem(rec, S2CellId.fromLatLng(S2LatLng.fromDegrees(rec.lat, rec.lon)).id());
+                                        chunk.add(item);
+                                    }
+
+                                    if (chunk.size() >= chunkSize) {
+                                        sortAndEmitChunk(chunk, queue, stats);
+                                        chunk.clear();
+                                    }
+
+                                    it.next();
+                                }
+
+                                // Emit remaining items
+                                if (!chunk.isEmpty()) {
+                                    sortAndEmitChunk(chunk, queue, stats);
+                                    chunk.clear();
+                                }
+
+                            } catch (Exception ignored) {
+                            }
+                        }
+                    });
+                    readerThreads.add(readerThread);
+
+                }
 
                 // ─── Worker threads: hierarchy resolution + sharding (unchanged) ───
-                for (int i = 0; i < numProcessors; i++) {
+                for (int i = 0; i < numReaders; i++) {
                     executor.submit(() -> {
                         stats.incrementActiveThreads();
                         final GeometryFactory geometryFactory = new GeometryFactory();
@@ -540,8 +568,23 @@ public class ImportService {
                     });
                 }
 
+                for (Thread reader : readerThreads) {
+                    try {
+                        reader.join();
+                    } catch (InterruptedException ignored) {
+                        Thread.currentThread().interrupt();
+                    }
+                }
+                for (int i = 0; i < numReaders; i++) {
+                    try {
+                        queue.put(Collections.emptyList());
+                        stats.setPoiIndexRecReadDone();
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                }
                 latch.await();
-                readerThread.join();
             }
             flushTask.run();
         }
@@ -608,11 +651,12 @@ public class ImportService {
         } catch (Exception ignored) {
         }
     }
+
     private void cacheNeededNodeCoordinates(Path pbfFile, RocksDB neededNodesDb, RocksDB nodeCache, ImportStatistics stats) throws Exception {
         final int BATCH_SIZE = 50_000;
 
         BlockingQueue<List<OsmNode>> nodeBatchQueue = new LinkedBlockingQueue<>(200);
-        int numProcessors = Math.max(1, config.getMaxImportThreads());
+        int numProcessors = Math.max(1, config.getImportConfiguration().getThreads());
         CountDownLatch latch = new CountDownLatch(numProcessors);
 
         try (ExecutorService executor = createExecutorService(numProcessors)) {
@@ -713,7 +757,7 @@ public class ImportService {
         int maxConcurrentGeometries = 100;
         Semaphore semaphore = new Semaphore(maxConcurrentGeometries);
 
-        int numThreads = Math.max(1, config.getMaxImportThreads());
+        int numThreads = Math.max(1, config.getImportConfiguration().getThreads());
         ExecutorService executor = createExecutorService(numThreads);
         ExecutorCompletionService<BoundaryResultLite> ecs = new ExecutorCompletionService<>(executor);
         AtomicInteger submitted = new AtomicInteger(0);
@@ -1162,11 +1206,12 @@ public class ImportService {
         System.out.println("\n\033[1;34m" + "=".repeat(80) + "\n" + centerText("PAIKKA IMPORT STARTING") + "\n" + "=".repeat(80) + "\033[0m\n");
         System.out.println("PBF File: " + pbfFilePath);
         System.out.println("Data Dir: " + dataDir);
-        System.out.println("Max Import Threads: " + config.getMaxImportThreads());
+        System.out.println("Max Import Threads: " + config.getImportConfiguration().getThreads());
         long maxHeapBytes = Runtime.getRuntime().maxMemory();
         String maxHeapSize = (maxHeapBytes == Long.MAX_VALUE) ? "unlimited" : (maxHeapBytes / (1024 * 1024 * 1024)) + "GB";
         System.out.println("Max Heap: " + maxHeapSize);
         System.out.println("File window size: " + (this.fileReadWindowSize / (1024 * 1024)) + "MB");
+        System.out.println("Sharding Chunk Size: " + this.config.getImportConfiguration().getChunkSize());
     }
 
     private void printPhaseHeader(String phase) {
@@ -1332,6 +1377,8 @@ public class ImportService {
         private final AtomicLong relationsFound = new AtomicLong(0);
         private final AtomicLong boundariesProcessed = new AtomicLong(0);
         private final AtomicLong poisProcessed = new AtomicLong(0);
+        private final AtomicLong poiIndexRecRead = new AtomicLong(0);
+        private final AtomicBoolean poiIndexRecReadDone = new AtomicBoolean(false);
         private final AtomicLong rocksDbWrites = new AtomicLong(0);
         private final AtomicLong queueSize = new AtomicLong(0);
         private final AtomicLong activeThreads = new AtomicLong(0);
@@ -1366,6 +1413,10 @@ public class ImportService {
         public void incrementBoundariesProcessed() { boundariesProcessed.incrementAndGet(); }
         public long getPoisProcessed() { return poisProcessed.get(); }
         public void incrementPoisProcessed() { poisProcessed.incrementAndGet(); }
+        public long getPoiIndexRecRead() { return poiIndexRecRead.get(); }
+        public void incrementPoiIndexRecRead() { poiIndexRecRead.incrementAndGet(); }
+        public boolean isPoiIndexRecReadDone() { return poiIndexRecReadDone.get(); }
+        public void setPoiIndexRecReadDone() { poiIndexRecReadDone.set(true); }
         public long getRocksDbWrites() { return rocksDbWrites.get(); }
         public void incrementRocksDbWrites() { rocksDbWrites.incrementAndGet(); }
         public int getQueueSize() { return (int) queueSize.get(); }
