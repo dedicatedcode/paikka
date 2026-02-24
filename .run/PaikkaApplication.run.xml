@@ -1,5 +1,6 @@
 <component name="ProjectRunConfigurationManager">
   <configuration default="false" name="PaikkaApplication" type="SpringBootApplicationConfigurationType" factoryName="Spring Boot" nameIsGenerated="true">
+    <option name="ACTIVE_PROFILES" value="dev" />
     <module name="paikka" />
     <option name="SPRING_BOOT_MAIN_CLASS" value="com.dedicatedcode.paikka.PaikkaApplication" />
     <method v="2">
