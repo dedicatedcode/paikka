@@ -416,86 +416,78 @@ public class ImportService {
         };
 
         try (PeriodicFlusher _ = PeriodicFlusher.start("shard-buffer-flush", 10, 10, flushTask)) {
-            BlockingQueue<List<PoiQueueItem>> queue = new LinkedBlockingQueue<>(5000);
+            BlockingQueue<List<PoiQueueItem>> queue = new LinkedBlockingQueue<>(200);
             int numReaders = Math.max(1, config.getImportConfiguration().getThreads());
             int chunkSize = config.getImportConfiguration().getChunkSize();
             CountDownLatch latch = new CountDownLatch(numReaders);
 
-            try (ExecutorService executor = createExecutorService(numReaders)) {
+            try (ExecutorService executor = createExecutorService(numReaders);
+                 ReadOptions ro = new ReadOptions().setReadaheadSize(2 * 1024 * 1024);) {
                 final ThreadLocal<HierarchyCache> hierarchyCacheThreadLocal = ThreadLocal.withInitial(
                         () -> new HierarchyCache(boundariesDb, gridIndexDb, s2Helper)
                 );
-                List<byte[]> splitKeys = new ArrayList<>(numReaders);
+                long total = 0;
+                try (RocksIterator it = poiIndexDb.newIterator(ro)) {
+                    for (it.seekToFirst(); it.isValid(); it.next()) total++;
+                }
 
-                try (RocksIterator countIt = poiIndexDb.newIterator()) {
-                    countIt.seekToFirst();
-                    long count = 0;
-                    while (countIt.isValid()) {
-                        if (splitKeys.isEmpty()) {
-                            splitKeys.add(countIt.key().clone());  // First key
-                        }
-                        count++;
-                        if (count % (100_000) == 0) {  // Sample every 100k for efficiency; adjust for large DBs
-                            if (splitKeys.size() < numReaders) {
-                                splitKeys.add(countIt.key().clone());
-                            }
-                        }
-                        countIt.next();
+                long step = Math.max(1, total / numReaders);
+                List<byte[]> splitKeys = new ArrayList<>();
+                try (RocksIterator it = poiIndexDb.newIterator(ro)) {
+                    long i = 0;
+                    for (it.seekToFirst(); it.isValid() && splitKeys.size() < numReaders; it.next(), i++) {
+                        if (i % step == 0) splitKeys.add(it.key().clone());
                     }
                 }
-                while (splitKeys.size() < numReaders + 1) {
-                    splitKeys.add(null);  // Null means "go to end" for last ranges
-                }
+                splitKeys.add(null);
                 List<Thread> readerThreads = new ArrayList<>(numReaders);
                 for (int t = 0; t < numReaders; t++) {
                     final byte[] startKey = splitKeys.get(t);
-                    final byte[] endKey = (t + 1 < splitKeys.size()) ? splitKeys.get(t + 1) : null;  // Null = go to end
-                    // ─── Reader thread: read chunks, sort each by S2CellId, emit ───
+                    final byte[] endKey = (t + 1 < splitKeys.size()) ? splitKeys.get(t + 1) : null;
                     Thread readerThread = Thread.ofVirtual().name("PoiReader-" + t).start(() -> {
                         List<PoiQueueItem> chunk = new ArrayList<>(chunkSize);
-                        try (ReadOptions ro = new ReadOptions().setReadaheadSize(2 * 1024 * 1024);) {
-                            try (RocksIterator it = poiIndexDb.newIterator(ro)) {
-                                it.seek(startKey);
-                                while (it.isValid()) {
-                                    byte[] key = it.key();
-                                    // Check if we've reached the end of this range
-                                    if (endKey != null && Arrays.compareUnsigned(key, endKey) >= 0) {
-                                        break;
-                                    }
-                                    byte[] value = it.value();
-                                    byte kind = key[0];
-                                    long id = bytesToLong(key, 1);
-                                    PoiIndexRec rec = decodePoiIndexRec(value);
-                                    stats.incrementPoiIndexRecRead();
-                                    rec.kind = kind;
-                                    rec.id = id;
 
-                                    // For way POIs, lat/lon is NaN — resolve from nodeCache/wayIndexDb
-                                    if (Double.isNaN(rec.lat) && kind == 'W') {
-                                        resolveWayCenter(rec, nodeCache, wayIndexDb);
-                                    }
+                        try (RocksIterator it = poiIndexDb.newIterator(ro)) {
+                            it.seek(startKey);
+                            while (it.isValid()) {
+                                byte[] key = it.key();
+                                if (endKey != null && Arrays.compareUnsigned(key, endKey) >= 0) {
+                                    break;
+                                }
+                                byte[] value = it.value();
+                                byte kind = key[0];
+                                long id = bytesToLong(key, 1);
+                                PoiIndexRec rec = decodePoiIndexRec(value);
+                                stats.incrementPoiIndexRecRead();
+                                rec.kind = kind;
+                                rec.id = id;
 
-                                    if (!Double.isNaN(rec.lat) && !Double.isNaN(rec.lon)) {
-                                        PoiQueueItem item = new PoiQueueItem(rec, S2CellId.fromLatLng(S2LatLng.fromDegrees(rec.lat, rec.lon)).id());
-                                        chunk.add(item);
-                                    }
-
-                                    if (chunk.size() >= chunkSize) {
-                                        sortAndEmitChunk(chunk, queue, stats);
-                                        chunk.clear();
-                                    }
-
-                                    it.next();
+                                // For way POIs, lat/lon is NaN — resolve from nodeCache/wayIndexDb
+                                byte[] cacheWayNodes = null;
+                                if (Double.isNaN(rec.lat) && kind == 'W') {
+                                    cacheWayNodes = resolveWayCenter(rec, nodeCache, wayIndexDb);
                                 }
 
-                                // Emit remaining items
-                                if (!chunk.isEmpty()) {
+                                if (!Double.isNaN(rec.lat) && !Double.isNaN(rec.lon)) {
+                                    PoiQueueItem item = new PoiQueueItem(rec, S2CellId.fromLatLng(S2LatLng.fromDegrees(rec.lat, rec.lon)).id(), cacheWayNodes);
+                                    chunk.add(item);
+                                }
+
+                                if (chunk.size() >= chunkSize) {
                                     sortAndEmitChunk(chunk, queue, stats);
                                     chunk.clear();
                                 }
 
-                            } catch (Exception ignored) {
+                                it.next();
                             }
+
+                            // Emit remaining items
+                            if (!chunk.isEmpty()) {
+                                sortAndEmitChunk(chunk, queue, stats);
+                                chunk.clear();
+                            }
+
+                        } catch (Exception ignored) {
                         }
                     });
                     readerThreads.add(readerThread);
@@ -524,7 +516,7 @@ public class ImportService {
 
                                         // For way POIs, still compute boundary WKB geometry
                                         if (rec.kind == 'W') {
-                                            List<Coordinate> coords = buildCoordinatesFromWay(rec.id, nodeCache, wayIndexDb);
+                                            List<Coordinate> coords = buildCoordinatesFromWay(nodeCache, item.cachedWayNodes);
                                             if (coords != null && coords.size() >= 3) {
                                                 if (!coords.getFirst().equals2D(coords.getLast())) {
                                                     coords.add(new Coordinate(coords.getFirst()));
@@ -616,12 +608,12 @@ public class ImportService {
         }
     }
 
-    private void resolveWayCenter(PoiIndexRec rec, RocksDB nodeCache, RocksDB wayIndexDb) {
+    private byte[] resolveWayCenter(PoiIndexRec rec, RocksDB nodeCache, RocksDB wayIndexDb) {
         try {
             byte[] wayNodes = wayIndexDb.get(s2Helper.longToByteArray(rec.id));
-            if (wayNodes == null) return;
+            if (wayNodes == null) return null;
             long[] nids = s2Helper.byteArrayToLongArray(wayNodes);
-            if (nids.length == 0) return;
+            if (nids.length == 0) return null;
 
             List<byte[]> keys = new ArrayList<>(nids.length);
             for (long nid : nids) keys.add(s2Helper.longToByteArray(nid));
@@ -648,8 +640,10 @@ public class ImportService {
                 rec.lat = (minY + maxY) / 2.0;
                 rec.lon = (minX + maxX) / 2.0;
             }
+            return wayNodes;
         } catch (Exception ignored) {
         }
+        return null;
     }
 
     private void cacheNeededNodeCoordinates(Path pbfFile, RocksDB neededNodesDb, RocksDB nodeCache, ImportStatistics stats) throws Exception {
@@ -932,9 +926,8 @@ public class ImportService {
         return l;
     }
 
-    private List<Coordinate> buildCoordinatesFromWay(Long wayId, RocksDB nodeCache, RocksDB wayIndexDb) {
+    private List<Coordinate> buildCoordinatesFromWay(RocksDB nodeCache, byte[] nodeSeq) {
         try {
-            byte[] nodeSeq = wayIndexDb.get(s2Helper.longToByteArray(wayId));
             if (nodeSeq == null) return null;
             long[] nodeIds = s2Helper.byteArrayToLongArray(nodeSeq);
             if (nodeIds.length < 2) return null;
@@ -1023,7 +1016,13 @@ public class ImportService {
         if (wayIds.isEmpty()) return Collections.emptyList();
         Map<Long, List<Coordinate>> wayCoordinates = new HashMap<>();
         for (Long wayId : wayIds) {
-            List<Coordinate> coords = buildCoordinatesFromWay(wayId, nodeCache, wayIndexDb);
+            byte[] nodeSeq = null;
+            try {
+                nodeSeq = wayIndexDb.get(s2Helper.longToByteArray(wayId));
+            } catch (RocksDBException ignored) {
+
+            }
+            List<Coordinate> coords = buildCoordinatesFromWay(nodeCache, nodeSeq);
             if (coords != null && coords.size() >= 2) wayCoordinates.put(wayId, coords);
         }
         if (wayCoordinates.isEmpty()) return Collections.emptyList();
@@ -1589,7 +1588,7 @@ public class ImportService {
         String country;
     }
 
-    private record PoiQueueItem(PoiIndexRec rec, long s2SortKey) {
+    private record PoiQueueItem(PoiIndexRec rec, long s2SortKey, byte[] cachedWayNodes) {
     }
 
     private static class RelRec {

@@ -166,7 +166,7 @@ JVM_ARGS="$JVM_ARGS --enable-native-access=ALL-UNNAMED"
 
 # Add thread configuration if specified
 if [ -n "$THREADS" ]; then
-    JVM_ARGS="$JVM_ARGS -Dpaikka.max-import-threads=$THREADS"
+    JVM_ARGS="$JVM_ARGS -Dpaikka.import.threads=$THREADS"
 fi
 
 # Run PAIKKA import with required JVM flags

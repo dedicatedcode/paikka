@@ -51,15 +51,8 @@ public class PaikkaConfiguration {
 
     public static class ImportConfiguration {
 
-        /**
-         * S2 cell level for POI sharding.
-         */
         private int s2Level = 14;
 
-        /**
-         * Maximum number of threads to use for parallel processing during import.
-         * Defaults to half of available processors to prevent system overload.
-         */
         private int threads = Math.max(1, Runtime.getRuntime().availableProcessors() / 2);
         private int chunkSize = 500_000;
 
