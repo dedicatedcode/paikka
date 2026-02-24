@@ -79,11 +79,9 @@ public class PaikkaApplication implements CommandLineRunner {
                 System.exit(1);
             }
             
-            logger.info("Starting import with PBF file: {} and data directory: {}", pbfFile, dataDir);
-            
+
             try {
                 importService.importData(pbfFile, dataDir);
-                logger.info("Import completed successfully");
                 System.exit(0);
             } catch (Exception e) {
                 logger.error("Import failed", e);

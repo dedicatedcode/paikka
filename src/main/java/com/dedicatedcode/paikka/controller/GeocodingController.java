@@ -54,7 +54,7 @@ public class GeocodingController {
             @RequestParam(required = false) Integer limit) {
         
         // Determine effective limit
-        int effectiveLimit = (limit != null) ? Math.min(limit, config.getMaxResults()) : config.getDefaultResults();
+        int effectiveLimit = (limit != null) ? Math.min(limit, config.getQueryConfiguration().getMaxResults()) : config.getQueryConfiguration().getDefaultResults();
         
         logger.debug("Reverse geocoding request: lat={}, lon={}, lang={}, limit={}", lat, lon, lang, effectiveLimit);
         

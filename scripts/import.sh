@@ -150,6 +150,9 @@ JVM_ARGS="$JVM_ARGS -XX:MaxGCPauseMillis=200"
 JVM_ARGS="$JVM_ARGS -XX:+UnlockExperimentalVMOptions"
 JVM_ARGS="$JVM_ARGS -XX:+UseTransparentHugePages"
 JVM_ARGS="$JVM_ARGS -XX:+ExitOnOutOfMemoryError"
+JVM_ARGS="$JVM_ARGS -XX:MaxDirectMemorySize=4G"
+JVM_ARGS="$JVM_ARGS -XX:MaxMetaspaceSize=512M"
+JVM_ARGS="$JVM_ARGS -Xss512k"
 JVM_ARGS="$JVM_ARGS --add-exports=java.base/jdk.internal.ref=ALL-UNNAMED"
 JVM_ARGS="$JVM_ARGS --add-exports=java.base/sun.nio.ch=ALL-UNNAMED"
 JVM_ARGS="$JVM_ARGS --add-exports=jdk.unsupported/sun.misc=ALL-UNNAMED"
@@ -163,7 +166,7 @@ JVM_ARGS="$JVM_ARGS --enable-native-access=ALL-UNNAMED"
 
 # Add thread configuration if specified
 if [ -n "$THREADS" ]; then
-    JVM_ARGS="$JVM_ARGS -Dpaikka.max-import-threads=$THREADS"
+    JVM_ARGS="$JVM_ARGS -Dpaikka.import.threads=$THREADS"
 fi
 
 # Run PAIKKA import with required JVM flags
@@ -171,7 +174,8 @@ java $JVM_ARGS \
   -jar "$JAR_FILE" \
   --import \
   --pbf-file "$PBF_FILE" \
-  --data-dir "$DATA_DIR"
+  --data-dir "$DATA_DIR" \
+  --paikka.admin.password test
 
 EXIT_CODE=$?
 
