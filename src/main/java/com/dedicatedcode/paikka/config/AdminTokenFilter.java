@@ -71,6 +71,6 @@ public class AdminTokenFilter extends OncePerRequestFilter {
     protected boolean shouldNotFilter(HttpServletRequest request) {
         // Only apply to API endpoints that need authentication
         String path = request.getRequestURI();
-        return !path.startsWith("/api/");
+        return !path.startsWith("/admin/");
     }
 }
