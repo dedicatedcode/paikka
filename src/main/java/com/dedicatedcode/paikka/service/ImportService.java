@@ -1350,9 +1350,8 @@ public class ImportService {
                           formatCompactNumber(totalObjects),
                           formatCompactNumber((long)(totalObjects / totalSeconds)));
 
-        System.out.printf("\033[1;37m💾 Database Operations:\033[0m \033[1;36m%s writes\033[0m (\033[33m%s writes/sec\033[0m)%n",
-                          formatCompactNumber(stats.getRocksDbWrites()),
-                          formatCompactNumber((long)(stats.getRocksDbWrites() / totalSeconds)));
+        System.out.printf("\033[1;37m💾 Database Operations:\033[0m \033[1;36m%s writes\033[0m%n",
+                          formatCompactNumber(stats.getRocksDbWrites()));
 
         System.out.println("\n\033[1;37m📦 Dataset Size:\033[0m " + formatSize(stats.getDatasetBytes()));
         System.out.println("  • poi_shards:  " + formatSize(stats.getShardsBytes()));
