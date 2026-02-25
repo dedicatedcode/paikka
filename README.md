@@ -273,6 +273,17 @@ Configure the service using environment variables or application properties:
 # Server configuration
 server.port=8080
 
+# HTTP compression
+server.compression.enabled=true
+server.compression.min-response-size=1024
+server.compression.mime-types=text/plain,application/json
+
+# Static resource caching
+spring.web.resources.cache.cachecontrol.max-age=31536000
+spring.web.resources.cache.cachecontrol.cache-public=true
+spring.web.resources.chain.strategy.content.enabled=true
+spring.web.resources.chain.strategy.content.paths=/css/**,/js/**,/img/**,/fonts/**
+
 # Data directory
 paikka.data-dir=./data
 
@@ -300,6 +311,10 @@ logging.level.root=WARN
 | Property | Description | Default Value |
 |----------|-------------|---------------|
 | `server.port` | HTTP server port | `8080` |
+| `server.compression.enabled` | Enable HTTP response compression | `true` |
+| `server.compression.min-response-size` | Minimum response size to trigger compression (bytes) | `1024` |
+| `server.compression.mime-types` | MIME types to compress | `text/plain,application/json` |
+| `spring.web.resources.cache.cachecontrol.max-age` | Static resource cache max age (seconds) | `31536000` |
 | `paikka.data-dir` | Directory where processed data is stored | `./data` |
 | `paikka.import.threads` | Number of threads for data import | `16` |
 | `paikka.import.s2-level` | S2 spatial indexing level (10-15) | `14` |
@@ -311,6 +326,7 @@ logging.level.root=WARN
 | `paikka.admin.password` | Password for admin interface access | _(empty)_ |
 | `logging.level.com.dedicatedcode.paikka` | Application log level | `INFO` |
 | `logging.level.root` | Root log level | `WARN` |
+
 ### Sample Requests
 
 ```bash
@@ -360,7 +376,7 @@ Contributions are welcome! Please feel free to submit a Pull Request to [reposit
 
 ## License
 
-This project is licensed under the MIT License – see the [LICENSE](LICENSE) file for details.
+This project is licensed under the GNU Affero General Public License v3 (AGPLv3) – see the [LICENSE](LICENSE) file for details.
 
 ## About
 
