@@ -1,3 +1,19 @@
+/*
+ *  This file is part of paikka.
+ *
+ *  Paikka is free software: you can redistribute it and/or
+ *  modify it under the terms of the GNU Affero General Public License
+ *  as published by the Free Software Foundation, either version 3 or
+ *  any later version.
+ *
+ *  Paikka is distributed in the hope that it will be useful,
+ *  but WITHOUT ANY WARRANTY; without even the implied
+ *  warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+ *  See the GNU Affero General Public License for more details.
+ * You should have received a copy of the GNU Affero General Public License
+ * along with Paikka. If not, see <https://www.gnu.org/licenses/>.
+ */
+
 package com.dedicatedcode.paikka.service;
 
 import com.dedicatedcode.paikka.config.PaikkaConfiguration;
@@ -1350,9 +1366,8 @@ public class ImportService {
                           formatCompactNumber(totalObjects),
                           formatCompactNumber((long)(totalObjects / totalSeconds)));
 
-        System.out.printf("\033[1;37m💾 Database Operations:\033[0m \033[1;36m%s writes\033[0m (\033[33m%s writes/sec\033[0m)%n",
-                          formatCompactNumber(stats.getRocksDbWrites()),
-                          formatCompactNumber((long)(stats.getRocksDbWrites() / totalSeconds)));
+        System.out.printf("\033[1;37m💾 Database Operations:\033[0m \033[1;36m%s writes\033[0m%n",
+                          formatCompactNumber(stats.getRocksDbWrites()));
 
         System.out.println("\n\033[1;37m📦 Dataset Size:\033[0m " + formatSize(stats.getDatasetBytes()));
         System.out.println("  • poi_shards:  " + formatSize(stats.getShardsBytes()));

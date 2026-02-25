@@ -112,12 +112,39 @@ The [OpenStreetMap website](https://www.openstreetmap.org/export/) allows you to
 
 ### Sizing Considerations
 
-
 | Dataset    | original | filtered... | time taken | reduction | during import | imported | time taken | reduction |
 |------------|----------|-------------|------------|-----------|---------------|----------|------------|-----------|
-| Planet     | 86 GB    | 33 GB       | 40 min     | ~60%      |               |          |            |           |
-| Germany    | 4.7 GB   | 1.7 GB      | 2 min      | ~61%      | 2.8 GB        | 875MB    | ~ 50 min   | ~80%      |
-| Netherland | 1.4 GB   | 390 MB      | 1 min      | ~61%      | 995 MB        | 366 MB   | ~ 2 min    | ~75%      |
+| Planet     | 86 GB    | 33 GB       | 40 min     | ~60%      | ~ 31 GB       | 8.15 GB  | ~ 16 h     | ~90%      |
+| Germany    | 4.7 GB   | 1.7 GB      | 2 min      | ~61%      | ~ 3 GB        | 875MB    | ~ 50 min   | ~80%      |
+| Netherland | 1.4 GB   | 390 MB      | 1 min      | ~61%      | ~ 1 GB        | 366 MB   | ~ 2 min    | ~75%      |
+
+<details>
+<summary>Hardware & Environment Details</summary>
+
+The above benchmarks were performed on the following hardware:
+
+- **CPU:** AMD Ryzen 7 5825U with Radeon Graphics (8 cores, 16 threads, 4.5 GHz max)
+- **Memory:** 31 GiB system RAM
+- **Storage:** NVMe SSD (import directory on fast NVMe storage)
+
+**Import Command Used:**
+```bash
+docker run -ti -v ./:/data dedicatedcode/paikka:develop import --memory 16G --threads 10 --data-dir /data/import/ planet-filtered.pbf
+```
+
+**Memory Considerations:**
+
+The `--memory` flag (e.g., `--memory 16G`) controls the JVM heap size only. RocksDB requires additional memory beyond the heap for its block cache and internal structures. For optimal performance with large imports, ensure your system has significantly more RAM available than the heap size specified. As a guideline, a 16GB heap typically works well on systems with 24-32GB of RAM for medium-sized countries, while planet imports benefit from 32GB+ heap on systems with 64GB+ RAM.
+
+**Swap Space:**
+
+Ensure adequate swap space is available. During import, memory usage can spike due to RocksDB's internal buffering and compaction operations. Without sufficient swap, the system may invoke the OOM killer to terminate processes when memory limits are exceeded. A good rule of thumb is to have swap space at least equal to or larger than the JVM heap size (e.g., 16GB heap with 16GB+ swap).
+
+**Storage Considerations:**
+
+A fast NVMe drive or RAID configuration significantly improves import times. The import process involves heavy random I/O operations during the RocksDB compaction phase. Slower storage can double or triple import times compared to fast NVMe storage.
+
+</details>
 
 ### Quick Start
 
@@ -246,31 +273,59 @@ Configure the service using environment variables or application properties:
 # Server configuration
 server.port=8080
 
+# HTTP compression
+server.compression.enabled=true
+server.compression.min-response-size=1024
+server.compression.mime-types=text/plain,application/json
+
+# Static resource caching
+spring.web.resources.cache.cachecontrol.max-age=31536000
+spring.web.resources.cache.cachecontrol.cache-public=true
+spring.web.resources.chain.strategy.content.enabled=true
+spring.web.resources.chain.strategy.content.paths=/css/**,/js/**,/img/**,/fonts/**
+
 # Data directory
-paikka.data-dir=/opt/paikka/data
-
-# S2 spatial indexing level (10-15, higher = more precise but larger index)
-paikka.s2-level=14
-
-# Maximum nodes to process in memory
-paikka.max-nodes=50000000
+paikka.data-dir=./data
 
 # Import configuration
-paikka.max-import-threads=10
+paikka.import.threads=16
+paikka.import.s2-level=14
+paikka.import.chunk-size=100000
 
-# API response limits
-paikka.max-results=500
-paikka.default-results=10
-
-# Base URL for the service
-paikka.base-url=http://localhost:8080
+# Query configuration
+paikka.query.max-results=500
+paikka.query.default-results=10
+paikka.query.base-url=http://localhost:8080
 
 # Statistics database path
 paikka.stats-db-path=./data/stats.db
 
 # Admin password
 paikka.admin.password=your-secure-password
+
+# Logging
+logging.level.com.dedicatedcode.paikka=INFO
+logging.level.root=WARN
 ```
+
+| Property | Description | Default Value |
+|----------|-------------|---------------|
+| `server.port` | HTTP server port | `8080` |
+| `server.compression.enabled` | Enable HTTP response compression | `true` |
+| `server.compression.min-response-size` | Minimum response size to trigger compression (bytes) | `1024` |
+| `server.compression.mime-types` | MIME types to compress | `text/plain,application/json` |
+| `spring.web.resources.cache.cachecontrol.max-age` | Static resource cache max age (seconds) | `31536000` |
+| `paikka.data-dir` | Directory where processed data is stored | `./data` |
+| `paikka.import.threads` | Number of threads for data import | `16` |
+| `paikka.import.s2-level` | S2 spatial indexing level (10-15) | `14` |
+| `paikka.import.chunk-size` | Number of elements to process per chunk | `100000` |
+| `paikka.query.max-results` | Maximum number of results returned by API | `500` |
+| `paikka.query.default-results` | Default number of results when not specified | `10` |
+| `paikka.query.base-url` | Base URL for the service (used in responses) | `http://localhost:8080` |
+| `paikka.stats-db-path` | Path to the statistics database | `./data/stats.db` |
+| `paikka.admin.password` | Password for admin interface access | _(empty)_ |
+| `logging.level.com.dedicatedcode.paikka` | Application log level | `INFO` |
+| `logging.level.root` | Root log level | `WARN` |
 
 ### Sample Requests
 
@@ -321,7 +376,7 @@ Contributions are welcome! Please feel free to submit a Pull Request to [reposit
 
 ## License
 
-This project is licensed under the MIT License – see the [LICENSE](LICENSE) file for details.
+This project is licensed under the GNU Affero General Public License v3 (AGPLv3) – see the [LICENSE](LICENSE) file for details.
 
 ## About
 
