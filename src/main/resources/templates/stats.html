@@ -7,41 +7,44 @@
     <link rel="stylesheet" href="/css/dark-theme.css">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <link rel="stylesheet" th:href="@{/css/main.css}" />
+
 </head>
 <body>
     <div class="container">
+
         <div class="header">
+            <a style="color: white" href="/admin/map">Query Map</a>
+
             <h1>Paikka API Statistics</h1>
-            <p>Monitor API usage, performance, and trends</p>
+            <div>
+                <p>Monitor API usage, performance, and trends</p>
+            </div>
         </div>
-        
-        <div class="nav-links">
-            <a href="/admin/stats" class="active">Statistics</a>
-            <a href="/admin/map">Query Map</a>
-        </div>
+
 
         <form hx-get="/admin/stats" hx-target="body" hx-trigger="submit" class="controls">
             <div class="filter-group">
                 <label for="startDate">Start Date</label>
                 <input type="date" id="startDate" name="startDate" th:value="${startDate}">
             </div>
-            
+
             <div class="filter-group">
                 <label for="endDate">End Date</label>
                 <input type="date" id="endDate" name="endDate" th:value="${endDate}">
             </div>
-            
+
             <div class="filter-group">
                 <label for="endpoint">Endpoint</label>
                 <select id="endpoint" name="endpoint">
                     <option value="">All endpoints</option>
-                    <option th:each="ep : ${availableEndpoints}" 
-                            th:value="${ep}" 
+                    <option th:each="ep : ${availableEndpoints}"
+                            th:value="${ep}"
                             th:text="${ep}"
                             th:selected="${ep == selectedEndpoint}"></option>
                 </select>
             </div>
-            
+
             <div class="filter-group">
                 <label for="view">View</label>
                 <select id="view" name="view">
@@ -49,13 +52,13 @@
                     <option value="hourly" th:selected="${view == 'hourly'}">Hourly</option>
                 </select>
             </div>
-            
+
             <div class="filter-group">
                 <label>&nbsp;</label>
-                <button type="submit">Update Stats</button>
+                <button class="btn btn-default" type="submit">Update Stats</button>
             </div>
         </form>
-        
+
         <div class="stats-grid">
                 <div class="stat-card">
                     <h3>Query Volume</h3>
@@ -63,14 +66,14 @@
                         <canvas id="queryChart" width="400" height="200"></canvas>
                     </div>
                 </div>
-                
+
                 <div class="stat-card">
                     <h3>Response Time</h3>
                     <div class="chart-container">
                         <canvas id="responseTimeChart" width="400" height="200"></canvas>
                     </div>
                 </div>
-                
+
                 <div class="stat-card">
                     <h3>Status Codes</h3>
                     <div class="chart-container">
@@ -78,7 +81,7 @@
                     </div>
                 </div>
             </div>
-            
+
             <table class="stats-table">
                 <thead>
                     <tr>
@@ -106,13 +109,13 @@
                 </tbody>
             </table>
     </div>
-    
+
     <script th:inline="javascript">
         (function() {
             // Prepare data for charts
             const statsData = /*[[${stats}]]*/ [];
             const viewType = /*[[${view}]]*/ 'daily';
-            
+
             const chartLabels = statsData.map(s => {
                 if (viewType === 'hourly') {
                     const date = s.date || 'Unknown';
@@ -126,13 +129,13 @@
             const responseTimesData = statsData.map(s => s.avgResponseTime);
             const successData = statsData.map(s => s.successCount || 0);
             const errorData = statsData.map(s => s.errorCount || 0);
-            
+
             // Wait for Chart.js to be fully loaded
             if (typeof Chart === 'undefined') {
                 console.error('Chart.js not loaded');
                 return;
             }
-            
+
             // Destroy existing charts if they exist
             if (window.queryChart && typeof window.queryChart.destroy === 'function') {
                 window.queryChart.destroy();
@@ -143,7 +146,7 @@
             if (window.statusChart && typeof window.statusChart.destroy === 'function') {
                 window.statusChart.destroy();
             }
-            
+
             // Query Volume Chart
             window.queryChart = new Chart(document.getElementById('queryChart'), {
                 type: 'line',
@@ -189,7 +192,7 @@
                     }
                 }
             });
-            
+
             // Response Time Chart
             window.responseTimeChart = new Chart(document.getElementById('responseTimeChart'), {
                 type: 'line',
@@ -235,7 +238,7 @@
                     }
                 }
             });
-            
+
             // Status Code Chart
             window.statusChart = new Chart(document.getElementById('statusChart'), {
                 type: 'bar',
@@ -288,7 +291,7 @@
                     }
                 }
             });
-            
+
             // Handle refresh database response
             document.body.addEventListener('htmx:afterRequest', function(event) {
                 if (event.detail.pathInfo.requestPath === '/admin/refresh-db') {
@@ -303,7 +306,7 @@
                     } else {
                         statusDiv.innerHTML = '<span style="color: #f44336;">✗ Failed to refresh database</span>';
                     }
-                    
+
                     // Clear status message after 5 seconds
                     setTimeout(function() {
                         statusDiv.innerHTML = '';
@@ -312,43 +315,18 @@
             });
         })();
     </script>
-    
+
     <style>
-        .admin-actions {
-            margin: 20px 0;
-            padding: 15px;
-            background: #2a2a2a;
-            border-radius: 8px;
-            display: flex;
-            align-items: center;
-            gap: 15px;
-        }
-        
-        .refresh-button {
-            padding: 10px 20px;
-            background: #4a9eff;
-            color: white;
-            border: none;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 14px;
-            font-weight: 500;
-        }
-        
-        .refresh-button:hover {
-            background: #3a8eef;
-        }
-        
         .htmx-indicator {
             display: none;
             color: #ff8800;
             font-style: italic;
         }
-        
+
         .htmx-request .htmx-indicator {
             display: inline;
         }
-        
+
         #refresh-status {
             font-size: 14px;
         }
