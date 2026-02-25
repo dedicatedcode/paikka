@@ -1511,7 +1511,7 @@ public class ImportService {
             this.db = db;
             this.maxOps = Math.max(1, maxOps);
             this.stats = stats;
-            this.writeOptions = new WriteOptions();
+            this.writeOptions = new WriteOptions().setDisableWAL(true);
         }
 
         public void put(byte[] key, byte[] value) throws RocksDBException {
