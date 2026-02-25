@@ -119,6 +119,32 @@ The [OpenStreetMap website](https://www.openstreetmap.org/export/) allows you to
 | Germany    | 4.7 GB   | 1.7 GB      | 2 min      | ~61%      | ~ 3 GB        | 875MB    | ~ 50 min   | ~80%      |
 | Netherland | 1.4 GB   | 390 MB      | 1 min      | ~61%      | ~ 1 GB        | 366 MB   | ~ 2 min    | ~75%      |
 
+
+<details>
+<summary>Hardware & Environment Details</summary>
+
+The above benchmarks were performed on the following hardware:
+
+- **CPU:** AMD Ryzen 7 5825U with Radeon Graphics (8 cores, 16 threads, 4.5 GHz max)
+- **Memory:** 32 GiB system RAM
+- **Storage:** ZFS Pool with 4 HDD
+
+**Import Command Used:**
+```bash
+docker run -ti -v ./:/data dedicatedcode/paikka:develop import --memory 16G --threads 10 --data-dir /data/import/ planet-filtered.pbf
+```
+
+**Memory Considerations:**
+
+The `--memory` flag (e.g., `--memory 16G`) controls the JVM heap size only. RocksDB requires additional memory beyond the heap for its block cache and internal structures. For optimal performance with large imports, ensure your system has significantly more RAM available than
+the heap size specified. As a guideline, a 16GB heap typically works well on systems with 24-32GB of RAM for medium-sized countries, while planet imports benefit from 32GB+ heap on systems with 64GB+ RAM.
+
+**Storage Considerations:**
+
+A fast NVMe drive or RAID configuration significantly improves import times. The import process involves heavy random I/O operations during the RocksDB compaction phase. Slower storage can double or triple import times compared to fast NVMe storage.
+
+</details>
+
 ### Quick Start
 
 PAIKKA includes helper scripts to simplify data preparation:
