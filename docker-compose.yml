@@ -1,9 +1,8 @@
-version: '3.8'
-
 services:
   paikka:
     image: dedicatedcode/paikka:latest
-    container_name: paikka
+    env_file:
+      - .env
     ports:
       - "8080:8080"
     volumes:
