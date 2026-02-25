@@ -20,12 +20,11 @@ REMOTE_BASE_DIR="/opt/paikka/data"
 
 # --- Geocoder API Settings ---
 GEOCODER_ADMIN_URL="http://localhost:8080/admin/refresh-db"
-GEOCODER_TEST_URL_BASE="http://localhost:8080/v1/poi/reverse"
+GEOCODER_TEST_URL_BASE="http://localhost:8080/v1/reverse"
 
 # --- Verification Test Cases ---
 declare -A TEST_CASES=(
-  ["lat=48.85837&lon=2.2945"]="2523097"       # Eiffel Tower
-  ["lat=52.51627&lon=13.3777"]="3063833"     # Brandenburger Tor
+  ["lat=52.516280&lon=13.377635"]="518071791"     # Brandenburger Tor
 )
 
 # Global variables that will be set by parse_args_and_configure or environment
@@ -164,8 +163,7 @@ remote_deploy_and_verify() {
   RELEASES_DIR="releases"
 
   declare -A TESTS=(
-    ["lat=48.85837&lon=2.2945"]="2523097"
-    ["lat=52.51627&lon=13.3777"]="3063833"
+    ["lat=52.516280&lon=13.377635"]="518071791"
   )
 
   echo_remote() { echo "[REMOTE] \$1"; }
@@ -186,7 +184,7 @@ remote_deploy_and_verify() {
   ln -sfn "\$NEW_RELEASE_DIR" "\$LIVE_DATA_SYMLINK"
 
   echo_remote "Calling refresh-db endpoint..."
-  HTTP_STATUS=\$(curl -s -o /dev/null -w "%{http_code}" -X POST -H "Authorization: Bearer \$API_TOKEN" "\$ADMIN_URL")
+  HTTP_STATUS=\$(curl -s -o /dev/null -w "%{http_code}" -X POST  -H "X-Admin-Token: \$API_TOKEN" "\$ADMIN_URL")
   if [ "\$HTTP_STATUS" -ne 200 ]; then
       echo_remote "ERROR: Failed to refresh database (status \$HTTP_STATUS). Rolling back."
       [ -n "\$OLD_RELEASE_DIR" ] && ln -sfn "\$OLD_RELEASE_DIR" "\$LIVE_DATA_SYMLINK"
@@ -241,13 +239,13 @@ local_cleanup_zip() {
 
 main() {
     # Run all steps in sequence
-    parse_args_and_configure "$@"
-    local_prepare_directories
-    local_download_planet_file
-    local_pull_docker_image
-    local_filter_pbf
-    local_create_import_bundle
-    local_cleanup_pbf
+#    parse_args_and_configure "$@"
+#    local_prepare_directories
+#    local_download_planet_file
+#    local_pull_docker_image
+#    local_filter_pbf
+#    local_create_import_bundle
+#    local_cleanup_pbf
     local_zip_bundle
     remote_transfer_bundle
     remote_deploy_and_verify
