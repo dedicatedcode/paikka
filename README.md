@@ -274,31 +274,43 @@ Configure the service using environment variables or application properties:
 server.port=8080
 
 # Data directory
-paikka.data-dir=/opt/paikka/data
-
-# S2 spatial indexing level (10-15, higher = more precise but larger index)
-paikka.s2-level=14
-
-# Maximum nodes to process in memory
-paikka.max-nodes=50000000
+paikka.data-dir=./data
 
 # Import configuration
-paikka.max-import-threads=10
+paikka.import.threads=16
+paikka.import.s2-level=14
+paikka.import.chunk-size=100000
 
-# API response limits
-paikka.max-results=500
-paikka.default-results=10
-
-# Base URL for the service
-paikka.base-url=http://localhost:8080
+# Query configuration
+paikka.query.max-results=500
+paikka.query.default-results=10
+paikka.query.base-url=http://localhost:8080
 
 # Statistics database path
 paikka.stats-db-path=./data/stats.db
 
 # Admin password
 paikka.admin.password=your-secure-password
+
+# Logging
+logging.level.com.dedicatedcode.paikka=INFO
+logging.level.root=WARN
 ```
 
+| Property | Description | Default Value |
+|----------|-------------|---------------|
+| `server.port` | HTTP server port | `8080` |
+| `paikka.data-dir` | Directory where processed data is stored | `./data` |
+| `paikka.import.threads` | Number of threads for data import | `16` |
+| `paikka.import.s2-level` | S2 spatial indexing level (10-15) | `14` |
+| `paikka.import.chunk-size` | Number of elements to process per chunk | `100000` |
+| `paikka.query.max-results` | Maximum number of results returned by API | `500` |
+| `paikka.query.default-results` | Default number of results when not specified | `10` |
+| `paikka.query.base-url` | Base URL for the service (used in responses) | `http://localhost:8080` |
+| `paikka.stats-db-path` | Path to the statistics database | `./data/stats.db` |
+| `paikka.admin.password` | Password for admin interface access | _(empty)_ |
+| `logging.level.com.dedicatedcode.paikka` | Application log level | `INFO` |
+| `logging.level.root` | Root log level | `WARN` |
 ### Sample Requests
 
 ```bash
