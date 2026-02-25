@@ -264,6 +264,83 @@ mvn spring-boot:run
 ```bash
 java -Xmx8g -jar target/paikka-*.jar --data-dir=/path/to/data
 ```
+## Running with Docker Compose
+
+Docker Compose provides an easy way to run PAIKKA with persistent volumes for data and statistics.
+
+### Prerequisites
+
+- Docker installed
+- Docker Compose installed
+- An OSM PBF file (optional, for importing data)
+
+### Quick Start
+
+1. Download the docker-compose.yml file:
+   ```bash
+   curl -O https://raw.githubusercontent.com/dedicatedcode/paikka/main/docker-compose.yml
+   ```
+
+2. Configure PAIKKA using environment variables in `.env` file or the command line:
+    ```bash
+    # Example .env file
+    ADMIN_PASSWORD=your-secure-password
+    BASE_URL=https://your-domain.com
+    MAX_RESULTS=1000
+    APP_LOG_LEVEL=DEBUG
+    ```
+
+3. Create a data directory:
+   ```bash
+   mkdir -p data
+   mkdir -p stats
+   ```
+4. Start the service:
+   ```bash
+   docker compose up -d
+   ```
+
+5. Verify the service is running:
+   ```bash
+   curl 'http://localhost:8080/api/v1/health'
+   ```
+
+### Volume Management
+
+Docker Compose creates two persistent volumes:
+
+| Volume         | Description               | Mount Point |
+|----------------|---------------------------|-------------|
+| `paikka-data`  | POI and geometry data     | `/data`     |
+| `paikka-stats` | Query statistics database | `/stats`    |
+
+To view or backup the data:
+```bash
+# List volumes
+docker volume ls
+
+# Inspect volume mount point
+docker volume inspect paikka_paikka-data
+```
+
+### Stopping the Service
+
+```bash
+# Stop the service
+docker compose down
+
+# Stop and remove volumes (deletes all data)
+docker compose down -v
+```
+
+### Updating
+
+To update to a new version:
+
+```bash
+docker compose pull
+docker compose up -d
+```
 
 ### Configuration
 
