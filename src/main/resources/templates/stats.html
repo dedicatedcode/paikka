@@ -19,19 +19,7 @@
             <a href="/admin/stats" class="active">Statistics</a>
             <a href="/admin/map">Query Map</a>
         </div>
-        
-        <div class="admin-actions">
-            <button 
-                hx-post="/admin/refresh-db" 
-                hx-target="#refresh-status"
-                hx-indicator="#refresh-spinner"
-                class="refresh-button">
-                Refresh Database
-            </button>
-            <span id="refresh-spinner" class="htmx-indicator">Refreshing...</span>
-            <div id="refresh-status"></div>
-        </div>
-        
+
         <form hx-get="/admin/stats" hx-target="body" hx-trigger="submit" class="controls">
             <div class="filter-group">
                 <label for="startDate">Start Date</label>
