@@ -6,23 +6,14 @@
     <title>Paikka Query Locations</title>
     <link rel="stylesheet" href="/css/dark-theme.css">
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" th:href="@{/css/main.css}" />
 </head>
 <body>
     <div class="container">
-        <div class="header">
-            <h1>Paikka Query Locations</h1>
-            <p>Geographic distribution of API queries (coordinates rounded to ~50km for privacy)</p>
-        </div>
-        
-        <div class="nav-links">
-            <a href="/admin/stats">Statistics</a>
-            <a href="/admin/map" class="active">Query Map</a>
-        </div>
-        
         <div id="map">
             <div class="loading">Loading map and location data...</div>
         </div>
-        
+
         <div class="legend">
             <h4>Query Activity</h4>
             <div class="legend-item">
@@ -38,7 +29,7 @@
                 <span>Low activity (5-19 queries) - Dark gray fill, less transparent</span>
             </div>
         </div>
-        
+
         <div class="map-info">
             <div class="info-grid">
                 <div class="info-item">
@@ -60,19 +51,19 @@
             </div>
         </div>
     </div>
-    
+
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script>
         // Initialize map
         const map = L.map('map').setView([50.0, 10.0], 4);
-        
+
         // Add dark tile layer as base
         const darkLayer = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
             attribution: '© OpenStreetMap contributors, © CARTO',
             subdomains: 'abcd',
             maxZoom: 19
         }).addTo(map);
-        
+
         // Add light tile layer for uncovering effect
         const lightLayer = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
             attribution: '© OpenStreetMap contributors, © CARTO',
@@ -80,54 +71,54 @@
             maxZoom: 19,
             opacity: 0
         }).addTo(map);
-        
+
         // Function to get square opacity based on query count (for uncovering effect)
         function getSquareOpacity(queryCount) {
             // Higher query count = more transparent = more light shows through
             const maxOpacity = 0.9;
             const minOpacity = 0.3;
-            
+
             if (queryCount >= 100) return minOpacity; // Most transparent
             if (queryCount >= 20) return minOpacity + (maxOpacity - minOpacity) * 0.3;
             return maxOpacity; // Least transparent
         }
-        
+
         // Function to get square border color (golden accent for visibility)
         function getSquareBorderColor(queryCount) {
             return '#daa520'; // Golden color from theme
         }
-        
+
         // Function to get square fill color (gray to white based on activity)
         function getSquareFillColor(queryCount) {
             if (queryCount >= 100) return '#ffffff'; // White for high activity
             if (queryCount >= 20) return '#cccccc';  // Light gray for medium activity
             return '#888888'; // Dark gray for low activity
         }
-        
+
         // Function to calculate 50km square bounds
         function get50kmSquareBounds(lat, lon) {
             // Approximate: 1 degree latitude ≈ 111km
             // 1 degree longitude ≈ 111km * cos(latitude)
             const latOffset = 50 / 111 / 2; // Half of 50km in degrees
             const lonOffset = 50 / (111 * Math.cos(lat * Math.PI / 180)) / 2;
-            
+
             return [
                 [lat - latOffset, lon - lonOffset], // Southwest
                 [lat + latOffset, lon + lonOffset]  // Northeast
             ];
         }
-        
+
         // Load and display location data
         fetch('/admin/api/location-stats')
             .then(response => response.json())
             .then(data => {
                 // Remove loading message
                 document.querySelector('.loading').style.display = 'none';
-                
+
                 // Add square markers to map
                 data.forEach(location => {
                     const bounds = get50kmSquareBounds(location.lat, location.lon);
-                    
+
                     // Create rectangle representing ~50km area
                     const rectangle = L.rectangle(bounds, {
                         color: getSquareBorderColor(location.queryCount),
@@ -136,7 +127,7 @@
                         fillColor: getSquareFillColor(location.queryCount),
                         fillOpacity: getSquareOpacity(location.queryCount)
                     }).addTo(map);
-                    
+
                     // Add popup with details
                     rectangle.bindPopup(`
                         <strong>Location Stats</strong><br>
@@ -145,7 +136,7 @@
                         Query Count: ${location.queryCount}<br>
                         Last Queried: ${new Date(location.lastQueried).toLocaleDateString()}
                     `);
-                    
+
                     // Add hover effect to highlight the square
                     rectangle.on('mouseover', function() {
                         this.setStyle({
@@ -153,7 +144,7 @@
                             opacity: 1
                         });
                     });
-                    
+
                     rectangle.on('mouseout', function() {
                         this.setStyle({
                             weight: 1,
@@ -161,20 +152,20 @@
                         });
                     });
                 });
-                
+
                 // Update info panel
                 const totalLocations = data.length;
                 const totalQueries = data.reduce((sum, loc) => sum + loc.queryCount, 0);
                 const avgQueries = totalLocations > 0 ? (totalQueries / totalLocations).toFixed(1) : 0;
-                const lastUpdated = data.length > 0 ? 
-                    new Date(Math.max(...data.map(d => new Date(d.lastQueried)))).toLocaleDateString() : 
+                const lastUpdated = data.length > 0 ?
+                    new Date(Math.max(...data.map(d => new Date(d.lastQueried)))).toLocaleDateString() :
                     'No data';
-                
+
                 document.getElementById('total-locations').textContent = totalLocations;
                 document.getElementById('total-queries').textContent = totalQueries;
                 document.getElementById('avg-queries').textContent = avgQueries;
                 document.getElementById('last-updated').textContent = lastUpdated;
-                
+
                 // Fit map to show all markers if we have data
                 if (data.length > 0) {
                     const group = new L.featureGroup(map._layers);

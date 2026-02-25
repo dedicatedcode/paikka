@@ -1,0 +1,32 @@
+version: '3.8'
+
+services:
+  paikka:
+    image: dedicatedcode/paikka:latest
+    container_name: paikka
+    ports:
+      - "8080:8080"
+    volumes:
+      - paikka-data:/data
+      - paikka-stats:/stats
+    environment:
+      - DATA_DIR=/data
+      - STATS_DB_PATH=/stats/stats.db
+      - ADMIN_PASSWORD=your-secure-admin-password
+      - MAX_RESULTS=500
+      - DEFAULT_RESULTS=10
+      - BASE_URL=http://localhost:8080
+      - APP_LOG_LEVEL=INFO
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  paikka-data:
+    driver: local
+  paikka-stats:
+    driver: local

@@ -41,6 +41,8 @@ body {
 }
 
 .header {
+    align-items: center;
+    justify-content: space-between;
     padding: 30px;
     border-bottom: 1px solid var(--border-color);
     background: linear-gradient(135deg, var(--bg-secondary), var(--bg-tertiary));
@@ -57,36 +59,6 @@ body {
     margin: 0;
     color: var(--text-secondary);
     font-size: 1.1rem;
-}
-
-.nav-links {
-    padding: 20px 30px;
-    background: var(--bg-secondary);
-    border-bottom: 1px solid var(--border-color);
-    display: flex;
-    gap: 10px;
-}
-
-.nav-links a {
-    color: var(--text-secondary);
-    text-decoration: none;
-    padding: 12px 20px;
-    border-radius: 8px;
-    transition: all 0.3s ease;
-    font-weight: 500;
-    border: 1px solid transparent;
-}
-
-.nav-links a:hover {
-    background-color: var(--bg-tertiary);
-    color: var(--text-primary);
-    border-color: var(--border-color);
-}
-
-.nav-links a.active {
-    background-color: var(--accent-primary);
-    color: white;
-    border-color: var(--accent-primary);
 }
 
 .controls {
@@ -120,21 +92,6 @@ body {
     outline: none;
     border-color: var(--accent-primary);
     box-shadow: 0 0 0 2px rgba(74, 158, 255, 0.2);
-}
-
-.controls button {
-    background: var(--accent-primary);
-    color: white;
-    border: none;
-    padding: 10px 20px;
-    border-radius: 6px;
-    cursor: pointer;
-    font-weight: 500;
-    transition: background-color 0.3s ease;
-}
-
-.controls button:hover {
-    background: var(--accent-hover);
 }
 
 .stats-grid {
