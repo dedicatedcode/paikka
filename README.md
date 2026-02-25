@@ -112,13 +112,11 @@ The [OpenStreetMap website](https://www.openstreetmap.org/export/) allows you to
 
 ### Sizing Considerations
 
-
 | Dataset    | original | filtered... | time taken | reduction | during import | imported | time taken | reduction |
 |------------|----------|-------------|------------|-----------|---------------|----------|------------|-----------|
 | Planet     | 86 GB    | 33 GB       | 40 min     | ~60%      | ~ 31 GB       | 8.15 GB  | ~ 16 h     | ~90%      |
 | Germany    | 4.7 GB   | 1.7 GB      | 2 min      | ~61%      | ~ 3 GB        | 875MB    | ~ 50 min   | ~80%      |
 | Netherland | 1.4 GB   | 390 MB      | 1 min      | ~61%      | ~ 1 GB        | 366 MB   | ~ 2 min    | ~75%      |
-
 
 <details>
 <summary>Hardware & Environment Details</summary>
@@ -126,8 +124,8 @@ The [OpenStreetMap website](https://www.openstreetmap.org/export/) allows you to
 The above benchmarks were performed on the following hardware:
 
 - **CPU:** AMD Ryzen 7 5825U with Radeon Graphics (8 cores, 16 threads, 4.5 GHz max)
-- **Memory:** 32 GiB system RAM
-- **Storage:** ZFS Pool with 4 HDD
+- **Memory:** 31 GiB system RAM
+- **Storage:** NVMe SSD (import directory on fast NVMe storage)
 
 **Import Command Used:**
 ```bash
@@ -136,8 +134,11 @@ docker run -ti -v ./:/data dedicatedcode/paikka:develop import --memory 16G --th
 
 **Memory Considerations:**
 
-The `--memory` flag (e.g., `--memory 16G`) controls the JVM heap size only. RocksDB requires additional memory beyond the heap for its block cache and internal structures. For optimal performance with large imports, ensure your system has significantly more RAM available than
-the heap size specified. As a guideline, a 16GB heap typically works well on systems with 24-32GB of RAM for medium-sized countries, while planet imports benefit from 32GB+ heap on systems with 64GB+ RAM.
+The `--memory` flag (e.g., `--memory 16G`) controls the JVM heap size only. RocksDB requires additional memory beyond the heap for its block cache and internal structures. For optimal performance with large imports, ensure your system has significantly more RAM available than the heap size specified. As a guideline, a 16GB heap typically works well on systems with 24-32GB of RAM for medium-sized countries, while planet imports benefit from 32GB+ heap on systems with 64GB+ RAM.
+
+**Swap Space:**
+
+Ensure adequate swap space is available. During import, memory usage can spike due to RocksDB's internal buffering and compaction operations. Without sufficient swap, the system may invoke the OOM killer to terminate processes when memory limits are exceeded. A good rule of thumb is to have swap space at least equal to or larger than the JVM heap size (e.g., 16GB heap with 16GB+ swap).
 
 **Storage Considerations:**
 
