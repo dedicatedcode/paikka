@@ -901,73 +901,216 @@ public class ImportService {
             FlatBufferBuilder builder = new FlatBufferBuilder(1024 * 128);
 
             for (Map.Entry<Long, List<PoiData>> entry : shardBuffer.entrySet()) {
-                builder.clear();
-                List<PoiData> pois = entry.getValue();
-                if (pois.isEmpty()) continue;
+
+                List<PoiData> newPois = entry.getValue();
+                if (newPois.isEmpty()) continue;
 
                 long shardId = entry.getKey();
+                byte[] keyBytes = s2Helper.longToByteArray(shardId);
 
-                // 1. FETCH EXISTING POIS FROM ROCKSDB
-                byte[] existingData = shardsDb.get(s2Helper.longToByteArray(shardId));
-                List<PoiData> mergedPois;
+                // 1. FETCH EXISTING DATA (raw bytes, no deserialization into PoiData)
+                byte[] existingData = shardsDb.get(keyBytes);
+
+                builder.clear();
+
+                int existingCount = 0;
+                POIList existingPoiList = null;
                 if (existingData != null) {
-                    mergedPois = deserializePoiData(existingData);
-                    mergedPois.addAll(pois);
-                } else {
-                    mergedPois = pois;
+                    ByteBuffer existingBuffer = ByteBuffer.wrap(existingData);
+                    existingPoiList = POIList.getRootAsPOIList(existingBuffer);
+                    existingCount = existingPoiList.poisLength();
                 }
 
-                int[] poiOffsets = new int[mergedPois.size()];
-                int i = 0;
-                for (PoiData poi : mergedPois) {
-                    int typeOff = builder.createString(poi.type());
-                    int subtypeOff = builder.createString(poi.subtype());
-                    int[] nameOffs = poi.names().stream().mapToInt(n -> Name.createName(builder, builder.createString(n.lang()), builder.createString(n.text()))).toArray();
-                    int namesVecOff = POI.createNamesVector(builder, nameOffs);
+                int totalCount = existingCount + newPois.size();
+                int[] poiOffsets = new int[totalCount];
+                int idx = 0;
 
-                    int addressOff = 0;
-                    AddressData addr = poi.address();
-                    if (addr != null) {
-                        int streetOff = addr.street() != null ? builder.createString(addr.street()) : 0;
-                        int houseNumberOff = addr.houseNumber() != null ? builder.createString(addr.houseNumber()) : 0;
-                        int postcodeOff = addr.postcode() != null ? builder.createString(addr.postcode()) : 0;
-                        int cityOff = addr.city() != null ? builder.createString(addr.city()) : 0;
-                        int countryOff = addr.country() != null ? builder.createString(addr.country()) : 0;
-                        addressOff = Address.createAddress(builder, streetOff, houseNumberOff, postcodeOff, cityOff, countryOff);
+                // 2. COPY EXISTING POIs directly from FlatBuffer -> FlatBuffer (no PoiData intermediary)
+                if (existingPoiList != null) {
+                    POI reusablePoi = new POI();
+                    Name reusableName = new Name();
+                    HierarchyItem reusableHier = new HierarchyItem();
+                    Address reusableAddr = new Address();
+                    Geometry reusableGeom = new Geometry();
+
+                    for (int i = 0; i < existingCount; i++) {
+                        existingPoiList.pois(reusablePoi, i);
+                        poiOffsets[idx++] = copyPoiFromFlatBuffer(builder, reusablePoi, reusableName, reusableHier, reusableAddr, reusableGeom);
                     }
-
-                    int[] hierOffs = poi.hierarchy().stream().mapToInt(h -> HierarchyItem.createHierarchyItem(builder, h.level(), builder.createString(h.type()), builder.createString(h.name()), h.osmId())).toArray();
-                    int hierVecOff = POI.createHierarchyVector(builder, hierOffs);
-
-                    int boundaryOff = 0;
-                    byte[] boundaryWkb = poi.boundaryWkb();
-                    if (boundaryWkb != null && boundaryWkb.length > 0) {
-                        int boundaryDataOff = Geometry.createDataVector(builder, boundaryWkb);
-                        boundaryOff = Geometry.createGeometry(builder, boundaryDataOff);
-                    }
-
-                    POI.startPOI(builder);
-                    POI.addId(builder, poi.id());
-                    POI.addLat(builder, (float) poi.lat());
-                    POI.addLon(builder, (float) poi.lon());
-                    POI.addType(builder, typeOff);
-                    POI.addSubtype(builder, subtypeOff);
-                    POI.addNames(builder, namesVecOff);
-                    POI.addAddress(builder, addressOff);
-                    POI.addHierarchy(builder, hierVecOff);
-                    if (boundaryOff > 0) POI.addBoundary(builder, boundaryOff);
-                    poiOffsets[i++] = POI.endPOI(builder);
                 }
+                // Allow GC of existingData immediately
+                existingData = null;
+                existingPoiList = null;
+
+                // 3. SERIALIZE NEW POIs from PoiData
+                for (PoiData poi : newPois) {
+                    poiOffsets[idx++] = serializePoiData(builder, poi);
+                }
+
                 int poisVectorOffset = POIList.createPoisVector(builder, poiOffsets);
                 int poiListOffset = POIList.createPOIList(builder, poisVectorOffset);
                 builder.finish(poiListOffset);
-                batch.put(s2Helper.longToByteArray(entry.getKey()), builder.sizedByteArray());
+
+                batch.put(keyBytes, builder.sizedByteArray());
             }
-            shardsDb.write(new WriteOptions(), batch);
+
+            try (WriteOptions writeOptions = new WriteOptions()) {
+                shardsDb.write(writeOptions, batch);
+            }
             stats.incrementRocksDbWrites();
         } catch (Exception e) {
             System.err.println(e.getMessage());
+            throw e; // Don't silently swallow
         }
+    }
+
+    /**
+     * Copies a POI directly from an existing FlatBuffer into the builder,
+     * reading fields on-the-fly without creating any PoiData/NameData/AddressData intermediary objects.
+     * Strings are read from the source buffer and created in the target builder directly.
+     */
+    private int copyPoiFromFlatBuffer(FlatBufferBuilder builder, POI poi,
+                                      Name reusableName, HierarchyItem reusableHier,
+                                      Address reusableAddr, Geometry reusableGeom) {
+        // Pre-create all string/table offsets (must happen before startPOI)
+        String typeStr = poi.type();
+        String subtypeStr = poi.subtype();
+        int typeOff = typeStr != null ? builder.createString(typeStr) : 0;
+        int subtypeOff = subtypeStr != null ? builder.createString(subtypeStr) : 0;
+
+        // Names
+        int namesVecOff = 0;
+        int namesLen = poi.namesLength();
+        if (namesLen > 0) {
+            int[] nameOffs = new int[namesLen];
+            for (int j = 0; j < namesLen; j++) {
+                poi.names(reusableName, j);
+                String lang = reusableName.lang();
+                String text = reusableName.text();
+                int langOff = lang != null ? builder.createString(lang) : 0;
+                int textOff = text != null ? builder.createString(text) : 0;
+                nameOffs[j] = Name.createName(builder, langOff, textOff);
+            }
+            namesVecOff = POI.createNamesVector(builder, nameOffs);
+        } else {
+            namesVecOff = POI.createNamesVector(builder, new int[0]);
+        }
+
+        // Address
+        int addressOff = 0;
+        if (poi.address(reusableAddr) != null) {
+            String street = reusableAddr.street();
+            String houseNumber = reusableAddr.houseNumber();
+            String postcode = reusableAddr.postcode();
+            String city = reusableAddr.city();
+            String country = reusableAddr.country();
+
+            int streetOff = street != null ? builder.createString(street) : 0;
+            int houseNumberOff = houseNumber != null ? builder.createString(houseNumber) : 0;
+            int postcodeOff = postcode != null ? builder.createString(postcode) : 0;
+            int cityOff = city != null ? builder.createString(city) : 0;
+            int countryOff = country != null ? builder.createString(country) : 0;
+            addressOff = com.dedicatedcode.paikka.flatbuffers.Address.createAddress(
+                    builder, streetOff, houseNumberOff, postcodeOff, cityOff, countryOff);
+        }
+
+        // Hierarchy
+        int hierVecOff;
+        int hierLen = poi.hierarchyLength();
+        if (hierLen > 0) {
+            int[] hierOffs = new int[hierLen];
+            for (int j = 0; j < hierLen; j++) {
+                poi.hierarchy(reusableHier, j);
+                String hType = reusableHier.type();
+                String hName = reusableHier.name();
+                int hTypeOff = hType != null ? builder.createString(hType) : 0;
+                int hNameOff = hName != null ? builder.createString(hName) : 0;
+                hierOffs[j] = com.dedicatedcode.paikka.flatbuffers.HierarchyItem.createHierarchyItem(
+                        builder, reusableHier.level(), hTypeOff, hNameOff, reusableHier.osmId());
+            }
+            hierVecOff = POI.createHierarchyVector(builder, hierOffs);
+        } else {
+            hierVecOff = POI.createHierarchyVector(builder, new int[0]);
+        }
+
+        // Boundary geometry — copy raw bytes via ByteBuffer (no byte-by-byte copy)
+        int boundaryOff = 0;
+        if (poi.boundary(reusableGeom) != null && reusableGeom.dataLength() > 0) {
+            ByteBuffer boundaryBuf = reusableGeom.dataAsByteBuffer();
+            if (boundaryBuf != null) {
+                int boundaryDataOff = Geometry.createDataVector(builder, boundaryBuf);
+                boundaryOff = Geometry.createGeometry(builder, boundaryDataOff);
+            }
+        }
+
+        // Build the POI table
+        POI.startPOI(builder);
+        POI.addId(builder, poi.id());
+        POI.addLat(builder, poi.lat());
+        POI.addLon(builder, poi.lon());
+        if (typeOff != 0) POI.addType(builder, typeOff);
+        if (subtypeOff != 0) POI.addSubtype(builder, subtypeOff);
+        POI.addNames(builder, namesVecOff);
+        if (addressOff != 0) POI.addAddress(builder, addressOff);
+        POI.addHierarchy(builder, hierVecOff);
+        if (boundaryOff != 0) POI.addBoundary(builder, boundaryOff);
+        return POI.endPOI(builder);
+    }
+
+    /**
+     * Serializes a new PoiData (from the PBF parse) into the builder.
+     */
+    private int serializePoiData(FlatBufferBuilder builder, PoiData poi) {
+        int typeOff = builder.createString(poi.type());
+        int subtypeOff = builder.createString(poi.subtype());
+
+        List<NameData> names = poi.names();
+        int[] nameOffs = new int[names.size()];
+        for (int j = 0; j < names.size(); j++) {
+            NameData n = names.get(j);
+            nameOffs[j] = Name.createName(builder, builder.createString(n.lang()), builder.createString(n.text()));
+        }
+        int namesVecOff = POI.createNamesVector(builder, nameOffs);
+
+        int addressOff = 0;
+        AddressData addr = poi.address();
+        if (addr != null) {
+            int streetOff = addr.street() != null ? builder.createString(addr.street()) : 0;
+            int houseNumberOff = addr.houseNumber() != null ? builder.createString(addr.houseNumber()) : 0;
+            int postcodeOff = addr.postcode() != null ? builder.createString(addr.postcode()) : 0;
+            int cityOff = addr.city() != null ? builder.createString(addr.city()) : 0;
+            int countryOff = addr.country() != null ? builder.createString(addr.country()) : 0;
+            addressOff = com.dedicatedcode.paikka.flatbuffers.Address.createAddress(
+                    builder, streetOff, houseNumberOff, postcodeOff, cityOff, countryOff);
+        }
+
+        List<HierarchyCache.SimpleHierarchyItem> hierarchy = poi.hierarchy();
+        int[] hierOffs = new int[hierarchy.size()];
+        for (int j = 0; j < hierarchy.size(); j++) {
+            HierarchyCache.SimpleHierarchyItem h = hierarchy.get(j);
+            hierOffs[j] = com.dedicatedcode.paikka.flatbuffers.HierarchyItem.createHierarchyItem(
+                    builder, h.level(), builder.createString(h.type()), builder.createString(h.name()), h.osmId());
+        }
+        int hierVecOff = POI.createHierarchyVector(builder, hierOffs);
+
+        int boundaryOff = 0;
+        byte[] boundaryWkb = poi.boundaryWkb();
+        if (boundaryWkb != null && boundaryWkb.length > 0) {
+            int boundaryDataOff = Geometry.createDataVector(builder, boundaryWkb);
+            boundaryOff = Geometry.createGeometry(builder, boundaryDataOff);
+        }
+
+        POI.startPOI(builder);
+        POI.addId(builder, poi.id());
+        POI.addLat(builder, (float) poi.lat());
+        POI.addLon(builder, (float) poi.lon());
+        POI.addType(builder, typeOff);
+        POI.addSubtype(builder, subtypeOff);
+        POI.addNames(builder, namesVecOff);
+        if (addressOff != 0) POI.addAddress(builder, addressOff);
+        POI.addHierarchy(builder, hierVecOff);
+        if (boundaryOff != 0) POI.addBoundary(builder, boundaryOff);
+        return POI.endPOI(builder);
     }
 
     private org.locationtech.jts.geom.Geometry buildGeometryFromRelRec(RelRec rec, RocksDB nodeCache, RocksDB wayIndexDb) {
@@ -1257,89 +1400,6 @@ public class ImportService {
 
             consumer.accept(new PbfIterator(inputStream, false));
         }
-    }
-    private List<PoiData> deserializePoiData(byte[] data) throws RocksDBException {
-        ByteBuffer buffer = ByteBuffer.wrap(data);
-        POIList poiList = POIList.getRootAsPOIList(buffer);
-        List<PoiData> pois = new ArrayList<>();
-
-        for (int i = 0; i < poiList.poisLength(); i++) {
-            POI poi = poiList.pois(i);
-            List<NameData> names = new ArrayList<>();
-            for (int j = 0; j < poi.namesLength(); j++) {
-                Name name = poi.names(j);
-                String lang = name.lang();
-                String text = name.text();
-                if (lang != null && text != null) {
-                    names.add(new NameData(lang, text));
-                }
-            }
-
-            // Copy address if present
-            AddressData addressData = null;
-            if (poi.address() != null) {
-                Address address = poi.address();
-                String street = address.street();
-                String houseNumber = address.houseNumber();
-                String postcode = address.postcode();
-                String city = address.city();
-                String country = address.country();
-
-                // Only create AddressData if at least one field is present
-                if (street != null || houseNumber != null || postcode != null || city != null || country != null) {
-                    addressData = new AddressData(
-                            street,
-                            houseNumber,
-                            postcode,
-                            city,
-                            country
-                    );
-                }
-            }
-
-            // Copy hierarchy immediately while FlatBuffer is valid
-            List<HierarchyCache.SimpleHierarchyItem> hierarchy = new ArrayList<>();
-            for (int j = 0; j < poi.hierarchyLength(); j++) {
-                HierarchyItem item = poi.hierarchy(j);
-                String itemType = item.type();
-                String itemName = item.name();
-                hierarchy.add(new HierarchyCache.SimpleHierarchyItem(
-                        item.level(),
-                        itemType != null ? itemType : "unknown",
-                        itemName != null ? itemName : "Unknown",
-                        item.osmId()
-                ));
-            }
-
-            // Copy boundary geometry if present
-            byte[] boundaryData = null;
-            if (poi.boundary() != null) {
-                com.dedicatedcode.paikka.flatbuffers.Geometry boundary = poi.boundary();
-                if (boundary.dataLength() > 0) {
-                    boundaryData = new byte[boundary.dataLength()];
-                    for (int k = 0; k < boundary.dataLength(); k++) {
-                        boundaryData[k] = (byte) boundary.data(k);
-                    }
-                }
-            }
-
-            // Create POIData with copied data
-            PoiData poiData = new PoiData(
-                    poi.id(),
-                    poi.lat(),
-                    poi.lon(),
-                    poi.type(),
-                    poi.subtype(),
-                    names,
-                    addressData,
-                    hierarchy,
-                    boundaryData
-            );
-
-            pois.add(poiData);
-        }
-
-        return pois;
     }
 
     private String formatTime(long ms) {
