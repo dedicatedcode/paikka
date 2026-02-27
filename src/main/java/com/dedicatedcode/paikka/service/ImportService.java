@@ -96,6 +96,7 @@ public class ImportService {
         Path tmpDirectory = dataDirectory.resolve("tmp");
         dataDirectory.toFile().mkdirs();
         tmpDirectory.toFile().mkdirs();
+
         Path shardsDbPath = dataDirectory.resolve("poi_shards");
         Path boundariesDbPath = dataDirectory.resolve("boundaries");
         Path gridIndexDbPath = dataDirectory.resolve("tmp/grid_index");
@@ -336,7 +337,13 @@ public class ImportService {
                     sb.append(String.format(" │ \033[37mThreads:\033[0m %d", stats.getActiveThreads()));
 
                 } else if (phase.contains("2.2")) {
-                    sb.append(String.format("\033[1;36m[%s]\033[0m \033[1mProcessing POIs & Sharding\033[0m", formatTime(elapsed)));
+                    long compactionElapsed = System.currentTimeMillis() - stats.getCompactionStartTime();
+                    double compactionPhaseSeconds = compactionElapsed / 1000.0;
+                    long shardsCompacted = stats.getShardsCompacted();
+                    long shardsPerSec = compactionPhaseSeconds > 0 ? (long)(shardsCompacted / compactionPhaseSeconds) : 0;
+                    sb.append(String.format("\033[1;36m[%s]\033[0m \033[1mCompacting POIs\033[0m", formatTime(elapsed)));
+                    sb.append(String.format(" │ \033[32mShards Compacted:\033[0m %s \033[33m(%s/s)\033[0m",
+                                            formatCompactNumber(shardsCompacted), formatCompactRate(shardsPerSec)));
 
                 } else {
                     sb.append(String.format("\033[1;36m[%s]\033[0m %s", formatTime(elapsed), phase));
@@ -986,9 +993,7 @@ public class ImportService {
         }
 
         List<HierarchyCache.SimpleHierarchyItem> hierarchy = poi.hierarchy();
-        if (poi.id == 432751852L) {
-            System.out.println("Hierarchy in append: " + hierarchy);
-        }
+
         int[] hierOffs = new int[hierarchy.size()];
         for (int j = 0; j < hierarchy.size(); j++) {
             HierarchyCache.SimpleHierarchyItem h = hierarchy.get(j);
@@ -1022,6 +1027,7 @@ public class ImportService {
 
 
     private void compactShards(RocksDB appendDb, RocksDB shardsDb, ImportStatistics stats) throws Exception {
+        stats.setCompactionStartTime(System.currentTimeMillis());
 
         // Reusable FlatBuffer accessor objects
         POI reusablePoi = new POI();
@@ -1052,9 +1058,7 @@ public class ImportService {
                     currentShardChunks.clear();
                     shardsCompacted++;
 
-                    if (shardsCompacted % 10000 == 0) {
-                        System.out.println("Compacted " + shardsCompacted + " shards...");
-                    }
+                    stats.incrementShardsCompacted();
                 }
 
                 currentShardId = shardId;
@@ -1167,9 +1171,7 @@ public class ImportService {
         }
 
         int hierLen = poi.hierarchyLength();
-        if (poi.id() == 432751852L) {
-            System.out.println("Hierarchy in after: " + poi.hierarchyLength());
-        }
+
         int hierVecOff;
         if (hierLen > 0) {
             int[] hierOffs = new int[hierLen];
@@ -1730,6 +1732,8 @@ public class ImportService {
         private final long startTime = System.currentTimeMillis();
         private volatile long phaseStartTime = System.currentTimeMillis();
         private long totalTime;
+        private final AtomicLong shardsCompacted = new AtomicLong(0);
+        private volatile long compactionStartTime = 0;
 
         private volatile long datasetBytes;
         private volatile long shardsBytes;
@@ -1782,6 +1786,10 @@ public class ImportService {
         public long getStartTime() { return startTime; }
         public long getTotalTime() { return totalTime; }
         public void setTotalTime(long t) { this.totalTime = t; }
+        public long getShardsCompacted() { return shardsCompacted.get(); }
+        public void incrementShardsCompacted() { shardsCompacted.incrementAndGet(); }
+        public void setCompactionStartTime(long t) { this.compactionStartTime = t; }
+        public long getCompactionStartTime() { return compactionStartTime; }
 
         public long getDatasetBytes() { return datasetBytes; }
         public void setDatasetBytes(long v) { this.datasetBytes = v; }
