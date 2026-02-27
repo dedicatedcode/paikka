@@ -196,7 +196,7 @@ public class ImportService {
                  RocksDB neededNodesDb = RocksDB.open(neededNodesOpts, neededNodesDbPath.toString());
                  RocksDB relIndexDb = RocksDB.open(wayIndexOpts, relIndexDbPath.toString());
                  RocksDB poiIndexDb = RocksDB.open(poiIndexOpts, poiIndexDbPath.toString());
-                 RocksDB appendDb = RocksDB.open(appendOpts, appendDbPath.toString());) {
+                 RocksDB appendDb = RocksDB.open(appendOpts, appendDbPath.toString())) {
 
                 // PASS 1: Discovery & Indexing
                 currentStep = 1;
@@ -228,6 +228,8 @@ public class ImportService {
 
                 shardsDb.compactRange();
                 boundariesDb.compactRange();
+
+
                 stats.setTotalTime(System.currentTimeMillis() - totalStartTime);
 
 
@@ -484,7 +486,7 @@ public class ImportService {
             CountDownLatch latch = new CountDownLatch(numReaders);
 
             try (ExecutorService executor = createExecutorService(numReaders);
-                 ReadOptions ro = new ReadOptions().setReadaheadSize(2 * 1024 * 1024);) {
+                 ReadOptions ro = new ReadOptions().setReadaheadSize(2 * 1024 * 1024)) {
                 com.github.benmanes.caffeine.cache.Cache<Long, HierarchyCache.CachedBoundary> globalBoundaryCache = Caffeine.newBuilder()
                         .maximumSize(1000)
                         .recordStats()
@@ -1019,7 +1021,7 @@ public class ImportService {
     }
 
 
-    public void compactShards(RocksDB appendDb, RocksDB shardsDb, ImportStatistics stats) throws Exception {
+    private void compactShards(RocksDB appendDb, RocksDB shardsDb, ImportStatistics stats) throws Exception {
 
         // Reusable FlatBuffer accessor objects
         POI reusablePoi = new POI();
@@ -1216,21 +1218,6 @@ public class ImportService {
         POI.addHierarchy(builder, hierVecOff);
         if (boundaryOff != 0) POI.addBoundary(builder, boundaryOff);
         return POI.endPOI(builder);
-    }
-
-    private void writeCompactedShard(FlatBufferBuilder builder, List<int[]> offsetBatches,
-                                     int totalPois, long shardId,
-                                     RocksDB shardsDb, WriteOptions writeOptions) throws Exception {
-        int[] allOffsets = new int[totalPois];
-        int idx = 0;
-        for (int[] batch : offsetBatches) {
-            System.arraycopy(batch, 0, allOffsets, idx, batch.length);
-            idx += batch.length;
-        }
-        int poisVec = POIList.createPoisVector(builder, allOffsets);
-        int poiList = POIList.createPOIList(builder, poisVec);
-        builder.finish(poiList);
-        shardsDb.put(writeOptions, s2Helper.longToByteArray(shardId), builder.sizedByteArray());
     }
 
     private org.locationtech.jts.geom.Geometry buildGeometryFromRelRec(RelRec rec, RocksDB nodeCache, RocksDB wayIndexDb) {
@@ -1773,7 +1760,6 @@ public class ImportService {
         public void incrementPoisProcessed(int count) {
             poisProcessed.addAndGet(count);
         }
-        public void incrementPoisProcessed() { poisProcessed.incrementAndGet(); }
         public long getPoiIndexRecRead() { return poiIndexRecRead.get(); }
         public void incrementPoiIndexRecRead() { poiIndexRecRead.incrementAndGet(); }
         public boolean isPoiIndexRecReadDone() { return poiIndexRecReadDone.get(); }
