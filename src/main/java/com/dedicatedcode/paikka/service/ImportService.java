@@ -39,6 +39,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -66,8 +67,8 @@ public class ImportService {
     private final int fileReadWindowSize;
 
     private int currentStep = 0;
-    private static final int TOTAL_STEPS = 4;
-
+    private static final int TOTAL_STEPS = 5;
+    private final AtomicLong sequence = new AtomicLong(0);
     public ImportService(S2Helper s2Helper, GeometrySimplificationService geometrySimplificationService, PaikkaConfiguration config) {
         this.s2Helper = s2Helper;
         this.geometrySimplificationService = geometrySimplificationService;
@@ -98,6 +99,7 @@ public class ImportService {
         Path shardsDbPath = dataDirectory.resolve("poi_shards");
         Path boundariesDbPath = dataDirectory.resolve("boundaries");
         Path gridIndexDbPath = dataDirectory.resolve("tmp/grid_index");
+        Path appendDbPath = dataDirectory.resolve("tmp/append_poi");
         Path nodeCacheDbPath = dataDirectory.resolve("tmp/node_cache");
         Path wayIndexDbPath = dataDirectory.resolve("tmp/way_index");
         Path neededNodesDbPath = dataDirectory.resolve("tmp/needed_nodes");
@@ -112,6 +114,7 @@ public class ImportService {
         cleanupDatabase(neededNodesDbPath);
         cleanupDatabase(relIndexDbPath);
         cleanupDatabase(poiIndexDbPath);
+        cleanupDatabase(appendDbPath);
 
         RocksDB.loadLibrary();
         ImportStatistics stats = new ImportStatistics();
@@ -144,6 +147,16 @@ public class ImportService {
                     .setLevel0FileNumCompactionTrigger(20)
                     .setLevel0SlowdownWritesTrigger(30)
                     .setLevel0StopWritesTrigger(40);
+            Options appendOpts = new Options()
+                                .setCreateIfMissing(true)
+                                .setTableFormatConfig(tableConfig)
+                                .setCompressionType(CompressionType.LZ4_COMPRESSION)
+                                .setWriteBufferSize(512 * 1024 * 1024)
+                                .setMaxWriteBufferNumber(6)
+                                .setMinWriteBufferNumberToMerge(2)
+                                .setLevel0FileNumCompactionTrigger(20)
+                                .setLevel0SlowdownWritesTrigger(30)
+                                .setLevel0StopWritesTrigger(40);
 
             Options poiIndexOpts = new Options()
                     .setCreateIfMissing(true)
@@ -182,7 +195,8 @@ public class ImportService {
                  RocksDB wayIndexDb = RocksDB.open(wayIndexOpts, wayIndexDbPath.toString());
                  RocksDB neededNodesDb = RocksDB.open(neededNodesOpts, neededNodesDbPath.toString());
                  RocksDB relIndexDb = RocksDB.open(wayIndexOpts, relIndexDbPath.toString());
-                 RocksDB poiIndexDb = RocksDB.open(poiIndexOpts, poiIndexDbPath.toString())) {
+                 RocksDB poiIndexDb = RocksDB.open(poiIndexOpts, poiIndexDbPath.toString());
+                 RocksDB appendDb = RocksDB.open(appendOpts, appendDbPath.toString());) {
 
                 // PASS 1: Discovery & Indexing
                 currentStep = 1;
@@ -204,8 +218,11 @@ public class ImportService {
                 processAdministrativeBoundariesFromIndex(relIndexDb, nodeCache, wayIndexDb, gridIndexDb, boundariesDb, stats);
                 currentStep = 4;
                 stats.setCurrentPhase("2.1: Processing POIs & Sharding");
-                pass2PoiShardingFromIndex(nodeCache, wayIndexDb, shardsDb, boundariesDb, poiIndexDb, gridIndexDb, stats);
+                pass2PoiShardingFromIndex(nodeCache, wayIndexDb, appendDb, boundariesDb, poiIndexDb, gridIndexDb, stats);
+                currentStep = 5;
 
+                stats.setCurrentPhase("2.2: Compacting POIs");
+                compactShards(appendDb, shardsDb, stats);
                 stats.stop();
                 printPhaseSummary("PASS 2", pass2Start);
 
@@ -216,6 +233,7 @@ public class ImportService {
 
                 recordSizeMetrics(stats,
                                   shardsDbPath,
+                                  appendDbPath,
                                   boundariesDbPath,
                                   gridIndexDbPath,
                                   nodeCacheDbPath,
@@ -224,12 +242,12 @@ public class ImportService {
                                   relIndexDbPath,
                                   poiIndexDbPath);
 
+                shardsDb.flush(new FlushOptions().setWaitForFlush(true));
+                boundariesDb.flush(new FlushOptions().setWaitForFlush(true));
                 printFinalStatistics(stats);
                 printSuccess();
                 writeMetadataFile(pbfFile, dataDirectory);
 
-                shardsDb.flush(new FlushOptions().setWaitForFlush(true));
-                boundariesDb.flush(new FlushOptions().setWaitForFlush(true));
             } catch (Exception e) {
                 stats.stop();
                 printError("IMPORT FAILED: " + e.getMessage());
@@ -314,6 +332,9 @@ public class ImportService {
                     sb.append(String.format(" │ \033[32mPOIs Processed:\033[0m %s \033[33m(%s/s)\033[0m", formatCompactNumber(stats.getPoisProcessed()), formatCompactRate(poisPerSec)));
                     sb.append(String.format(" │ \033[36mQueue:\033[0m %s", formatCompactNumber(stats.getQueueSize())));
                     sb.append(String.format(" │ \033[37mThreads:\033[0m %d", stats.getActiveThreads()));
+
+                } else if (phase.contains("2.2")) {
+                    sb.append(String.format("\033[1;36m[%s]\033[0m \033[1mProcessing POIs & Sharding\033[0m", formatTime(elapsed)));
 
                 } else {
                     sb.append(String.format("\033[1;36m[%s]\033[0m %s", formatTime(elapsed), phase));
@@ -428,7 +449,7 @@ public class ImportService {
 
     private void pass2PoiShardingFromIndex(RocksDB nodeCache,
                                            RocksDB wayIndexDb,
-                                           RocksDB shardsDb,
+                                           RocksDB appendDb,
                                            RocksDB boundariesDb,
                                            RocksDB poiIndexDb,
                                            RocksDB gridIndexDb,
@@ -448,16 +469,18 @@ public class ImportService {
                     });
                 }
                 if (!bufferToFlush.isEmpty()) {
-                    writeShardBatch(bufferToFlush, shardsDb, stats);
+                    writeShardBatchAppendOnly(bufferToFlush, appendDb, stats);
                 }
             } catch (Exception _) {
             }
         };
 
-        try (PeriodicFlusher _ = PeriodicFlusher.start("shard-buffer-flush", 10, 10, flushTask)) {
+        try (PeriodicFlusher _ = PeriodicFlusher.start("shard-buffer-flush", 5, 5, flushTask)) {
             BlockingQueue<List<PoiQueueItem>> queue = new LinkedBlockingQueue<>(200);
             int numReaders = Math.max(1, config.getImportConfiguration().getThreads());
             int chunkSize = config.getImportConfiguration().getChunkSize();
+            int localPoiBufferSize = 1000;
+
             CountDownLatch latch = new CountDownLatch(numReaders);
 
             try (ExecutorService executor = createExecutorService(numReaders);
@@ -582,7 +605,7 @@ public class ImportService {
                                     }
                                 }
                                 stats.incrementPoisProcessed(localCount);
-                                if (localShardBuffer.size() > 5000) {
+                                if (localShardBuffer.size() > localPoiBufferSize) {
                                     synchronized (shardBuffer) {
                                         localShardBuffer.forEach((shardId, poiList) -> shardBuffer.computeIfAbsent(shardId, k -> new ArrayList<>()).addAll(poiList));
                                     }
@@ -896,170 +919,44 @@ public class ImportService {
         return tagCache.computeIfAbsent(s, k -> k);
     }
 
-    private void writeShardBatch(Map<Long, List<PoiData>> shardBuffer, RocksDB shardsDb, ImportStatistics stats) throws Exception {
-        try (WriteBatch batch = new WriteBatch()) {
-            FlatBufferBuilder builder = new FlatBufferBuilder(1024 * 128);
+    private void writeShardBatchAppendOnly(Map<Long, List<PoiData>> shardBuffer,
+                                           RocksDB appendDb,
+                                           ImportStatistics stats) throws Exception {
+        FlatBufferBuilder builder = new FlatBufferBuilder(1024 * 32);
 
-            for (Map.Entry<Long, List<PoiData>> entry : shardBuffer.entrySet()) {
+        try (WriteBatch batch = new WriteBatch();
+             WriteOptions writeOptions = new WriteOptions()) {
 
-                List<PoiData> newPois = entry.getValue();
-                if (newPois.isEmpty()) continue;
-
-                long shardId = entry.getKey();
-                byte[] keyBytes = s2Helper.longToByteArray(shardId);
-
-                // 1. FETCH EXISTING DATA (raw bytes, no deserialization into PoiData)
-                byte[] existingData = shardsDb.get(keyBytes);
+            for (Iterator<Map.Entry<Long, List<PoiData>>> it = shardBuffer.entrySet().iterator();
+                 it.hasNext(); ) {
+                Map.Entry<Long, List<PoiData>> entry = it.next();
+                List<PoiData> pois = entry.getValue();
+                if (pois.isEmpty()) { it.remove(); continue; }
 
                 builder.clear();
 
-                int existingCount = 0;
-                POIList existingPoiList = null;
-                if (existingData != null) {
-                    ByteBuffer existingBuffer = ByteBuffer.wrap(existingData);
-                    existingPoiList = POIList.getRootAsPOIList(existingBuffer);
-                    existingCount = existingPoiList.poisLength();
+                // Serialize ONLY the new POIs (no reading existing!)
+                int[] poiOffsets = new int[pois.size()];
+                for (int i = 0; i < pois.size(); i++) {
+                    poiOffsets[i] = serializePoiData(builder, pois.get(i));
                 }
-
-                int totalCount = existingCount + newPois.size();
-                int[] poiOffsets = new int[totalCount];
-                int idx = 0;
-
-                // 2. COPY EXISTING POIs directly from FlatBuffer -> FlatBuffer (no PoiData intermediary)
-                if (existingPoiList != null) {
-                    POI reusablePoi = new POI();
-                    Name reusableName = new Name();
-                    HierarchyItem reusableHier = new HierarchyItem();
-                    Address reusableAddr = new Address();
-                    Geometry reusableGeom = new Geometry();
-
-                    for (int i = 0; i < existingCount; i++) {
-                        existingPoiList.pois(reusablePoi, i);
-                        poiOffsets[idx++] = copyPoiFromFlatBuffer(builder, reusablePoi, reusableName, reusableHier, reusableAddr, reusableGeom);
-                    }
-                }
-                // Allow GC of existingData immediately
-                existingData = null;
-                existingPoiList = null;
-
-                // 3. SERIALIZE NEW POIs from PoiData
-                for (PoiData poi : newPois) {
-                    poiOffsets[idx++] = serializePoiData(builder, poi);
-                }
-
                 int poisVectorOffset = POIList.createPoisVector(builder, poiOffsets);
                 int poiListOffset = POIList.createPOIList(builder, poisVectorOffset);
                 builder.finish(poiListOffset);
 
-                batch.put(keyBytes, builder.sizedByteArray());
+                // Key = shardId (8 bytes) + sequence (8 bytes) — unique, no collision
+                long seq = sequence.incrementAndGet();
+                byte[] key = new byte[16];
+                ByteBuffer.wrap(key).putLong(entry.getKey()).putLong(seq);
+
+                batch.put(key, builder.sizedByteArray());
+                it.remove();
             }
 
-            try (WriteOptions writeOptions = new WriteOptions()) {
-                shardsDb.write(writeOptions, batch);
-            }
+            appendDb.write(writeOptions, batch);
             stats.incrementRocksDbWrites();
-        } catch (Exception e) {
-            System.err.println(e.getMessage());
-            throw e; // Don't silently swallow
         }
     }
-
-    /**
-     * Copies a POI directly from an existing FlatBuffer into the builder,
-     * reading fields on-the-fly without creating any PoiData/NameData/AddressData intermediary objects.
-     * Strings are read from the source buffer and created in the target builder directly.
-     */
-    private int copyPoiFromFlatBuffer(FlatBufferBuilder builder, POI poi,
-                                      Name reusableName, HierarchyItem reusableHier,
-                                      Address reusableAddr, Geometry reusableGeom) {
-        // Pre-create all string/table offsets (must happen before startPOI)
-        String typeStr = poi.type();
-        String subtypeStr = poi.subtype();
-        int typeOff = typeStr != null ? builder.createString(typeStr) : 0;
-        int subtypeOff = subtypeStr != null ? builder.createString(subtypeStr) : 0;
-
-        // Names
-        int namesVecOff = 0;
-        int namesLen = poi.namesLength();
-        if (namesLen > 0) {
-            int[] nameOffs = new int[namesLen];
-            for (int j = 0; j < namesLen; j++) {
-                poi.names(reusableName, j);
-                String lang = reusableName.lang();
-                String text = reusableName.text();
-                int langOff = lang != null ? builder.createString(lang) : 0;
-                int textOff = text != null ? builder.createString(text) : 0;
-                nameOffs[j] = Name.createName(builder, langOff, textOff);
-            }
-            namesVecOff = POI.createNamesVector(builder, nameOffs);
-        } else {
-            namesVecOff = POI.createNamesVector(builder, new int[0]);
-        }
-
-        // Address
-        int addressOff = 0;
-        if (poi.address(reusableAddr) != null) {
-            String street = reusableAddr.street();
-            String houseNumber = reusableAddr.houseNumber();
-            String postcode = reusableAddr.postcode();
-            String city = reusableAddr.city();
-            String country = reusableAddr.country();
-
-            int streetOff = street != null ? builder.createString(street) : 0;
-            int houseNumberOff = houseNumber != null ? builder.createString(houseNumber) : 0;
-            int postcodeOff = postcode != null ? builder.createString(postcode) : 0;
-            int cityOff = city != null ? builder.createString(city) : 0;
-            int countryOff = country != null ? builder.createString(country) : 0;
-            addressOff = com.dedicatedcode.paikka.flatbuffers.Address.createAddress(
-                    builder, streetOff, houseNumberOff, postcodeOff, cityOff, countryOff);
-        }
-
-        // Hierarchy
-        int hierVecOff;
-        int hierLen = poi.hierarchyLength();
-        if (hierLen > 0) {
-            int[] hierOffs = new int[hierLen];
-            for (int j = 0; j < hierLen; j++) {
-                poi.hierarchy(reusableHier, j);
-                String hType = reusableHier.type();
-                String hName = reusableHier.name();
-                int hTypeOff = hType != null ? builder.createString(hType) : 0;
-                int hNameOff = hName != null ? builder.createString(hName) : 0;
-                hierOffs[j] = com.dedicatedcode.paikka.flatbuffers.HierarchyItem.createHierarchyItem(
-                        builder, reusableHier.level(), hTypeOff, hNameOff, reusableHier.osmId());
-            }
-            hierVecOff = POI.createHierarchyVector(builder, hierOffs);
-        } else {
-            hierVecOff = POI.createHierarchyVector(builder, new int[0]);
-        }
-
-        // Boundary geometry — copy raw bytes via ByteBuffer (no byte-by-byte copy)
-        int boundaryOff = 0;
-        if (poi.boundary(reusableGeom) != null && reusableGeom.dataLength() > 0) {
-            ByteBuffer boundaryBuf = reusableGeom.dataAsByteBuffer();
-            if (boundaryBuf != null) {
-                int boundaryDataOff = Geometry.createDataVector(builder, boundaryBuf);
-                boundaryOff = Geometry.createGeometry(builder, boundaryDataOff);
-            }
-        }
-
-        // Build the POI table
-        POI.startPOI(builder);
-        POI.addId(builder, poi.id());
-        POI.addLat(builder, poi.lat());
-        POI.addLon(builder, poi.lon());
-        if (typeOff != 0) POI.addType(builder, typeOff);
-        if (subtypeOff != 0) POI.addSubtype(builder, subtypeOff);
-        POI.addNames(builder, namesVecOff);
-        if (addressOff != 0) POI.addAddress(builder, addressOff);
-        POI.addHierarchy(builder, hierVecOff);
-        if (boundaryOff != 0) POI.addBoundary(builder, boundaryOff);
-        return POI.endPOI(builder);
-    }
-
-    /**
-     * Serializes a new PoiData (from the PBF parse) into the builder.
-     */
     private int serializePoiData(FlatBufferBuilder builder, PoiData poi) {
         int typeOff = builder.createString(poi.type());
         int subtypeOff = builder.createString(poi.subtype());
@@ -1068,7 +965,9 @@ public class ImportService {
         int[] nameOffs = new int[names.size()];
         for (int j = 0; j < names.size(); j++) {
             NameData n = names.get(j);
-            nameOffs[j] = Name.createName(builder, builder.createString(n.lang()), builder.createString(n.text()));
+            nameOffs[j] = Name.createName(builder,
+                                          builder.createString(n.lang()),
+                                          builder.createString(n.text()));
         }
         int namesVecOff = POI.createNamesVector(builder, nameOffs);
 
@@ -1085,11 +984,17 @@ public class ImportService {
         }
 
         List<HierarchyCache.SimpleHierarchyItem> hierarchy = poi.hierarchy();
+        if (poi.id == 432751852L) {
+            System.out.println("Hierarchy in append: " + hierarchy);
+        }
         int[] hierOffs = new int[hierarchy.size()];
         for (int j = 0; j < hierarchy.size(); j++) {
             HierarchyCache.SimpleHierarchyItem h = hierarchy.get(j);
             hierOffs[j] = com.dedicatedcode.paikka.flatbuffers.HierarchyItem.createHierarchyItem(
-                    builder, h.level(), builder.createString(h.type()), builder.createString(h.name()), h.osmId());
+                    builder, h.level(),
+                    builder.createString(h.type()),
+                    builder.createString(h.name()),
+                    h.osmId());
         }
         int hierVecOff = POI.createHierarchyVector(builder, hierOffs);
 
@@ -1111,6 +1016,221 @@ public class ImportService {
         POI.addHierarchy(builder, hierVecOff);
         if (boundaryOff != 0) POI.addBoundary(builder, boundaryOff);
         return POI.endPOI(builder);
+    }
+
+
+    public void compactShards(RocksDB appendDb, RocksDB shardsDb, ImportStatistics stats) throws Exception {
+
+        // Reusable FlatBuffer accessor objects
+        POI reusablePoi = new POI();
+        Name reusableName = new Name();
+        HierarchyItem reusableHier = new HierarchyItem();
+        Address reusableAddr = new Address();
+        Geometry reusableGeom = new Geometry();
+
+        try (RocksIterator iterator = appendDb.newIterator();
+             WriteOptions writeOptions = new WriteOptions()) {
+
+            iterator.seekToFirst();
+
+            long currentShardId = Long.MIN_VALUE;
+            // Collect raw byte[] chunks per shard, build FlatBuffer only at flush time
+            List<byte[]> currentShardChunks = new ArrayList<>();
+            long shardsCompacted = 0;
+
+            while (iterator.isValid()) {
+                byte[] key = iterator.key();
+                long shardId = ByteBuffer.wrap(key).order(ByteOrder.BIG_ENDIAN).getLong();
+
+                // Shard boundary — flush previous shard
+                if (shardId != currentShardId && currentShardId != Long.MIN_VALUE) {
+                    flushCompactedShard(currentShardChunks, currentShardId, shardsDb,
+                                        writeOptions, reusablePoi, reusableName, reusableHier,
+                                        reusableAddr, reusableGeom);
+                    currentShardChunks.clear();
+                    shardsCompacted++;
+
+                    if (shardsCompacted % 10000 == 0) {
+                        System.out.println("Compacted " + shardsCompacted + " shards...");
+                    }
+                }
+
+                currentShardId = shardId;
+
+                // IMPORTANT: copy the value bytes — RocksIterator may reuse the buffer
+                byte[] value = iterator.value();
+                byte[] valueCopy = new byte[value.length];
+                System.arraycopy(value, 0, valueCopy, 0, value.length);
+                currentShardChunks.add(valueCopy);
+
+                iterator.next();
+            }
+
+            // Flush last shard
+            if (currentShardId != Long.MIN_VALUE && !currentShardChunks.isEmpty()) {
+                flushCompactedShard(currentShardChunks, currentShardId, shardsDb,
+                                    writeOptions, reusablePoi, reusableName, reusableHier,
+                                    reusableAddr, reusableGeom);
+                shardsCompacted++;
+            }
+
+            System.out.println("Compaction complete: " + shardsCompacted + " shards written.");
+        }
+    }
+
+    /**
+     * Takes all raw FlatBuffer chunks for a single shard, reads each chunk's POIs,
+     * copies them into a fresh FlatBufferBuilder, and writes the merged result.
+     */
+    private void flushCompactedShard(List<byte[]> chunks, long shardId,
+                                     RocksDB shardsDb, WriteOptions writeOptions,
+                                     POI reusablePoi, Name reusableName,
+                                     HierarchyItem reusableHier, Address reusableAddr,
+                                     Geometry reusableGeom) throws Exception {
+
+        // Count total POIs first
+        int totalPois = 0;
+        for (byte[] chunk : chunks) {
+            ByteBuffer buf = ByteBuffer.wrap(chunk);
+            POIList poiList = POIList.getRootAsPOIList(buf);
+            totalPois += poiList.poisLength();
+        }
+
+        // Fresh builder per shard — no stale offsets
+        FlatBufferBuilder builder = new FlatBufferBuilder(Math.max(1024, totalPois * 256));
+        int[] allOffsets = new int[totalPois];
+        int idx = 0;
+
+        // Process each chunk: the source ByteBuffer stays alive while we read from it
+        for (byte[] chunk : chunks) {
+            ByteBuffer buf = ByteBuffer.wrap(chunk);
+            POIList poiList = POIList.getRootAsPOIList(buf);
+            int count = poiList.poisLength();
+
+            for (int i = 0; i < count; i++) {
+                poiList.pois(reusablePoi, i);
+                allOffsets[idx++] = copyPoiFromFlatBuffer(builder, reusablePoi,
+                                                          reusableName, reusableHier, reusableAddr, reusableGeom);
+            }
+        }
+
+        int poisVec = POIList.createPoisVector(builder, allOffsets);
+        int poiList = POIList.createPOIList(builder, poisVec);
+        builder.finish(poiList);
+        shardsDb.put(writeOptions, s2Helper.longToByteArray(shardId), builder.sizedByteArray());
+    }
+
+    private int copyPoiFromFlatBuffer(FlatBufferBuilder builder, POI poi,
+                                      Name reusableName, HierarchyItem reusableHier,
+                                      Address reusableAddr, Geometry reusableGeom) {
+
+        String typeStr = poi.type();
+        String subtypeStr = poi.subtype();
+        int typeOff = typeStr != null ? builder.createString(typeStr) : 0;
+        int subtypeOff = subtypeStr != null ? builder.createString(subtypeStr) : 0;
+
+        int namesLen = poi.namesLength();
+        int namesVecOff;
+        if (namesLen > 0) {
+            int[] nameOffs = new int[namesLen];
+            for (int j = 0; j < namesLen; j++) {
+                poi.names(reusableName, j);
+                String lang = reusableName.lang();
+                String text = reusableName.text();
+                int langOff = lang != null ? builder.createString(lang) : 0;
+                int textOff = text != null ? builder.createString(text) : 0;
+                nameOffs[j] = Name.createName(builder, langOff, textOff);
+            }
+            namesVecOff = POI.createNamesVector(builder, nameOffs);
+        } else {
+            namesVecOff = POI.createNamesVector(builder, new int[0]);
+        }
+
+        int addressOff = 0;
+        if (poi.address(reusableAddr) != null) {
+            String street = reusableAddr.street();
+            String houseNumber = reusableAddr.houseNumber();
+            String postcode = reusableAddr.postcode();
+            String city = reusableAddr.city();
+            String country = reusableAddr.country();
+
+            int streetOff = street != null ? builder.createString(street) : 0;
+            int houseNumberOff = houseNumber != null ? builder.createString(houseNumber) : 0;
+            int postcodeOff = postcode != null ? builder.createString(postcode) : 0;
+            int cityOff = city != null ? builder.createString(city) : 0;
+            int countryOff = country != null ? builder.createString(country) : 0;
+
+            addressOff = com.dedicatedcode.paikka.flatbuffers.Address.createAddress(
+                    builder, streetOff, houseNumberOff, postcodeOff, cityOff, countryOff);
+        }
+
+        int hierLen = poi.hierarchyLength();
+        if (poi.id() == 432751852L) {
+            System.out.println("Hierarchy in after: " + poi.hierarchyLength());
+        }
+        int hierVecOff;
+        if (hierLen > 0) {
+            int[] hierOffs = new int[hierLen];
+            for (int j = 0; j < hierLen; j++) {
+                poi.hierarchy(reusableHier, j);
+                String hType = reusableHier.type();
+                String hName = reusableHier.name();
+                int hTypeOff = hType != null ? builder.createString(hType) : 0;
+                int hNameOff = hName != null ? builder.createString(hName) : 0;
+                hierOffs[j] = com.dedicatedcode.paikka.flatbuffers.HierarchyItem.createHierarchyItem(
+                        builder, reusableHier.level(), hTypeOff, hNameOff, reusableHier.osmId());
+            }
+            hierVecOff = POI.createHierarchyVector(builder, hierOffs);
+        } else {
+            hierVecOff = POI.createHierarchyVector(builder, new int[0]);
+        }
+
+        // Boundary geometry — use ByteBuffer slice for zero-copy transfer
+        int boundaryOff = 0;
+        if (poi.boundary(reusableGeom) != null && reusableGeom.dataLength() > 0) {
+            ByteBuffer boundaryBuf = reusableGeom.dataAsByteBuffer();
+            if (boundaryBuf != null) {
+                int boundaryDataOff = Geometry.createDataVector(builder, boundaryBuf);
+                boundaryOff = Geometry.createGeometry(builder, boundaryDataOff);
+            } else {
+                // Fallback: manual copy if dataAsByteBuffer() returns null
+                int len = reusableGeom.dataLength();
+                byte[] boundaryBytes = new byte[len];
+                for (int k = 0; k < len; k++) {
+                    boundaryBytes[k] = (byte) reusableGeom.data(k);
+                }
+                int boundaryDataOff = Geometry.createDataVector(builder, boundaryBytes);
+                boundaryOff = Geometry.createGeometry(builder, boundaryDataOff);
+            }
+        }
+
+        // --- Now build the POI table ---
+        POI.startPOI(builder);
+        POI.addId(builder, poi.id());
+        POI.addLat(builder, poi.lat());
+        POI.addLon(builder, poi.lon());
+        if (typeOff != 0) POI.addType(builder, typeOff);
+        if (subtypeOff != 0) POI.addSubtype(builder, subtypeOff);
+        POI.addNames(builder, namesVecOff);
+        if (addressOff != 0) POI.addAddress(builder, addressOff);
+        POI.addHierarchy(builder, hierVecOff);
+        if (boundaryOff != 0) POI.addBoundary(builder, boundaryOff);
+        return POI.endPOI(builder);
+    }
+
+    private void writeCompactedShard(FlatBufferBuilder builder, List<int[]> offsetBatches,
+                                     int totalPois, long shardId,
+                                     RocksDB shardsDb, WriteOptions writeOptions) throws Exception {
+        int[] allOffsets = new int[totalPois];
+        int idx = 0;
+        for (int[] batch : offsetBatches) {
+            System.arraycopy(batch, 0, allOffsets, idx, batch.length);
+            idx += batch.length;
+        }
+        int poisVec = POIList.createPoisVector(builder, allOffsets);
+        int poiList = POIList.createPOIList(builder, poisVec);
+        builder.finish(poiList);
+        shardsDb.put(writeOptions, s2Helper.longToByteArray(shardId), builder.sizedByteArray());
     }
 
     private org.locationtech.jts.geom.Geometry buildGeometryFromRelRec(RelRec rec, RocksDB nodeCache, RocksDB wayIndexDb) {
@@ -1521,7 +1641,8 @@ public class ImportService {
                                    Path wayIndexDbPath,
                                    Path neededNodesDbPath,
                                    Path relIndexDbPath,
-                                   Path poiIndexDbPath) {
+                                   Path poiIndexDbPath,
+                                   Path appendDbPath) {
         long shards = computeDirectorySize(shardsDbPath);
         long boundaries = computeDirectorySize(boundariesDbPath);
         long dataset = shards + boundaries;
@@ -1532,7 +1653,8 @@ public class ImportService {
         long needed = computeDirectorySize(neededNodesDbPath);
         long rel = computeDirectorySize(relIndexDbPath);
         long poi = computeDirectorySize(poiIndexDbPath);
-        long tmpTotal = grid + node + way + needed + rel + poi;
+        long append = computeDirectorySize(appendDbPath);
+        long tmpTotal = grid + node + way + needed + rel + poi + append;
 
         stats.setShardsBytes(shards);
         stats.setBoundariesBytes(boundaries);
@@ -1544,6 +1666,7 @@ public class ImportService {
         stats.setTmpNeededBytes(needed);
         stats.setTmpRelBytes(rel);
         stats.setTmpPoiBytes(poi);
+        stats.setTmpAppendBytes(append);
         stats.setTmpTotalBytes(tmpTotal);
     }
 
@@ -1598,6 +1721,7 @@ public class ImportService {
         System.out.println("  • needed_nodes:" + formatSize(stats.getTmpNeededBytes()));
         System.out.println("  • rel_index:   " + formatSize(stats.getTmpRelBytes()));
         System.out.println("  • poi_index:   " + formatSize(stats.getTmpPoiBytes()));
+        System.out.println("  • append_index:   " + formatSize(stats.getTmpAppendBytes()));
         System.out.println();
     }
 
@@ -1630,6 +1754,7 @@ public class ImportService {
         private volatile long tmpRelBytes;
         private volatile long tmpPoiBytes;
         private volatile long tmpTotalBytes;
+        private volatile long tmpAppendBytes;
 
         public long getEntitiesRead() { return entitiesRead.get(); }
         public void incrementEntitiesRead() { entitiesRead.incrementAndGet(); }
@@ -1690,6 +1815,8 @@ public class ImportService {
         public void setTmpRelBytes(long v) { this.tmpRelBytes = v; }
         public long getTmpPoiBytes() { return tmpPoiBytes; }
         public void setTmpPoiBytes(long v) { this.tmpPoiBytes = v; }
+        public long getTmpAppendBytes() { return tmpAppendBytes; }
+        public void setTmpAppendBytes(long v) { this.tmpAppendBytes = v; }
         public long getTmpTotalBytes() { return tmpTotalBytes; }
         public void setTmpTotalBytes(long v) { this.tmpTotalBytes = v; }
 

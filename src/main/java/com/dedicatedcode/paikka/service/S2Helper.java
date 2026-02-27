@@ -32,8 +32,8 @@ import java.util.*;
 @Service
 public class S2Helper {
 
-    private static final int SHARD_LEVEL = 16;   // For POIs
-    public static final int GRID_LEVEL = 13;    // For Boundary Indexing
+    private static final int SHARD_LEVEL = 14;   // For POIs
+    public static final int GRID_LEVEL = 14;    // For Boundary Indexing
 
     /**
      * Get S2 cell ID for POI sharding.
