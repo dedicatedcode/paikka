@@ -124,12 +124,15 @@ public class ImportService {
         try (Cache sharedCache = new LRUCache(2 * 1024 * 1024 * 1024L)) {
             BlockBasedTableConfig tableConfig = new BlockBasedTableConfig()
                     .setBlockCache(sharedCache)
+                    .setBlockSize(64 * 1024)
+                    .setEnableIndexCompression(true)
                     .setFilterPolicy(new BloomFilter(10, false));
 
-            Options persistentOpts = new Options()
+
+            Options poiShardsOpts = new Options()
                     .setCreateIfMissing(true)
                     .setTableFormatConfig(tableConfig)
-                    .setCompressionType(CompressionType.LZ4_COMPRESSION)
+                    .setCompressionType(CompressionType.ZSTD_COMPRESSION)
                     .setMaxOpenFiles(-1);
 
             Options gridOpts = new Options()
@@ -143,21 +146,13 @@ public class ImportService {
                     .setTableFormatConfig(tableConfig)
                     .setCompressionType(CompressionType.LZ4_COMPRESSION)
                     .setWriteBufferSize(512 * 1024 * 1024)
-                    .setMaxWriteBufferNumber(6)
-                    .setMinWriteBufferNumberToMerge(2)
-                    .setLevel0FileNumCompactionTrigger(20)
-                    .setLevel0SlowdownWritesTrigger(30)
-                    .setLevel0StopWritesTrigger(40);
+                    .setMaxWriteBufferNumber(3)
+                    .setLevel0FileNumCompactionTrigger(4);
+
             Options appendOpts = new Options()
                                 .setCreateIfMissing(true)
                                 .setTableFormatConfig(tableConfig)
-                                .setCompressionType(CompressionType.LZ4_COMPRESSION)
-                                .setWriteBufferSize(512 * 1024 * 1024)
-                                .setMaxWriteBufferNumber(6)
-                                .setMinWriteBufferNumberToMerge(2)
-                                .setLevel0FileNumCompactionTrigger(20)
-                                .setLevel0SlowdownWritesTrigger(30)
-                                .setLevel0StopWritesTrigger(40);
+                                .setCompressionType(CompressionType.LZ4_COMPRESSION);
 
             Options poiIndexOpts = new Options()
                     .setCreateIfMissing(true)
@@ -172,25 +167,19 @@ public class ImportService {
                     .setTableFormatConfig(tableConfig)
                     .setCompressionType(CompressionType.LZ4_COMPRESSION)
                     .setWriteBufferSize(512 * 1024 * 1024)
-                    .setMaxWriteBufferNumber(6)
-                    .setMinWriteBufferNumberToMerge(2)
-                    .setLevel0FileNumCompactionTrigger(20)
-                    .setLevel0SlowdownWritesTrigger(30)
-                    .setLevel0StopWritesTrigger(40);
+                    .setMaxWriteBufferNumber(3)
+                    .setLevel0FileNumCompactionTrigger(4);
 
             Options neededNodesOpts = new Options()
                     .setCreateIfMissing(true)
                     .setTableFormatConfig(tableConfig)
                     .setCompressionType(CompressionType.LZ4_COMPRESSION)
                     .setWriteBufferSize(512 * 1024 * 1024)
-                    .setMaxWriteBufferNumber(6)
-                    .setMinWriteBufferNumberToMerge(2)
-                    .setLevel0FileNumCompactionTrigger(20)
-                    .setLevel0SlowdownWritesTrigger(30)
-                    .setLevel0StopWritesTrigger(40);
+                    .setMaxWriteBufferNumber(3)
+                    .setLevel0FileNumCompactionTrigger(4);
 
-            try (RocksDB shardsDb = RocksDB.open(persistentOpts, shardsDbPath.toString());
-                 RocksDB boundariesDb = RocksDB.open(persistentOpts, boundariesDbPath.toString());
+            try (RocksDB shardsDb = RocksDB.open(poiShardsOpts, shardsDbPath.toString());
+                 RocksDB boundariesDb = RocksDB.open(poiShardsOpts, boundariesDbPath.toString());
                  RocksDB gridIndexDb = RocksDB.open(gridOpts, gridIndexDbPath.toString());
                  RocksDB nodeCache = RocksDB.open(nodeOpts, nodeCacheDbPath.toString());
                  RocksDB wayIndexDb = RocksDB.open(wayIndexOpts, wayIndexDbPath.toString());
@@ -236,14 +225,14 @@ public class ImportService {
 
                 recordSizeMetrics(stats,
                                   shardsDbPath,
-                                  appendDbPath,
                                   boundariesDbPath,
                                   gridIndexDbPath,
                                   nodeCacheDbPath,
                                   wayIndexDbPath,
                                   neededNodesDbPath,
                                   relIndexDbPath,
-                                  poiIndexDbPath);
+                                  poiIndexDbPath,
+                                  appendDbPath);
 
                 shardsDb.flush(new FlushOptions().setWaitForFlush(true));
                 boundariesDb.flush(new FlushOptions().setWaitForFlush(true));

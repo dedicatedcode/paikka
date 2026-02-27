@@ -34,13 +34,12 @@ public class HierarchyCache {
     private final RocksDB boundariesDb;
     private final RocksDB gridIndexDb;
     private final S2Helper s2Helper;
-    private final Cache<Long, CachedBoundary> globalCache; // Shared Tier 2 Cache
+    private final Cache<Long, CachedBoundary> globalCache;
     private final WKBReader wkbReader = new WKBReader();
 
     private long lastS2CellId = -1;
     private List<SimpleHierarchyItem> lastHierarchy;
-    private List<CachedBoundary> lastActiveBoundaries = new ArrayList<>();
-    private boolean lastCellFullyContained = false; // THE KEY TO 100k/s
+    private boolean lastCellFullyContained = false;
 
     public HierarchyCache(RocksDB boundariesDb, RocksDB gridIndexDb, S2Helper s2Helper, Cache<Long, CachedBoundary> globalCache) {
         this.boundariesDb = boundariesDb;
@@ -52,38 +51,18 @@ public class HierarchyCache {
     public List<SimpleHierarchyItem> resolve(Double lon, Double lat) {
         long currentS2Cell = s2Helper.getS2CellId(lon, lat, S2Helper.GRID_LEVEL);
 
-        // 1. THE ULTRA FAST PATH (Full Cell Containment)
         if (currentS2Cell == lastS2CellId && lastHierarchy != null && lastCellFullyContained) {
             return lastHierarchy;
         }
 
-        // 2. THE SEMI-FAST PATH (Same Cell, Point-Check only)
-        // If we are in the same cell, but NOT fully contained, we check if the
-        // PREVIOUS hierarchy is still valid for this specific point.
-        if (currentS2Cell == lastS2CellId && lastHierarchy != null) {
-            if (checkSpecificPoint(lon, lat)) {
-                return lastHierarchy; // Skip GridDB, Skip sorting, Skip fetchFromDb
-            }
-        }
-
-        // 3. THE SLOW PATH (Cell changed or hierarchy changed)
         lastHierarchy = refresh(lon, lat, currentS2Cell);
         lastS2CellId = currentS2Cell;
         return lastHierarchy;
     }
-    private boolean checkSpecificPoint(double lon, double lat) {
-        if (lastActiveBoundaries.isEmpty()) return false;
 
-        // For the hierarchy to be "still valid," the point must be inside
-        // EVERY boundary in the last result.
-        for (CachedBoundary cb : lastActiveBoundaries) {
-            if (!cb.contains(lon, lat)) return false;
-        }
-        return true;
-    }
     private List<SimpleHierarchyItem> refresh(double lon, double lat, long cellId) {
         long[] candidates = fetchGridCandidates(cellId);
-        lastActiveBoundaries = new ArrayList<>(); // Reset this list
+        List<CachedBoundary> lastActiveBoundaries = new ArrayList<>(); // Reset this list
 
         Envelope cellEnvelope = s2Helper.getCellEnvelope(cellId);
         boolean allLayersContainCell = true;
@@ -144,10 +123,6 @@ public class HierarchyCache {
             if (mir != null && mir.contains(lon, lat)) return true;
             if (!mbr.contains(lon, lat)) return false;
             return locator.locate(new Coordinate(lon, lat)) != Location.EXTERIOR;
-        }
-
-        public boolean fullyContains(Envelope envelope) {
-            return mir != null && mir.contains(envelope);
         }
     }
 
