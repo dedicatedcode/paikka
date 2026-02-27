@@ -65,7 +65,8 @@ class ImportServiceTest {
         config.setImportConfiguration(importConfiguration);
         GeometrySimplificationService geometrySimplificationService = new GeometrySimplificationService();
 
-        ImportService importService = new ImportService(new S2Helper(), geometrySimplificationService, config);
+        S2Helper s2Helper = new S2Helper();
+        ImportService importService = new ImportService(s2Helper, geometrySimplificationService, config);
         importService.importData(tempImportFile.toString(), tempDataDir.toString());
     }
 

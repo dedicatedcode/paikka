@@ -17,100 +17,100 @@
 package com.dedicatedcode.paikka.service;
 
 import com.dedicatedcode.paikka.flatbuffers.Boundary;
+import com.github.benmanes.caffeine.cache.Cache;
 import org.locationtech.jts.algorithm.locate.IndexedPointInAreaLocator;
 import org.locationtech.jts.geom.Coordinate;
 import org.locationtech.jts.geom.Envelope;
 import org.locationtech.jts.geom.Location;
-import org.locationtech.jts.geom.Point;
 import org.locationtech.jts.io.WKBReader;
-import org.rocksdb.ReadOptions;
 import org.rocksdb.RocksDB;
 
 import java.nio.ByteBuffer;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.List;
 
 public class HierarchyCache {
-
     private final RocksDB boundariesDb;
     private final RocksDB gridIndexDb;
     private final S2Helper s2Helper;
+    private final Cache<Long, CachedBoundary> globalCache; // Shared Tier 2 Cache
     private final WKBReader wkbReader = new WKBReader();
 
     private long lastS2CellId = -1;
-    private final Map<Integer, List<CachedBoundary>> levelCache = new HashMap<>();
     private List<SimpleHierarchyItem> lastHierarchy;
+    private List<CachedBoundary> lastActiveBoundaries = new ArrayList<>();
+    private boolean lastCellFullyContained = false; // THE KEY TO 100k/s
 
-    public HierarchyCache(RocksDB boundariesDb, RocksDB gridIndexDb, S2Helper s2Helper) {
+    public HierarchyCache(RocksDB boundariesDb, RocksDB gridIndexDb, S2Helper s2Helper, Cache<Long, CachedBoundary> globalCache) {
         this.boundariesDb = boundariesDb;
         this.gridIndexDb = gridIndexDb;
         this.s2Helper = s2Helper;
+        this.globalCache = globalCache;
     }
 
-    public List<SimpleHierarchyItem> resolve(Point point) {
-        double lon = point.getX();
-        double lat = point.getY();
+    public List<SimpleHierarchyItem> resolve(Double lon, Double lat) {
         long currentS2Cell = s2Helper.getS2CellId(lon, lat, S2Helper.GRID_LEVEL);
 
-        // If we changed S2 cells, we MUST refresh
+        // 1. THE ULTRA FAST PATH (Full Cell Containment)
+        if (currentS2Cell == lastS2CellId && lastHierarchy != null && lastCellFullyContained) {
+            return lastHierarchy;
+        }
+
+        // 2. THE SEMI-FAST PATH (Same Cell, Point-Check only)
+        // If we are in the same cell, but NOT fully contained, we check if the
+        // PREVIOUS hierarchy is still valid for this specific point.
         if (currentS2Cell == lastS2CellId && lastHierarchy != null) {
-            // Optimization: If the point is still inside ALL layers of the previous
-            // result, we can return the cached list immediately.
-            if (layersStillValid(lon, lat)) {
-                return lastHierarchy;
+            if (checkSpecificPoint(lon, lat)) {
+                return lastHierarchy; // Skip GridDB, Skip sorting, Skip fetchFromDb
             }
         }
+
+        // 3. THE SLOW PATH (Cell changed or hierarchy changed)
         lastHierarchy = refresh(lon, lat, currentS2Cell);
+        lastS2CellId = currentS2Cell;
         return lastHierarchy;
     }
-    private List<SimpleHierarchyItem> refresh(double lon, double lat, long cellId) {
-        long[] candidates = fetchGridCandidates(cellId);
+    private boolean checkSpecificPoint(double lon, double lat) {
+        if (lastActiveBoundaries.isEmpty()) return false;
 
-        // Start with a fresh temporary state for this specific coordinate
-        Map<Integer, List<CachedBoundary>> nextCache = new HashMap<>();
-
-        if (candidates != null) {
-            for (long id : candidates) {
-                // Reuse prepared geometry if we already have it in the old cache
-                CachedBoundary cb = findInExistingCache(id);
-                if (cb == null) {
-                    cb = fetchFromDb(id);
-                }
-
-                // Point-in-Polygon check
-                if (cb != null && cb.contains(lon, lat)) {
-                    nextCache.computeIfAbsent(cb.level, k -> new ArrayList<>()).add(cb);
-                }
-            }
-        }
-
-        // Atomic update of the cache state
-        levelCache.clear();
-        levelCache.putAll(nextCache);
-
-        return extractInfo();
-    }
-
-    private boolean layersStillValid(double lon, double lat) {
-        if (levelCache.isEmpty()) {
-            // If we are in a "void" (no admin boundaries), the result
-            // is technically valid until we leave the S2 cell.
-            return true;
-        }
-        // All currently cached layers must still contain the point
-        for (List<CachedBoundary> boundaries : levelCache.values()) {
-            for (CachedBoundary cb : boundaries) {
-                if (!cb.contains(lon, lat)) return false;
-            }
+        // For the hierarchy to be "still valid," the point must be inside
+        // EVERY boundary in the last result.
+        for (CachedBoundary cb : lastActiveBoundaries) {
+            if (!cb.contains(lon, lat)) return false;
         }
         return true;
     }
+    private List<SimpleHierarchyItem> refresh(double lon, double lat, long cellId) {
+        long[] candidates = fetchGridCandidates(cellId);
+        lastActiveBoundaries = new ArrayList<>(); // Reset this list
 
-    private CachedBoundary findInExistingCache(long osmId) {
-        return levelCache.values().stream()
-                .flatMap(List::stream)
-                .filter(cb -> cb.osmId == osmId)
-                .findFirst()
-                .orElse(null);
+        Envelope cellEnvelope = s2Helper.getCellEnvelope(cellId);
+        boolean allLayersContainCell = true;
+
+        if (candidates != null) {
+            for (long id : candidates) {
+                CachedBoundary cb = globalCache.get(id, this::fetchFromDb);
+
+                if (cb != null && cb.contains(lon, lat)) {
+                    lastActiveBoundaries.add(cb); // Store for Semi-Fast Path
+
+                    // Keep the MIR check for the Ultra-Fast path
+                    if (cb.mir == null || !cb.mir.contains(cellEnvelope)) {
+                        allLayersContainCell = false;
+                    }
+                } else {
+                    allLayersContainCell = false;
+                }
+            }
+        }
+
+        this.lastCellFullyContained = !lastActiveBoundaries.isEmpty() && allLayersContainCell;
+
+        return lastActiveBoundaries.stream()
+                .sorted(Comparator.comparingInt(b -> b.level))
+                .map(cb -> new SimpleHierarchyItem(cb.level, "administrative", cb.name, cb.osmId))
+                .toList();
     }
 
     private CachedBoundary fetchFromDb(long id) {
@@ -138,19 +138,16 @@ public class HierarchyCache {
         } catch (Exception e) { return null; }
     }
 
-    private List<SimpleHierarchyItem> extractInfo() {
-        return levelCache.entrySet().stream()
-                .sorted(Map.Entry.comparingByKey()) // Sort by admin_level
-                .flatMap(entry -> entry.getValue().stream()
-                        .map(cb -> new SimpleHierarchyItem(cb.level, "administrative", cb.name, cb.osmId)))
-                .toList();
-    }
-
-    private record CachedBoundary(int level, String name, long osmId, Envelope mir, Envelope mbr, IndexedPointInAreaLocator locator) {
+    public record CachedBoundary(int level, String name, long osmId, Envelope mir, Envelope mbr,
+                                 IndexedPointInAreaLocator locator) {
         public boolean contains(double lon, double lat) {
             if (mir != null && mir.contains(lon, lat)) return true;
             if (!mbr.contains(lon, lat)) return false;
             return locator.locate(new Coordinate(lon, lat)) != Location.EXTERIOR;
+        }
+
+        public boolean fullyContains(Envelope envelope) {
+            return mir != null && mir.contains(envelope);
         }
     }
 

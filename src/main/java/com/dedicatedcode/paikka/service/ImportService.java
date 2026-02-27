@@ -20,6 +20,7 @@ import com.dedicatedcode.paikka.config.PaikkaConfiguration;
 import com.dedicatedcode.paikka.flatbuffers.*;
 import com.dedicatedcode.paikka.flatbuffers.Geometry;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.github.benmanes.caffeine.cache.Caffeine;
 import com.google.common.geometry.S2CellId;
 import com.google.common.geometry.S2LatLng;
 import com.google.common.geometry.S2LatLngRect;
@@ -138,6 +139,17 @@ public class ImportService {
                     .setTableFormatConfig(tableConfig)
                     .setCompressionType(CompressionType.LZ4_COMPRESSION)
                     .setWriteBufferSize(512 * 1024 * 1024)
+                    .setMaxWriteBufferNumber(6)
+                    .setMinWriteBufferNumberToMerge(2)
+                    .setLevel0FileNumCompactionTrigger(20)
+                    .setLevel0SlowdownWritesTrigger(30)
+                    .setLevel0StopWritesTrigger(40);
+
+            Options poiIndexOpts = new Options()
+                    .setCreateIfMissing(true)
+                    .setTableFormatConfig(tableConfig)
+                    .setCompressionType(CompressionType.LZ4_COMPRESSION)
+                    .setWriteBufferSize(512 * 1024 * 1024)
                     .setMaxWriteBufferNumber(3)
                     .setLevel0FileNumCompactionTrigger(4);
 
@@ -146,16 +158,22 @@ public class ImportService {
                     .setTableFormatConfig(tableConfig)
                     .setCompressionType(CompressionType.LZ4_COMPRESSION)
                     .setWriteBufferSize(512 * 1024 * 1024)
-                    .setMaxWriteBufferNumber(3)
-                    .setLevel0FileNumCompactionTrigger(4);
+                    .setMaxWriteBufferNumber(6)
+                    .setMinWriteBufferNumberToMerge(2)
+                    .setLevel0FileNumCompactionTrigger(20)
+                    .setLevel0SlowdownWritesTrigger(30)
+                    .setLevel0StopWritesTrigger(40);
 
             Options neededNodesOpts = new Options()
                     .setCreateIfMissing(true)
                     .setTableFormatConfig(tableConfig)
                     .setCompressionType(CompressionType.LZ4_COMPRESSION)
                     .setWriteBufferSize(512 * 1024 * 1024)
-                    .setMaxWriteBufferNumber(3)
-                    .setLevel0FileNumCompactionTrigger(4);
+                    .setMaxWriteBufferNumber(6)
+                    .setMinWriteBufferNumberToMerge(2)
+                    .setLevel0FileNumCompactionTrigger(20)
+                    .setLevel0SlowdownWritesTrigger(30)
+                    .setLevel0StopWritesTrigger(40);
 
             try (RocksDB shardsDb = RocksDB.open(persistentOpts, shardsDbPath.toString());
                  RocksDB boundariesDb = RocksDB.open(persistentOpts, boundariesDbPath.toString());
@@ -164,7 +182,7 @@ public class ImportService {
                  RocksDB wayIndexDb = RocksDB.open(wayIndexOpts, wayIndexDbPath.toString());
                  RocksDB neededNodesDb = RocksDB.open(neededNodesOpts, neededNodesDbPath.toString());
                  RocksDB relIndexDb = RocksDB.open(wayIndexOpts, relIndexDbPath.toString());
-                 RocksDB poiIndexDb = RocksDB.open(wayIndexOpts, poiIndexDbPath.toString())) {
+                 RocksDB poiIndexDb = RocksDB.open(poiIndexOpts, poiIndexDbPath.toString())) {
 
                 // PASS 1: Discovery & Indexing
                 currentStep = 1;
@@ -172,7 +190,7 @@ public class ImportService {
                 long pass1Start = System.currentTimeMillis();
                 stats.setCurrentPhase("1.1.1: Discovery & Indexing");
                 pass1DiscoveryAndIndexing(pbfFile, wayIndexDb, neededNodesDb, relIndexDb, poiIndexDb, stats);
-                printPhaseSummary("PASS 1", pass1Start, stats);
+                printPhaseSummary("PASS 1", pass1Start);
 
                 // PASS 2: Nodes Cache, Boundaries, POIs
                 currentStep = 2;
@@ -187,12 +205,14 @@ public class ImportService {
                 currentStep = 4;
                 stats.setCurrentPhase("2.1: Processing POIs & Sharding");
                 pass2PoiShardingFromIndex(nodeCache, wayIndexDb, shardsDb, boundariesDb, poiIndexDb, gridIndexDb, stats);
-                printPhaseSummary("PASS 2", pass2Start, stats);
+
+                stats.stop();
+                printPhaseSummary("PASS 2", pass2Start);
 
                 shardsDb.compactRange();
                 boundariesDb.compactRange();
                 stats.setTotalTime(System.currentTimeMillis() - totalStartTime);
-                stats.stop();
+
 
                 recordSizeMetrics(stats,
                                   shardsDbPath,
@@ -207,6 +227,9 @@ public class ImportService {
                 printFinalStatistics(stats);
                 printSuccess();
                 writeMetadataFile(pbfFile, dataDirectory);
+
+                shardsDb.flush(new FlushOptions().setWaitForFlush(true));
+                boundariesDb.flush(new FlushOptions().setWaitForFlush(true));
             } catch (Exception e) {
                 stats.stop();
                 printError("IMPORT FAILED: " + e.getMessage());
@@ -264,8 +287,8 @@ public class ImportService {
                     sb.append(String.format("\033[1;36m[%s]\033[0m \033[1mScanning PBF Structure\033[0m", formatTime(elapsed)));
                     sb.append(String.format(" │ \033[32mPBF Entities:\033[0m %s \033[33m(%s/s)\033[0m",
                                             formatCompactNumber(stats.getEntitiesRead()), formatCompactRate(pbfPerSec)));
-                    sb.append(String.format(" │ \033[34mWays Found:\033[0m %s", formatCompactNumber(stats.getWaysProcessed())));
                     sb.append(String.format(" │ \033[37mNodes Found:\033[0m %s", formatCompactNumber(stats.getNodesFound())));
+                    sb.append(String.format(" │ \033[34mWays Found:\033[0m %s", formatCompactNumber(stats.getWaysProcessed())));
                     sb.append(String.format(" │ \033[35mRelations:\033[0m %s", formatCompactNumber(stats.getRelationsFound())));
 
                 } else if (phase.contains("1.1.2")) {
@@ -439,8 +462,12 @@ public class ImportService {
 
             try (ExecutorService executor = createExecutorService(numReaders);
                  ReadOptions ro = new ReadOptions().setReadaheadSize(2 * 1024 * 1024);) {
-                final ThreadLocal<HierarchyCache> hierarchyCacheThreadLocal = ThreadLocal.withInitial(
-                        () -> new HierarchyCache(boundariesDb, gridIndexDb, s2Helper)
+                com.github.benmanes.caffeine.cache.Cache<Long, HierarchyCache.CachedBoundary> globalBoundaryCache = Caffeine.newBuilder()
+                        .maximumSize(1000)
+                        .recordStats()
+                        .build();
+                ThreadLocal<HierarchyCache> hierarchyCacheThreadLocal = ThreadLocal.withInitial(
+                        () -> new HierarchyCache(boundariesDb, gridIndexDb, s2Helper, globalBoundaryCache)
                 );
                 long total = 0;
                 try (RocksIterator it = poiIndexDb.newIterator(ro)) {
@@ -511,6 +538,7 @@ public class ImportService {
                 }
 
                 // ─── Worker threads: hierarchy resolution + sharding (unchanged) ───
+
                 for (int i = 0; i < numReaders; i++) {
                     executor.submit(() -> {
                         stats.incrementActiveThreads();
@@ -522,7 +550,7 @@ public class ImportService {
                                 List<PoiQueueItem> batch = queue.take();
                                 stats.setQueueSize(queue.size());
                                 if (batch.isEmpty()) break;
-
+                                int localCount = batch.size();
                                 for (PoiQueueItem item : batch) {
                                     try {
                                         PoiIndexRec rec = item.rec;
@@ -547,15 +575,13 @@ public class ImportService {
                                             }
                                         }
 
-                                        Point point = geometryFactory.createPoint(new Coordinate(lon, lat));
-                                        List<HierarchyCache.SimpleHierarchyItem> hierarchy = hierarchyCache.resolve(point);
+                                        List<HierarchyCache.SimpleHierarchyItem> hierarchy = hierarchyCache.resolve(lon, lat);
                                         PoiData poiData = createPoiDataFromIndex(rec, lat, lon, hierarchy, boundaryWkb);
-                                        localShardBuffer.computeIfAbsent(s2Helper.getShardId(poiData.lat(), poiData.lon()), k -> new ArrayList<>()).add(poiData);
-                                        stats.incrementPoisProcessed();
+                                        localShardBuffer.computeIfAbsent(s2Helper.getShardId(lat, lon), k -> new ArrayList<>()).add(poiData);
                                     } catch (Exception ignored) {
                                     }
                                 }
-
+                                stats.incrementPoisProcessed(localCount);
                                 if (localShardBuffer.size() > 5000) {
                                     synchronized (shardBuffer) {
                                         localShardBuffer.forEach((shardId, poiList) -> shardBuffer.computeIfAbsent(shardId, k -> new ArrayList<>()).addAll(poiList));
@@ -575,7 +601,6 @@ public class ImportService {
                         }
                     });
                 }
-
                 for (Thread reader : readerThreads) {
                     try {
                         reader.join();
@@ -665,11 +690,13 @@ public class ImportService {
     private void cacheNeededNodeCoordinates(Path pbfFile, RocksDB neededNodesDb, RocksDB nodeCache, ImportStatistics stats) throws Exception {
         final int BATCH_SIZE = 50_000;
 
+        // The reader thread produces batches of nodes
         BlockingQueue<List<OsmNode>> nodeBatchQueue = new LinkedBlockingQueue<>(200);
         int numProcessors = Math.max(1, config.getImportConfiguration().getThreads());
         CountDownLatch latch = new CountDownLatch(numProcessors);
 
         try (ExecutorService executor = createExecutorService(numProcessors)) {
+            // The reader logic is good, no changes needed here.
             Thread reader = Thread.ofVirtual().start(() -> {
                 List<OsmNode> buf = new ArrayList<>(BATCH_SIZE);
                 try {
@@ -687,18 +714,17 @@ public class ImportService {
                         }
                         if (!buf.isEmpty()) {
                             nodeBatchQueue.put(new ArrayList<>(buf));
-                            buf.clear();
                             stats.setQueueSize(nodeBatchQueue.size());
                         }
                     });
                 } catch (Exception e) {
+                    // Log the exception
                 } finally {
                     for (int i = 0; i < numProcessors; i++) {
                         try {
                             nodeBatchQueue.put(Collections.emptyList());
                         } catch (InterruptedException ex) {
                             Thread.currentThread().interrupt();
-                            break;
                         }
                     }
                 }
@@ -707,37 +733,49 @@ public class ImportService {
             for (int i = 0; i < numProcessors; i++) {
                 executor.submit(() -> {
                     stats.incrementActiveThreads();
+                    // --- OPTIMIZATION 1: ThreadLocal for reusable objects to reduce GC pressure ---
                     final ThreadLocal<RocksBatchWriter> nodeWriterLocal =
                             ThreadLocal.withInitial(() -> new RocksBatchWriter(nodeCache, 50_000, stats));
+                    // Reuse a ByteBuffer for writing values
+                    final ThreadLocal<ByteBuffer> valueBufferLocal = ThreadLocal.withInitial(() -> ByteBuffer.allocate(16));
+                    // Reuse a List of byte[] for multiGet keys. We only need one per thread.
+                    final ThreadLocal<List<byte[]>> keysListLocal = ThreadLocal.withInitial(ArrayList::new);
+
                     try {
                         while (true) {
                             List<OsmNode> nodes = nodeBatchQueue.take();
                             stats.setQueueSize(nodeBatchQueue.size());
                             if (nodes.isEmpty()) break;
 
-                            List<byte[]> keys = new ArrayList<>(nodes.size());
-                            for (OsmNode n : nodes) keys.add(s2Helper.longToByteArray(n.getId()));
+                            // Reuse the keys list
+                            List<byte[]> keys = keysListLocal.get();
+                            keys.clear(); // Clear previous batch's keys
+                            for (OsmNode n : nodes) {
+                                keys.add(s2Helper.longToByteArray(n.getId()));
+                            }
+
                             List<byte[]> presence = neededNodesDb.multiGetAsList(keys);
 
                             RocksBatchWriter nodeWriter = nodeWriterLocal.get();
+                            ByteBuffer valueBuffer = valueBufferLocal.get(); // Get the reusable buffer
+
+                            // --- OPTIMIZATION 2: Combine loops ---
                             for (int idx = 0; idx < nodes.size(); idx++) {
                                 if (presence.get(idx) != null) {
                                     OsmNode n = nodes.get(idx);
-                                    byte[] val = ByteBuffer.allocate(16)
-                                            .putDouble(n.getLatitude())
-                                            .putDouble(n.getLongitude())
-                                            .array();
-                                    try {
-                                        nodeWriter.put(s2Helper.longToByteArray(n.getId()), val);
-                                        stats.incrementNodesCached();
-                                    } catch (RocksDBException e) {
-                                    }
+
+                                    // Reset buffer position and write new data
+                                    valueBuffer.clear();
+                                    valueBuffer.putDouble(n.getLatitude());
+                                    valueBuffer.putDouble(n.getLongitude());
+
+                                    // The key is already in the 'keys' list at the same index
+                                    nodeWriter.put(keys.get(idx), valueBuffer.array());
+                                    stats.incrementNodesCached();
                                 }
                             }
                         }
-                        try {
-                            nodeWriterLocal.get().flush();
-                        } catch (Exception ignore) { }
+                        nodeWriterLocal.get().flush();
                     } catch (InterruptedException e) {
                         Thread.currentThread().interrupt();
                     } catch (RocksDBException e) {
@@ -747,6 +785,8 @@ public class ImportService {
                             nodeWriterLocal.get().close();
                         } catch (Exception ignore) { }
                         nodeWriterLocal.remove();
+                        valueBufferLocal.remove(); // Clean up thread-local
+                        keysListLocal.remove();    // Clean up thread-local
                         stats.decrementActiveThreads();
                         latch.countDown();
                     }
@@ -858,14 +898,28 @@ public class ImportService {
 
     private void writeShardBatch(Map<Long, List<PoiData>> shardBuffer, RocksDB shardsDb, ImportStatistics stats) throws Exception {
         try (WriteBatch batch = new WriteBatch()) {
+            FlatBufferBuilder builder = new FlatBufferBuilder(1024 * 128);
+
             for (Map.Entry<Long, List<PoiData>> entry : shardBuffer.entrySet()) {
+                builder.clear();
                 List<PoiData> pois = entry.getValue();
                 if (pois.isEmpty()) continue;
 
-                FlatBufferBuilder builder = new FlatBufferBuilder(pois.size() * 512);
-                int[] poiOffsets = new int[pois.size()];
+                long shardId = entry.getKey();
+
+                // 1. FETCH EXISTING POIS FROM ROCKSDB
+                byte[] existingData = shardsDb.get(s2Helper.longToByteArray(shardId));
+                List<PoiData> mergedPois;
+                if (existingData != null) {
+                    mergedPois = deserializePoiData(existingData);
+                    mergedPois.addAll(pois);
+                } else {
+                    mergedPois = pois;
+                }
+
+                int[] poiOffsets = new int[mergedPois.size()];
                 int i = 0;
-                for (PoiData poi : pois) {
+                for (PoiData poi : mergedPois) {
                     int typeOff = builder.createString(poi.type());
                     int subtypeOff = builder.createString(poi.subtype());
                     int[] nameOffs = poi.names().stream().mapToInt(n -> Name.createName(builder, builder.createString(n.lang()), builder.createString(n.text()))).toArray();
@@ -911,6 +965,8 @@ public class ImportService {
             }
             shardsDb.write(new WriteOptions(), batch);
             stats.incrementRocksDbWrites();
+        } catch (Exception e) {
+            System.err.println(e.getMessage());
         }
     }
 
@@ -975,37 +1031,56 @@ public class ImportService {
 
     private boolean isPoi(OsmEntity entity) {
         if (entity.getNumberOfTags() == 0) return false;
+
+        boolean isInterestingBuilding = false;
+
         for (int i = 0; i < entity.getNumberOfTags(); i++) {
             OsmTag tag = entity.getTag(i);
             String key = tag.getKey();
+            String val = tag.getValue();
+
             switch (key) {
                 case "amenity":
-                    String av = tag.getValue();
-                    return switch (av) {
-                        case "fountain", "swimming_pool" -> false;
+                    return switch (val) {
+                        case "bench", "drinking_water", "waste_basket", "bicycle_parking",
+                             "vending_machine", "parking_entrance", "fire_hydrant" -> false;
+
                         default -> true;
                     };
-                case "shop", "tourism", "leisure":
-                    return switch (tag.getValue()) {
-                        case "picnic_table", "swimming_pool", "theatre", "water_point", "outdoor_seating" -> false;
+
+                case "healthcare":
+                    return true;
+                case "emergency":
+                    return switch (val) {
+                        case "fire_hydrant", "defibrillator", "fire_extinguisher", "siren", "life_ring", "lifeline",
+                             "phone", "drinking_water" -> false;
                         default -> true;
                     };
                 case "building":
-                    String bv = tag.getValue();
-                    return !("yes".equals(bv) || "house".equals(bv) || "residential".equals(bv));
-                case "landuse":
-                    String lv = tag.getValue();
-                    return !("residential".equals(lv) || "commercial".equals(lv) || "industrial".equals(lv));
-                case "natural":
-                    return switch (tag.getValue()) {
-                        case "tree", "grass" -> false;
-                        default -> true;
-                    };
+                    if (switch (val) {
+                        case "yes", "commercial", "retail", "industrial", "office", "apartments" -> true;
+                        default -> false;
+                    }) {
+                        isInterestingBuilding = true;
+                    }
+                    break;
+
+                case "shop", "tourism", "leisure", "office", "craft", "place",
+                     "historic", "public_transport", "aeroway":
+                    // Exclude the specific sub-leisure types you mentioned earlier
+                    return !key.equals("leisure") || !List.of("picnic_table", "swimming_pool").contains(val);
+
+                case "railway":
+                    if ("station".equals(val)) return true;
+                    break;
+
                 default:
+                    // If it's any other key in your fast-key list (like 'natural'), allow it
                     if (isPoiFastKey(key)) return true;
             }
         }
-        return false;
+
+        return isInterestingBuilding;
     }
 
     private boolean isAdministrativeBoundaryWay(OsmWay way) {
@@ -1183,6 +1258,89 @@ public class ImportService {
             consumer.accept(new PbfIterator(inputStream, false));
         }
     }
+    private List<PoiData> deserializePoiData(byte[] data) throws RocksDBException {
+        ByteBuffer buffer = ByteBuffer.wrap(data);
+        POIList poiList = POIList.getRootAsPOIList(buffer);
+        List<PoiData> pois = new ArrayList<>();
+
+        for (int i = 0; i < poiList.poisLength(); i++) {
+            POI poi = poiList.pois(i);
+            List<NameData> names = new ArrayList<>();
+            for (int j = 0; j < poi.namesLength(); j++) {
+                Name name = poi.names(j);
+                String lang = name.lang();
+                String text = name.text();
+                if (lang != null && text != null) {
+                    names.add(new NameData(lang, text));
+                }
+            }
+
+            // Copy address if present
+            AddressData addressData = null;
+            if (poi.address() != null) {
+                Address address = poi.address();
+                String street = address.street();
+                String houseNumber = address.houseNumber();
+                String postcode = address.postcode();
+                String city = address.city();
+                String country = address.country();
+
+                // Only create AddressData if at least one field is present
+                if (street != null || houseNumber != null || postcode != null || city != null || country != null) {
+                    addressData = new AddressData(
+                            street,
+                            houseNumber,
+                            postcode,
+                            city,
+                            country
+                    );
+                }
+            }
+
+            // Copy hierarchy immediately while FlatBuffer is valid
+            List<HierarchyCache.SimpleHierarchyItem> hierarchy = new ArrayList<>();
+            for (int j = 0; j < poi.hierarchyLength(); j++) {
+                HierarchyItem item = poi.hierarchy(j);
+                String itemType = item.type();
+                String itemName = item.name();
+                hierarchy.add(new HierarchyCache.SimpleHierarchyItem(
+                        item.level(),
+                        itemType != null ? itemType : "unknown",
+                        itemName != null ? itemName : "Unknown",
+                        item.osmId()
+                ));
+            }
+
+            // Copy boundary geometry if present
+            byte[] boundaryData = null;
+            if (poi.boundary() != null) {
+                com.dedicatedcode.paikka.flatbuffers.Geometry boundary = poi.boundary();
+                if (boundary.dataLength() > 0) {
+                    boundaryData = new byte[boundary.dataLength()];
+                    for (int k = 0; k < boundary.dataLength(); k++) {
+                        boundaryData[k] = (byte) boundary.data(k);
+                    }
+                }
+            }
+
+            // Create POIData with copied data
+            PoiData poiData = new PoiData(
+                    poi.id(),
+                    poi.lat(),
+                    poi.lon(),
+                    poi.type(),
+                    poi.subtype(),
+                    names,
+                    addressData,
+                    hierarchy,
+                    boundaryData
+            );
+
+            pois.add(poiData);
+        }
+
+        return pois;
+    }
 
     private String formatTime(long ms) {
         long s = ms / 1000;
@@ -1241,7 +1399,7 @@ public class ImportService {
         System.out.println("\n\033[1;31m" + "=".repeat(80) + "\n" + centerText(message) + "\n" + "=".repeat(80) + "\033[0m");
     }
 
-    private void printPhaseSummary(String phaseName, long phaseStartTime, ImportStatistics stats) {
+    private void printPhaseSummary(String phaseName, long phaseStartTime) {
         long phaseTime = System.currentTimeMillis() - phaseStartTime;
         System.out.println(String.format("\n\033[1;32m✓ %s COMPLETED\033[0m \033[2m(%s)\033[0m", phaseName, formatTime(phaseTime)));
     }
@@ -1426,6 +1584,10 @@ public class ImportService {
         public long getBoundariesProcessed() { return boundariesProcessed.get(); }
         public void incrementBoundariesProcessed() { boundariesProcessed.incrementAndGet(); }
         public long getPoisProcessed() { return poisProcessed.get(); }
+
+        public void incrementPoisProcessed(int count) {
+            poisProcessed.addAndGet(count);
+        }
         public void incrementPoisProcessed() { poisProcessed.incrementAndGet(); }
         public long getPoiIndexRecRead() { return poiIndexRecRead.get(); }
         public void incrementPoiIndexRecRead() { poiIndexRecRead.incrementAndGet(); }

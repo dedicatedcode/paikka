@@ -54,7 +54,8 @@ echo "Input file:  $INPUT_FILE"
 echo "Output file: $OUTPUT_FILE"
 echo ""
 osmium tags-filter "$INPUT_FILE" \
-  nwr/amenity!=bench,drinking_water,waste_basket,bicycle_parking,vending_machine,parking_entrance \
+  nwr/amenity!=bench,drinking_water,waste_basket,bicycle_parking,vending_machine,parking_entrance,fire_hydrant,recycling \
+  nwr/emergency!=fire_hydrant,defibrillator \
   nw/shop \
   nw/tourism \
   nw/leisure \
@@ -63,11 +64,10 @@ osmium tags-filter "$INPUT_FILE" \
   nw/place \
   nw/historic \
   nw/healthcare \
-  nw/emergency \
   nw/public_transport \
   nw/railway=station \
   nw/aeroway \
-  w/building=yes,commercial,retail,industrial,office \
+  w/building=yes,commercial,retail,industrial,office,apartments,residential \
   r/boundary=administrative \
   r/type=multipolygon \
   -o "$OUTPUT_FILE" --overwrite

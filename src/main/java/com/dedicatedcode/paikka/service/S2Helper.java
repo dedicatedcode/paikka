@@ -16,8 +16,10 @@
 
 package com.dedicatedcode.paikka.service;
 
+import com.google.common.geometry.S2Cell;
 import com.google.common.geometry.S2CellId;
 import com.google.common.geometry.S2LatLng;
+import org.locationtech.jts.geom.Envelope;
 import org.springframework.stereotype.Service;
 
 import java.nio.ByteBuffer;
@@ -30,8 +32,8 @@ import java.util.*;
 @Service
 public class S2Helper {
 
-    private static final int SHARD_LEVEL = 14;   // For POIs
-    public static final int GRID_LEVEL = 12;    // For Boundary Indexing
+    private static final int SHARD_LEVEL = 16;   // For POIs
+    public static final int GRID_LEVEL = 13;    // For Boundary Indexing
 
     /**
      * Get S2 cell ID for POI sharding.
@@ -132,5 +134,17 @@ public class S2Helper {
         }
         
         return rings;
+    }
+
+    public Envelope getCellEnvelope(long cellId) {
+        S2Cell cell = new S2Cell(new S2CellId(cellId));
+        Envelope envelope = new Envelope();
+
+        // Check all 4 corners of the S2 Cell to build the Bounding Box
+        for (int i = 0; i < 4; i++) {
+            S2LatLng latLng = new S2LatLng(cell.getVertex(i));
+            envelope.expandToInclude(latLng.lngDegrees(), latLng.latDegrees());
+        }
+        return envelope;
     }
 }

@@ -67,8 +67,6 @@ public class PaikkaConfiguration {
 
     public static class ImportConfiguration {
 
-        private int s2Level = 14;
-
         private int threads = Math.max(1, Runtime.getRuntime().availableProcessors() / 2);
         private int chunkSize = 500_000;
 
@@ -88,13 +86,6 @@ public class PaikkaConfiguration {
             this.chunkSize = chunkSize;
         }
 
-        public int getS2Level() {
-            return s2Level;
-        }
-
-        public void setS2Level(int s2Level) {
-            this.s2Level = s2Level;
-        }
     }
 
     public static class QueryConfiguration {
