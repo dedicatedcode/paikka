@@ -21,6 +21,8 @@ import com.dedicatedcode.paikka.flatbuffers.Address;
 import com.dedicatedcode.paikka.flatbuffers.Name;
 import com.dedicatedcode.paikka.flatbuffers.POI;
 import com.dedicatedcode.paikka.flatbuffers.POIList;
+import com.dedicatedcode.paikka.service.importer.GeometrySimplificationService;
+import com.dedicatedcode.paikka.service.importer.ImportService;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -28,7 +30,6 @@ import org.rocksdb.Options;
 import org.rocksdb.RocksDB;
 import org.rocksdb.RocksDBException;
 
-import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.file.Files;
