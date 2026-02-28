@@ -14,7 +14,7 @@
  * along with Paikka. If not, see <https://www.gnu.org/licenses/>.
  */
 
-package com.dedicatedcode.paikka.service;
+package com.dedicatedcode.paikka.service.importer;
 
 import org.locationtech.jts.geom.Geometry;
 import org.locationtech.jts.simplify.DouglasPeuckerSimplifier;

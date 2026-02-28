@@ -43,7 +43,6 @@ public class StatsInterceptor implements HandlerInterceptor {
     
     @Override
     public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) {
-        // Only track API endpoints
         if (request.getRequestURI().startsWith("/api/v1/")) {
             request.setAttribute("startTime", System.currentTimeMillis());
         }
@@ -53,8 +52,7 @@ public class StatsInterceptor implements HandlerInterceptor {
     @Override
     public void afterCompletion(HttpServletRequest request, HttpServletResponse response, 
                                Object handler, Exception ex) {
-        
-        // Only track API endpoints and successful requests
+
         if (!request.getRequestURI().startsWith("/api/v1/") || 
             request.getAttribute("startTime") == null ||
             response.getStatus() >= 400) {
@@ -63,17 +61,15 @@ public class StatsInterceptor implements HandlerInterceptor {
         
         try {
             long responseTime = System.currentTimeMillis() - (Long) request.getAttribute("startTime");
-            
-            // Extract and sort parameters
+
             Map<String, String> sortedParams = request.getParameterMap().entrySet().stream()
                 .collect(Collectors.toMap(
-                    entry -> entry.getKey(),
+                        Map.Entry::getKey,
                     entry -> String.join(",", entry.getValue()),
                     (e1, e2) -> e1,
                     TreeMap::new
                 ));
-            
-            // Extract result count from response header (set by controllers)
+
             int resultCount = 0;
             String resultCountHeader = response.getHeader("X-Result-Count");
             if (resultCountHeader != null) {
@@ -91,7 +87,6 @@ public class StatsInterceptor implements HandlerInterceptor {
                 sortedParams,
                 responseTime,
                 resultCount,
-                clientIp,
                 response.getStatus()
             );
             

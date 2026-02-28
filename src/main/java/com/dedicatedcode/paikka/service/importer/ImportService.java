@@ -14,11 +14,13 @@
  * along with Paikka. If not, see <https://www.gnu.org/licenses/>.
  */
 
-package com.dedicatedcode.paikka.service;
+package com.dedicatedcode.paikka.service.importer;
 
 import com.dedicatedcode.paikka.config.PaikkaConfiguration;
 import com.dedicatedcode.paikka.flatbuffers.*;
 import com.dedicatedcode.paikka.flatbuffers.Geometry;
+import com.dedicatedcode.paikka.service.PaikkaMetadata;
+import com.dedicatedcode.paikka.service.S2Helper;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import com.google.common.geometry.S2CellId;
@@ -50,7 +52,6 @@ import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.concurrent.*;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Stream;
@@ -66,9 +67,8 @@ public class ImportService {
     private final Map<String, String> tagCache = new ConcurrentHashMap<>(1000);
     private final int fileReadWindowSize;
 
-    private int currentStep = 0;
-    private static final int TOTAL_STEPS = 5;
     private final AtomicLong sequence = new AtomicLong(0);
+
     public ImportService(S2Helper s2Helper, GeometrySimplificationService geometrySimplificationService, PaikkaConfiguration config) {
         this.s2Helper = s2Helper;
         this.geometrySimplificationService = geometrySimplificationService;
@@ -119,7 +119,7 @@ public class ImportService {
 
         RocksDB.loadLibrary();
         ImportStatistics stats = new ImportStatistics();
-        startProgressReporter(stats);
+        stats.startProgressReporter();
 
         try (Cache sharedCache = new LRUCache(2 * 1024 * 1024 * 1024L)) {
             BlockBasedTableConfig tableConfig = new BlockBasedTableConfig()
@@ -189,32 +189,27 @@ public class ImportService {
                  RocksDB appendDb = RocksDB.open(appendOpts, appendDbPath.toString())) {
 
                 // PASS 1: Discovery & Indexing
-                currentStep = 1;
-                printPhaseHeader("PASS 1: Discovery & Indexing");
+                stats.printPhaseHeader("PASS 1: Discovery & Indexing");
                 long pass1Start = System.currentTimeMillis();
-                stats.setCurrentPhase("1.1.1: Discovery & Indexing");
+                stats.setCurrentPhase(1, "1.1.1: Discovery & Indexing");
                 pass1DiscoveryAndIndexing(pbfFile, wayIndexDb, neededNodesDb, relIndexDb, poiIndexDb, stats);
-                printPhaseSummary("PASS 1", pass1Start);
+                stats.printPhaseSummary("PASS 1", pass1Start);
 
                 // PASS 2: Nodes Cache, Boundaries, POIs
-                currentStep = 2;
-                printPhaseHeader("PASS 2: Nodes Cache, Boundaries, POIs");
+                stats.printPhaseHeader("PASS 2: Nodes Cache, Boundaries, POIs");
                 long pass2Start = System.currentTimeMillis();
-                stats.setCurrentPhase("1.1.2: Caching node coordinates");
+                stats.setCurrentPhase(2,"1.1.2: Caching node coordinates");
                 cacheNeededNodeCoordinates(pbfFile, neededNodesDb, nodeCache, stats);
 
-                currentStep = 3;
-                stats.setCurrentPhase("1.2: Processing administrative boundaries");
+                stats.setCurrentPhase(3, "1.2: Processing administrative boundaries");
                 processAdministrativeBoundariesFromIndex(relIndexDb, nodeCache, wayIndexDb, gridIndexDb, boundariesDb, stats);
-                currentStep = 4;
-                stats.setCurrentPhase("2.1: Processing POIs & Sharding");
+                stats.setCurrentPhase(4,"2.1: Processing POIs & Sharding");
                 pass2PoiShardingFromIndex(nodeCache, wayIndexDb, appendDb, boundariesDb, poiIndexDb, gridIndexDb, stats);
-                currentStep = 5;
 
-                stats.setCurrentPhase("2.2: Compacting POIs");
+                stats.setCurrentPhase(5, "2.2: Compacting POIs");
                 compactShards(appendDb, shardsDb, stats);
                 stats.stop();
-                printPhaseSummary("PASS 2", pass2Start);
+                stats.printPhaseSummary("PASS 2", pass2Start);
 
                 shardsDb.compactRange();
                 boundariesDb.compactRange();
@@ -236,13 +231,13 @@ public class ImportService {
 
                 shardsDb.flush(new FlushOptions().setWaitForFlush(true));
                 boundariesDb.flush(new FlushOptions().setWaitForFlush(true));
-                printFinalStatistics(stats);
-                printSuccess();
+                stats.printFinalStatistics();
+                stats.printSuccess();
                 writeMetadataFile(pbfFile, dataDirectory);
 
             } catch (Exception e) {
                 stats.stop();
-                printError("IMPORT FAILED: " + e.getMessage());
+                stats.printError("IMPORT FAILED: " + e.getMessage());
                 e.printStackTrace();
                 throw e;
             }
@@ -273,89 +268,7 @@ public class ImportService {
         System.out.println("\n\033[1;32mMetadata file written to: " + metadataPath + "\033[0m");
     }
 
-    private void startProgressReporter(ImportStatistics stats) {
-        boolean isTty = System.console() != null;
 
-        Thread.ofPlatform().daemon().start(() -> {
-            while (stats.isRunning()) {
-                long elapsed = System.currentTimeMillis() - stats.getStartTime();
-                long phaseElapsed = System.currentTimeMillis() - stats.getPhaseStartTime();
-                double phaseSeconds = phaseElapsed / 1000.0;
-
-                String phase = stats.getCurrentPhase();
-                StringBuilder sb = new StringBuilder();
-
-                if (isTty) {
-                    sb.append("\r\033[K");
-                }
-
-                // Add step indicator
-                sb.append(String.format("\033[1;90m[%d/%d]\033[0m ", currentStep, TOTAL_STEPS));
-
-                if (phase.contains("1.1.1")) {
-                    long pbfPerSec = phaseSeconds > 0 ? (long)(stats.getEntitiesRead() / phaseSeconds) : 0;
-                    sb.append(String.format("\033[1;36m[%s]\033[0m \033[1mScanning PBF Structure\033[0m", formatTime(elapsed)));
-                    sb.append(String.format(" │ \033[32mPBF Entities:\033[0m %s \033[33m(%s/s)\033[0m",
-                                            formatCompactNumber(stats.getEntitiesRead()), formatCompactRate(pbfPerSec)));
-                    sb.append(String.format(" │ \033[37mNodes Found:\033[0m %s", formatCompactNumber(stats.getNodesFound())));
-                    sb.append(String.format(" │ \033[34mWays Found:\033[0m %s", formatCompactNumber(stats.getWaysProcessed())));
-                    sb.append(String.format(" │ \033[35mRelations:\033[0m %s", formatCompactNumber(stats.getRelationsFound())));
-
-                } else if (phase.contains("1.1.2")) {
-                    long nodesPerSec = phaseSeconds > 0 ? (long)(stats.getNodesCached() / phaseSeconds) : 0;
-                    sb.append(String.format("\033[1;36m[%s]\033[0m \033[1mCaching Node Coordinates\033[0m", formatTime(elapsed)));
-                    sb.append(String.format(" │ \033[32mNodes Cached:\033[0m %s \033[33m(%s/s)\033[0m",
-                                            formatCompactNumber(stats.getNodesCached()), formatCompactRate(nodesPerSec)));
-                    sb.append(String.format(" │ \033[36mQueue:\033[0m %s", formatCompactNumber(stats.getQueueSize())));
-                    sb.append(String.format(" │ \033[37mThreads:\033[0m %d", stats.getActiveThreads()));
-
-                } else if (phase.contains("1.2")) {
-                    long boundsPerSec = phaseSeconds > 0 ? (long)(stats.getBoundariesProcessed() / phaseSeconds) : 0;
-                    sb.append(String.format("\033[1;36m[%s]\033[0m \033[1mProcessing Admin Boundaries\033[0m", formatTime(elapsed)));
-                    sb.append(String.format(" │ \033[32mBoundaries:\033[0m %s \033[33m(%s/s)\033[0m",
-                                            formatCompactNumber(stats.getBoundariesProcessed()), formatCompactRate(boundsPerSec)));
-                    sb.append(String.format(" │ \033[37mThreads:\033[0m %d", stats.getActiveThreads()));
-
-                } else if (phase.contains("2.1")) {
-                    long poisPerSec = phaseSeconds > 0 ? (long)(stats.getPoisProcessed() / phaseSeconds) : 0;
-                    long poisReadSec = phaseSeconds > 0 ? (long)(stats.getPoiIndexRecRead() / phaseSeconds) : 0;
-                    sb.append(String.format("\033[1;36m[%s]\033[0m \033[1mProcessing POIs & Sharding\033[0m", formatTime(elapsed)));
-                    sb.append(String.format(" │ \033[32mPOI Index Rec Read:\033[0m %s \033[33m%s\033[0m", formatCompactNumber(stats.getPoiIndexRecRead()), stats.isPoiIndexRecReadDone() ? "(done)" : String.format("(%s/s)",formatCompactRate(poisReadSec))));
-                    sb.append(String.format(" │ \033[32mPOIs Processed:\033[0m %s \033[33m(%s/s)\033[0m", formatCompactNumber(stats.getPoisProcessed()), formatCompactRate(poisPerSec)));
-                    sb.append(String.format(" │ \033[36mQueue:\033[0m %s", formatCompactNumber(stats.getQueueSize())));
-                    sb.append(String.format(" │ \033[37mThreads:\033[0m %d", stats.getActiveThreads()));
-
-                } else if (phase.contains("2.2")) {
-                    long compactionElapsed = System.currentTimeMillis() - stats.getCompactionStartTime();
-                    double compactionPhaseSeconds = compactionElapsed / 1000.0;
-                    long shardsCompacted = stats.getShardsCompacted();
-                    long shardsPerSec = compactionPhaseSeconds > 0 ? (long)(shardsCompacted / compactionPhaseSeconds) : 0;
-                    sb.append(String.format("\033[1;36m[%s]\033[0m \033[1mCompacting POIs\033[0m", formatTime(elapsed)));
-                    sb.append(String.format(" │ \033[32mShards Compacted:\033[0m %s \033[33m(%s/s)\033[0m",
-                                            formatCompactNumber(shardsCompacted), formatCompactRate(shardsPerSec)));
-
-                } else {
-                    sb.append(String.format("\033[1;36m[%s]\033[0m %s", formatTime(elapsed), phase));
-                }
-
-                sb.append(String.format(" │ \033[31mHeap:\033[0m %s", stats.getMemoryStats()));
-
-                if (isTty) {
-                    System.out.print(sb);
-                    System.out.flush();
-                } else {
-                    System.out.println(sb);
-                }
-
-                try {
-                    Thread.sleep(isTty ? 500 : 5000);
-                } catch (InterruptedException e) {
-                    break;
-                }
-            }
-            if (isTty) System.out.println();
-        });
-    }
 
     private void updateGridIndexEntry(RocksDB gridIndexDb, long cellId, long osmId) throws Exception {
         byte[] key = s2Helper.longToByteArray(cellId);
@@ -452,7 +365,6 @@ public class ImportService {
                                            RocksDB poiIndexDb,
                                            RocksDB gridIndexDb,
                                            ImportStatistics stats) throws Exception {
-        stats.setCurrentPhase("2.1: Processing POIs & Sharding");
         final Map<Long, List<PoiData>> shardBuffer = new ConcurrentHashMap<>();
 
         Runnable flushTask = () -> {
@@ -1500,34 +1412,6 @@ public class ImportService {
         }
     }
 
-    private String formatTime(long ms) {
-        long s = ms / 1000;
-        return String.format("%d:%02d:%02d", s / 3600, (s % 3600) / 60, s % 60);
-    }
-
-    private String formatCompactNumber(long n) {
-        if (n < 1000) return String.valueOf(n);
-        if (n < 1_000_000) return String.format("%.2fk", n / 1000.0);
-        return String.format("%.3fM", n / 1_000_000.0);
-    }
-    private String formatCompactRate(long n) {
-        if (n < 1000) return String.valueOf(n);
-        if (n < 1_000_000) return String.format("%.1fk", n / 1000.0);
-        return String.format("%.1fM", n / 1_000_000.0);
-    }
-
-    private String formatSize(long bytes) {
-        if (bytes < 1024) return bytes + " B";
-        double kb = bytes / 1024.0;
-        if (kb < 1024) return String.format("%.1f KB", kb);
-        double mb = kb / 1024.0;
-        if (mb < 1024) return String.format("%.1f MB", mb);
-        double gb = mb / 1024.0;
-        if (gb < 1024) return String.format("%.2f GB", gb);
-        double tb = gb / 1024.0;
-        return String.format("%.2f TB", tb);
-    }
-
     private String centerText(String text) {
         int pad = (80 - text.length()) / 2;
         return " ".repeat(Math.max(0, pad)) + text;
@@ -1544,24 +1428,6 @@ public class ImportService {
         System.out.println("File window size: " + (this.fileReadWindowSize / (1024 * 1024)) + "MB");
         System.out.println("Sharding Chunk Size: " + this.config.getImportConfiguration().getChunkSize());
     }
-
-    private void printPhaseHeader(String phase) {
-        System.out.println("\n\033[1;36m" + "─".repeat(80) + "\n" + phase + "\n" + "─".repeat(80) + "\033[0m");
-    }
-
-    private void printSuccess() {
-        System.out.println("\n\033[1;32m" + "=".repeat(80) + "\n" + centerText("IMPORT COMPLETED SUCCESSFULLY") + "\n" + "=".repeat(80) + "\033[0m");
-    }
-
-    private void printError(String message) {
-        System.out.println("\n\033[1;31m" + "=".repeat(80) + "\n" + centerText(message) + "\n" + "=".repeat(80) + "\033[0m");
-    }
-
-    private void printPhaseSummary(String phaseName, long phaseStartTime) {
-        long phaseTime = System.currentTimeMillis() - phaseStartTime;
-        System.out.println(String.format("\n\033[1;32m✓ %s COMPLETED\033[0m \033[2m(%s)\033[0m", phaseName, formatTime(phaseTime)));
-    }
-
     private ExecutorService createExecutorService(int maxThreads) {
         if (maxThreads <= 0) {
             return Executors.newVirtualThreadPerTaskExecutor();
@@ -1648,168 +1514,7 @@ public class ImportService {
         stats.setTmpTotalBytes(tmpTotal);
     }
 
-    private void printFinalStatistics(ImportStatistics stats) {
-        System.out.println("\n\033[1;36m" + "═".repeat(80) + "\n" + centerText("🎯 FINAL IMPORT STATISTICS") + "\n" + "═".repeat(80) + "\033[0m");
 
-        long totalTime = Math.max(1, stats.getTotalTime());
-        double totalSeconds = totalTime / 1000.0;
-
-        System.out.printf("\n\033[1;37m⏱️  Total Import Time:\033[0m \033[1;33m%s\033[0m%n%n", formatTime(stats.getTotalTime()));
-
-        System.out.println("\033[1;37m📊 Processing Summary:\033[0m");
-        System.out.println("┌─────────────────┬─────────────────┬─────────────────┐");
-        System.out.println("│ \033[1mEntity Type\033[0m     │ \033[1mTotal Count\033[0m     │ \033[1mAvg Speed\033[0m       │");
-        System.out.println("├─────────────────┼─────────────────┼─────────────────┤");
-        System.out.printf("│ \033[32mPBF Entities\033[0m    │ %15s │ %13s/s │%n",
-                          formatCompactNumber(stats.getEntitiesRead()),
-                          formatCompactNumber((long)(stats.getEntitiesRead() / totalSeconds)));
-        System.out.printf("│ \033[37mNodes Found\033[0m     │ %15s │ %13s/s │%n",
-                          formatCompactNumber(stats.getNodesFound()),
-                          formatCompactNumber((long)(stats.getNodesFound() / totalSeconds)));
-        System.out.printf("│ \033[34mNodes Cached\033[0m    │ %15s │ %13s/s │%n",
-                          formatCompactNumber(stats.getNodesCached()),
-                          formatCompactNumber((long)(stats.getNodesCached() / totalSeconds)));
-        System.out.printf("│ \033[35mWays Processed\033[0m  │ %15s │ %13s/s │%n",
-                          formatCompactNumber(stats.getWaysProcessed()),
-                          formatCompactNumber((long)(stats.getWaysProcessed() / totalSeconds)));
-        System.out.printf("│ \033[36mBoundaries\033[0m      │ %15s │ %13s/s │%n",
-                          formatCompactNumber(stats.getBoundariesProcessed()),
-                          formatCompactNumber((long)(stats.getBoundariesProcessed() / totalSeconds)));
-        System.out.printf("│ \033[33mPOIs Created\033[0m    │ %15s │ %13s/s │%n",
-                          formatCompactNumber(stats.getPoisProcessed()),
-                          formatCompactNumber((long)(stats.getPoisProcessed() / totalSeconds)));
-        System.out.println("└─────────────────┴─────────────────┴─────────────────┘");
-
-        long totalObjects = stats.getNodesFound() + stats.getNodesCached() + stats.getWaysProcessed() + stats.getBoundariesProcessed() + stats.getPoisProcessed();
-        System.out.printf("%n\033[1;37m🚀 Overall Throughput:\033[0m \033[1;32m%s objects\033[0m processed at \033[1;33m%s objects/sec\033[0m%n",
-                          formatCompactNumber(totalObjects),
-                          formatCompactNumber((long)(totalObjects / totalSeconds)));
-
-        System.out.printf("\033[1;37m💾 Database Operations:\033[0m \033[1;36m%s writes\033[0m%n",
-                          formatCompactNumber(stats.getRocksDbWrites()));
-
-        System.out.println("\n\033[1;37m📦 Dataset Size:\033[0m " + formatSize(stats.getDatasetBytes()));
-        System.out.println("  • poi_shards:  " + formatSize(stats.getShardsBytes()));
-        System.out.println("  • boundaries:  " + formatSize(stats.getBoundariesBytes()));
-
-        System.out.println("\n\033[1;37m🧹 Temporary DBs:\033[0m " + formatSize(stats.getTmpTotalBytes()));
-        System.out.println("  • grid_index:  " + formatSize(stats.getTmpGridBytes()));
-        System.out.println("  • node_cache:  " + formatSize(stats.getTmpNodeBytes()));
-        System.out.println("  • way_index:   " + formatSize(stats.getTmpWayBytes()));
-        System.out.println("  • needed_nodes:" + formatSize(stats.getTmpNeededBytes()));
-        System.out.println("  • rel_index:   " + formatSize(stats.getTmpRelBytes()));
-        System.out.println("  • poi_index:   " + formatSize(stats.getTmpPoiBytes()));
-        System.out.println("  • append_index:   " + formatSize(stats.getTmpAppendBytes()));
-        System.out.println();
-    }
-
-    private static class ImportStatistics {
-        private final AtomicLong entitiesRead = new AtomicLong(0);
-        private final AtomicLong nodesCached = new AtomicLong(0);
-        private final AtomicLong nodesFound = new AtomicLong(0);
-        private final AtomicLong waysProcessed = new AtomicLong(0);
-        private final AtomicLong relationsFound = new AtomicLong(0);
-        private final AtomicLong boundariesProcessed = new AtomicLong(0);
-        private final AtomicLong poisProcessed = new AtomicLong(0);
-        private final AtomicLong poiIndexRecRead = new AtomicLong(0);
-        private final AtomicBoolean poiIndexRecReadDone = new AtomicBoolean(false);
-        private final AtomicLong rocksDbWrites = new AtomicLong(0);
-        private final AtomicLong queueSize = new AtomicLong(0);
-        private final AtomicLong activeThreads = new AtomicLong(0);
-        private volatile String currentPhase = "Initializing";
-        private volatile boolean running = true;
-        private final long startTime = System.currentTimeMillis();
-        private volatile long phaseStartTime = System.currentTimeMillis();
-        private long totalTime;
-        private final AtomicLong shardsCompacted = new AtomicLong(0);
-        private volatile long compactionStartTime = 0;
-
-        private volatile long datasetBytes;
-        private volatile long shardsBytes;
-        private volatile long boundariesBytes;
-        private volatile long tmpGridBytes;
-        private volatile long tmpNodeBytes;
-        private volatile long tmpWayBytes;
-        private volatile long tmpNeededBytes;
-        private volatile long tmpRelBytes;
-        private volatile long tmpPoiBytes;
-        private volatile long tmpTotalBytes;
-        private volatile long tmpAppendBytes;
-
-        public long getEntitiesRead() { return entitiesRead.get(); }
-        public void incrementEntitiesRead() { entitiesRead.incrementAndGet(); }
-        public long getNodesCached() { return nodesCached.get(); }
-        public void incrementNodesCached() { nodesCached.incrementAndGet(); }
-        public long getNodesFound() { return nodesFound.get(); }
-        public void incrementNodesFound() { nodesFound.incrementAndGet(); }
-        public long getWaysProcessed() { return waysProcessed.get(); }
-        public void incrementWaysProcessed() { waysProcessed.incrementAndGet(); }
-        public long getRelationsFound() { return relationsFound.get(); }
-        public void incrementRelationsFound() { relationsFound.incrementAndGet(); }
-        public long getBoundariesProcessed() { return boundariesProcessed.get(); }
-        public void incrementBoundariesProcessed() { boundariesProcessed.incrementAndGet(); }
-        public long getPoisProcessed() { return poisProcessed.get(); }
-
-        public void incrementPoisProcessed(int count) {
-            poisProcessed.addAndGet(count);
-        }
-        public long getPoiIndexRecRead() { return poiIndexRecRead.get(); }
-        public void incrementPoiIndexRecRead() { poiIndexRecRead.incrementAndGet(); }
-        public boolean isPoiIndexRecReadDone() { return poiIndexRecReadDone.get(); }
-        public void setPoiIndexRecReadDone() { poiIndexRecReadDone.set(true); }
-        public long getRocksDbWrites() { return rocksDbWrites.get(); }
-        public void incrementRocksDbWrites() { rocksDbWrites.incrementAndGet(); }
-        public int getQueueSize() { return (int) queueSize.get(); }
-        public void setQueueSize(int size) { queueSize.set(size); }
-        public int getActiveThreads() { return (int) activeThreads.get(); }
-        public void incrementActiveThreads() { activeThreads.incrementAndGet(); }
-        public void decrementActiveThreads() { activeThreads.decrementAndGet(); }
-        public String getCurrentPhase() { return currentPhase; }
-        public void setCurrentPhase(String phase) { 
-            this.currentPhase = phase; 
-            this.phaseStartTime = System.currentTimeMillis();
-        }
-        public long getPhaseStartTime() { return phaseStartTime; }
-        public boolean isRunning() { return running; }
-        public void stop() { this.running = false; }
-        public long getStartTime() { return startTime; }
-        public long getTotalTime() { return totalTime; }
-        public void setTotalTime(long t) { this.totalTime = t; }
-        public long getShardsCompacted() { return shardsCompacted.get(); }
-        public void incrementShardsCompacted() { shardsCompacted.incrementAndGet(); }
-        public void setCompactionStartTime(long t) { this.compactionStartTime = t; }
-        public long getCompactionStartTime() { return compactionStartTime; }
-
-        public long getDatasetBytes() { return datasetBytes; }
-        public void setDatasetBytes(long v) { this.datasetBytes = v; }
-        public long getShardsBytes() { return shardsBytes; }
-        public void setShardsBytes(long v) { this.shardsBytes = v; }
-        public long getBoundariesBytes() { return boundariesBytes; }
-        public void setBoundariesBytes(long v) { this.boundariesBytes = v; }
-        public long getTmpGridBytes() { return tmpGridBytes; }
-        public void setTmpGridBytes(long v) { this.tmpGridBytes = v; }
-        public long getTmpNodeBytes() { return tmpNodeBytes; }
-        public void setTmpNodeBytes(long v) { this.tmpNodeBytes = v; }
-        public long getTmpWayBytes() { return tmpWayBytes; }
-        public void setTmpWayBytes(long v) { this.tmpWayBytes = v; }
-        public long getTmpNeededBytes() { return tmpNeededBytes; }
-        public void setTmpNeededBytes(long v) { this.tmpNeededBytes = v; }
-        public long getTmpRelBytes() { return tmpRelBytes; }
-        public void setTmpRelBytes(long v) { this.tmpRelBytes = v; }
-        public long getTmpPoiBytes() { return tmpPoiBytes; }
-        public void setTmpPoiBytes(long v) { this.tmpPoiBytes = v; }
-        public long getTmpAppendBytes() { return tmpAppendBytes; }
-        public void setTmpAppendBytes(long v) { this.tmpAppendBytes = v; }
-        public long getTmpTotalBytes() { return tmpTotalBytes; }
-        public void setTmpTotalBytes(long v) { this.tmpTotalBytes = v; }
-
-        public String getMemoryStats() {
-            Runtime r = Runtime.getRuntime();
-            long used = (r.totalMemory() - r.freeMemory()) / 1024 / 1024 / 1024;
-            long max = r.maxMemory() / 1024 / 1024 / 1024;
-            return String.format("%dGB/%dGB", used, max);
-        }
-    }
 
     private record PoiData(long id, double lat, double lon, String type, String subtype, List<NameData> names,
                            AddressData address, List<HierarchyCache.SimpleHierarchyItem> hierarchy,
@@ -1879,9 +1584,7 @@ public class ImportService {
             try {
                 flush();
             } finally {
-                if (batch != null) {
-                    batch.close();
-                }
+                batch.close();
                 if (writeOptions != null) {
                     writeOptions.close();
                 }

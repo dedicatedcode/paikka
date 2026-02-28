@@ -16,19 +16,19 @@
 
 package com.dedicatedcode.paikka.service;
 
+import com.dedicatedcode.paikka.IntegrationTest;
+import com.dedicatedcode.paikka.service.importer.GeometrySimplificationService;
 import org.junit.jupiter.api.Test;
 import org.locationtech.jts.geom.Coordinate;
 import org.locationtech.jts.geom.Geometry;
 import org.locationtech.jts.geom.GeometryFactory;
 import org.locationtech.jts.geom.LinearRing;
-import org.locationtech.jts.geom.Polygon;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.junit.jupiter.SpringJUnitConfig;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-@SpringBootTest
-@SpringJUnitConfig
+@IntegrationTest
 class GeometrySimplificationServiceTest {
     
     private final GeometrySimplificationService service = new GeometrySimplificationService();

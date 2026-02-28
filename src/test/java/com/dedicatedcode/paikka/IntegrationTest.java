@@ -14,15 +14,21 @@
  * along with Paikka. If not, see <https://www.gnu.org/licenses/>.
  */
 
-package com.dedicatedcode.paikka.service;
+package com.dedicatedcode.paikka;
 
-import com.fasterxml.jackson.annotation.JsonProperty;
 
-public record PaikkaMetadata(
-        @JsonProperty("importTimestamp") String importTimestamp,
-        @JsonProperty("dataVersion") String dataVersion,
-        @JsonProperty("file") String file,
-        @JsonProperty("gridLevel") Integer gridLevel,
-        @JsonProperty("paikkaVersion") String paikkaVersion
-) {
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.junit.jupiter.SpringJUnitConfig;
+
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
+
+@Retention(RetentionPolicy.RUNTIME)
+@SpringBootTest
+@ActiveProfiles("test")
+@AutoConfigureMockMvc
+@SpringJUnitConfig
+public @interface IntegrationTest {
 }

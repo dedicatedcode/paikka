@@ -14,9 +14,10 @@
  * along with Paikka. If not, see <https://www.gnu.org/licenses/>.
  */
 
-package com.dedicatedcode.paikka.service;
+package com.dedicatedcode.paikka.service.importer;
 
 import com.dedicatedcode.paikka.flatbuffers.Boundary;
+import com.dedicatedcode.paikka.service.S2Helper;
 import com.github.benmanes.caffeine.cache.Cache;
 import org.locationtech.jts.algorithm.locate.IndexedPointInAreaLocator;
 import org.locationtech.jts.geom.Coordinate;

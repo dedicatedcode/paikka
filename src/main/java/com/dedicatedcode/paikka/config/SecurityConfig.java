@@ -17,6 +17,7 @@
 package com.dedicatedcode.paikka.config;
 
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
@@ -31,11 +32,13 @@ import org.springframework.security.web.access.intercept.AuthorizationFilter;
 
 @Configuration
 @EnableWebSecurity
+@ConditionalOnProperty(name = "paikka.import-mode", havingValue = "false", matchIfMissing = true)
 public class SecurityConfig {
     @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http, AdminTokenFilter adminTokenFilter) throws Exception {
         http
                 .authorizeHttpRequests(authorize -> authorize
+                        .requestMatchers("/admin/**").hasRole("ADMIN")
                         .requestMatchers("/", "/login", "/error", "/logout").permitAll()
                         .requestMatchers("/api/**", "/css/**", "/js/**", "/images/**", "/img/**", "/fonts/**").permitAll()
                         .anyRequest().authenticated()

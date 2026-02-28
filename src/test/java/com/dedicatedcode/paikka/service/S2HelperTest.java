@@ -16,14 +16,14 @@
 
 package com.dedicatedcode.paikka.service;
 
+import com.dedicatedcode.paikka.IntegrationTest;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.junit.jupiter.SpringJUnitConfig;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-@SpringBootTest
-@SpringJUnitConfig
+@IntegrationTest
 class S2HelperTest {
     
     private final S2Helper s2Helper = new S2Helper();
@@ -39,7 +39,6 @@ class S2HelperTest {
         // Should return a valid S2 cell ID
         assertNotEquals(0, shardId);
         
-        // Same coordinates should return same shard ID
         long shardId2 = s2Helper.getShardId(lat, lon);
         assertEquals(shardId, shardId2);
     }
