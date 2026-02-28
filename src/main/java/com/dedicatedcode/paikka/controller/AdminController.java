@@ -29,11 +29,12 @@ import org.springframework.stereotype.Controller;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ResponseBody;
+import org.springframework.web.bind.annotation.RestController;
 
 import java.util.HashMap;
 import java.util.Map;
 
-@Controller
+@RestController
 @RequestMapping("/admin")
 @ConditionalOnProperty(name = "paikka.import-mode", havingValue = "false", matchIfMissing = true)
 public class AdminController {
@@ -51,8 +52,6 @@ public class AdminController {
     }
 
     @PostMapping(value = "/refresh-db", produces = "application/json")
-    @PreAuthorize("hasRole('ADMIN')")
-    @ResponseBody
     public ResponseEntity<?> refreshDatabase() {
         logger.info("Database refresh requested");
         

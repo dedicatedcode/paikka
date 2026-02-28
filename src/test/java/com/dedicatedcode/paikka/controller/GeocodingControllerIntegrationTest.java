@@ -16,6 +16,7 @@
 
 package com.dedicatedcode.paikka.controller;
 
+import com.dedicatedcode.paikka.IntegrationTest;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -42,8 +43,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
-@SpringBootTest
-@AutoConfigureMockMvc
+@IntegrationTest
 class GeocodingControllerIntegrationTest {
 
     @Autowired
@@ -77,8 +77,7 @@ class GeocodingControllerIntegrationTest {
         System.out.println("Extracted data-monaco.zip to: " + dataDirectory.toAbsolutePath());
 
         // Perform admin refresh using MockMvc
-        mockMvc.perform(post("/admin/refresh-db")
-                        .with(user("admin"))
+        mockMvc.perform(post("/admin/refresh-db").header("X-Admin-Token", "test")
                         .contentType(MediaType.APPLICATION_JSON))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.success").value(true))
@@ -107,11 +106,6 @@ class GeocodingControllerIntegrationTest {
                 zip.closeEntry();
             }
         }
-    }
-
-    @Test
-    void contextLoads() {
-        assertThat(mockMvc).isNotNull();
     }
 
     @Test

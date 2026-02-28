@@ -174,8 +174,7 @@ java $JVM_ARGS \
   -jar "$JAR_FILE" \
   --import \
   --pbf-file "$PBF_FILE" \
-  --data-dir "$DATA_DIR" \
-  --paikka.admin.password test
+  --data-dir "$DATA_DIR"
 
 EXIT_CODE=$?
 

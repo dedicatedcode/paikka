@@ -79,14 +79,14 @@ public class StatsService {
     }
     
     private void initializeDatabase() throws SQLException {
-        // Ensure directory exists
-        File dbFile = new File(config.getStatsDbPath());
-        dbFile.getParentFile().mkdirs();
-        
-        // Connect to SQLite database
-        String url = "jdbc:sqlite:" + config.getStatsDbPath();
-        connection = DriverManager.getConnection(url);
-        
+        if (config.getStatsDbPath().equals("memory")) {
+            connection = DriverManager.getConnection("jdbc:sqlite::memory:");
+        } else {
+            File dbFile = new File(config.getStatsDbPath());
+            dbFile.getParentFile().mkdirs();
+            String url = "jdbc:sqlite:" + config.getStatsDbPath();
+            connection = DriverManager.getConnection(url);
+        }
         // Create table if not exists
         String createTableSQL = """
             CREATE TABLE IF NOT EXISTS query_stats (
@@ -96,7 +96,6 @@ public class StatsService {
                 parameters TEXT,
                 response_time_ms INTEGER,
                 result_count INTEGER,
-                client_ip VARCHAR(45),
                 date_only DATE,
                 hour_bucket INTEGER,
                 status_code INTEGER
@@ -139,8 +138,8 @@ public class StatsService {
     }
     
     @Async
-    public void recordQuery(String endpoint, Map<String, String> sortedParams, 
-                           long responseTimeMs, int resultCount, String clientIp, int statusCode) {
+    public void recordQuery(String endpoint, Map<String, String> sortedParams,
+                            long responseTimeMs, int resultCount, int statusCode) {
         try {
             String parametersJson = objectMapper.writeValueAsString(sortedParams);
             LocalDateTime now = LocalDateTime.now();
@@ -150,7 +149,6 @@ public class StatsService {
                 parametersJson,
                 responseTimeMs,
                 resultCount,
-                clientIp,
                 now.toLocalDate(),
                 now.getHour(),
                 statusCode
@@ -158,7 +156,6 @@ public class StatsService {
             
             pendingStats.offer(record);
             
-            // Record location if this is a reverse geocoding query
             if ("/api/v1/reverse".equals(endpoint) && sortedParams.containsKey("lat") && sortedParams.containsKey("lon")) {
                 try {
                     double lat = Double.parseDouble(sortedParams.get("lat"));
@@ -198,48 +195,50 @@ public class StatsService {
             logger.error("Failed to record location stats", e);
         }
     }
-    
-    @Scheduled(fixedDelay = 10000) // Every 10 seconds
+
+    @Scheduled(cron = "${paikka.stats-db.flush}") // Every 10 seconds
     public void flushPendingStats() {
         if (pendingStats.isEmpty() || connection == null) {
             return;
         }
-        
-        List<StatsRecord> batch = new ArrayList<>();
-        StatsRecord record;
-        while ((record = pendingStats.poll()) != null && batch.size() < 1000) {
-            batch.add(record);
-        }
-        
-        if (batch.isEmpty()) {
-            return;
-        }
-        
-        String insertSQL = """
-            INSERT INTO query_stats (endpoint, parameters, response_time_ms, result_count, 
-                                   client_ip, date_only, hour_bucket, status_code) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """;
-        
-        try (PreparedStatement pstmt = connection.prepareStatement(insertSQL)) {
-            for (StatsRecord statsRecord : batch) {
-                pstmt.setString(1, statsRecord.endpoint);
-                pstmt.setString(2, statsRecord.parametersJson);
-                pstmt.setLong(3, statsRecord.responseTimeMs);
-                pstmt.setInt(4, statsRecord.resultCount);
-                pstmt.setString(5, statsRecord.clientIp);
-                pstmt.setString(6, statsRecord.dateOnly.toString());
-                pstmt.setInt(7, statsRecord.hourBucket);
-                pstmt.setInt(8, statsRecord.statusCode);
-                pstmt.addBatch();
+        synchronized (pendingStats) {
+
+            List<StatsRecord> batch = new ArrayList<>();
+            StatsRecord record;
+            while ((record = pendingStats.poll()) != null && batch.size() < 1000) {
+                batch.add(record);
             }
-            pstmt.executeBatch();
-            logger.debug("Flushed {} stats records to database", batch.size());
-        } catch (SQLException e) {
-            logger.error("Failed to flush stats to database", e);
-            // Re-add failed records to queue
-            batch.forEach(pendingStats::offer);
+
+            if (batch.isEmpty()) {
+                return;
+            }
+
+            String insertSQL = """
+                    INSERT INTO query_stats (endpoint, parameters, response_time_ms, result_count, 
+                                           date_only, hour_bucket, status_code) 
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """;
+
+            try (PreparedStatement pstmt = connection.prepareStatement(insertSQL)) {
+                for (StatsRecord statsRecord : batch) {
+                    pstmt.setString(1, statsRecord.endpoint);
+                    pstmt.setString(2, statsRecord.parametersJson);
+                    pstmt.setLong(3, statsRecord.responseTimeMs);
+                    pstmt.setInt(4, statsRecord.resultCount);
+                    pstmt.setString(5, statsRecord.dateOnly.toString());
+                    pstmt.setInt(6, statsRecord.hourBucket);
+                    pstmt.setInt(7, statsRecord.statusCode);
+                    pstmt.addBatch();
+                }
+                pstmt.executeBatch();
+                logger.debug("Flushed {} stats records to database", batch.size());
+            } catch (SQLException e) {
+                logger.error("Failed to flush stats to database", e);
+                // Re-add failed records to queue
+                batch.forEach(pendingStats::offer);
+            }
         }
+
     }
     
     public List<StatsAggregationResponse> getDailyStats(LocalDate startDate, LocalDate endDate, String endpoint) {
@@ -355,11 +354,9 @@ public class StatsService {
     
     public List<LocationStatsResponse> getLocationStats() {
         String sql = """
-            SELECT rounded_lat, rounded_lon, query_count, last_queried 
+            SELECT rounded_lat, rounded_lon, query_count, last_queried
             FROM location_stats 
-            WHERE query_count >= 5
-            ORDER BY query_count DESC 
-            LIMIT 1000
+            WHERE query_count >= 5 ORDER BY query_count DESC
             """;
         
         List<LocationStatsResponse> results = new ArrayList<>();
@@ -408,46 +405,24 @@ public class StatsService {
             logger.error("Failed to cleanup old location stats", e);
         }
     }
-    
-    public static class LocationStatsResponse {
-        private final double lat;
-        private final double lon;
-        private final int queryCount;
-        private final String lastQueried;
-        
-        public LocationStatsResponse(double lat, double lon, int queryCount, String lastQueried) {
-            this.lat = lat;
-            this.lon = lon;
-            this.queryCount = queryCount;
-            this.lastQueried = lastQueried;
+
+    void clearDatabase() {
+        try (PreparedStatement pstmt = connection.prepareStatement("DELETE FROM location_stats")) {
+            pstmt.executeUpdate();
+        } catch (SQLException e) {
+            logger.error("Failed to cleanup old location stats", e);
         }
-        
-        public double getLat() { return lat; }
-        public double getLon() { return lon; }
-        public int getQueryCount() { return queryCount; }
-        public String getLastQueried() { return lastQueried; }
+        try (PreparedStatement pstmt = connection.prepareStatement("DELETE FROM query_stats")) {
+            pstmt.executeUpdate();
+        } catch (SQLException e) {
+            logger.error("Failed to cleanup old location stats", e);
+        }
     }
-    
-    private static class StatsRecord {
-        final String endpoint;
-        final String parametersJson;
-        final long responseTimeMs;
-        final int resultCount;
-        final String clientIp;
-        final LocalDate dateOnly;
-        final int hourBucket;
-        final int statusCode;
-        
-        StatsRecord(String endpoint, String parametersJson, long responseTimeMs, 
-                   int resultCount, String clientIp, LocalDate dateOnly, int hourBucket, int statusCode) {
-            this.endpoint = endpoint;
-            this.parametersJson = parametersJson;
-            this.responseTimeMs = responseTimeMs;
-            this.resultCount = resultCount;
-            this.clientIp = clientIp;
-            this.dateOnly = dateOnly;
-            this.hourBucket = hourBucket;
-            this.statusCode = statusCode;
-        }
+
+    public record LocationStatsResponse(double lat, double lon, int queryCount, String lastQueried) {
+    }
+
+    private record StatsRecord(String endpoint, String parametersJson, long responseTimeMs, int resultCount,
+                               LocalDate dateOnly, int hourBucket, int statusCode) {
     }
 }

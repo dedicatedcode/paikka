@@ -16,6 +16,7 @@
 
 package com.dedicatedcode.paikka.service;
 
+import com.dedicatedcode.paikka.IntegrationTest;
 import com.dedicatedcode.paikka.config.PaikkaConfiguration;
 import com.dedicatedcode.paikka.flatbuffers.Address;
 import com.dedicatedcode.paikka.flatbuffers.Name;
