@@ -16,10 +16,67 @@
 
 package com.dedicatedcode.paikka.service.importer;
 
+import java.util.Locale;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 class ImportStatistics {
+    public enum Pass {
+        ONE,
+        TWO
+    }
+
+    public enum Stage {
+        PASS("Pass"),
+        PROCESSING_POIS_SHARDING("Processing POI-Shards"),
+        OVERALL("Overall"),
+        SCAN_PBF_STRUCTURE("Scan PBF Structure"),
+        CACHING_NODE_COORDINATES("Caching Node Coordinates"),
+        PROCESSING_ADMIN_BOUNDARIES("Processing Admin Boundaries"),
+        COMPACTING_POIS("Compacting POIs"),;
+        private final String shortName;
+
+        Stage(String shortName) {
+            this.shortName = shortName;
+        }
+
+        @Override
+        public String toString() {
+            return this.shortName;
+        }
+    }
+
+    public enum Kind {
+        READ("Read/IO"),
+        DECODE("Decode"),
+        ENCODE("Encode/Serialize"),
+        GEOMETRY("Geometry"),
+        STORE("Store/Write"),
+        CONCURRENCY("Concurrency/Flow"),
+        CONFIG("Configuration"),
+        OVERALL("Overall");
+
+        private final String shortName;
+
+        Kind(String shortName) {
+            this.shortName = shortName;
+        }
+
+        @Override
+        public String toString() {
+            return shortName;
+        }
+    }
+
+    private static final double DEGRADED_WARN_RATE = 1e-4; // 0.01% = 1 in 10,000 (tune later)
+    private static final int ERROR_SAMPLE_LIMIT = 50;
+
+    private final AtomicLong errorsTotal = new AtomicLong(0);
+    private final ConcurrentHashMap<String, AtomicLong> errorBuckets = new ConcurrentHashMap<>();
+    private final ConcurrentLinkedQueue<String> errorSamples = new ConcurrentLinkedQueue<>();
+
     private final AtomicLong entitiesRead = new AtomicLong(0);
     private final AtomicLong nodesCached = new AtomicLong(0);
     private final AtomicLong nodesFound = new AtomicLong(0);
@@ -293,6 +350,34 @@ class ImportStatistics {
         this.tmpTotalBytes = v;
     }
 
+    public void recordError(Stage stage, Kind kind, Long osmId, String operation, Exception e) {
+        errorsTotal.incrementAndGet();
+
+        String safePhase = stage.toString();
+        String safeKind = kind.toString();
+        String safeOp = operation != null ? operation : "-";
+        String ex = (e != null) ? e.getClass().getSimpleName() : "Exception";
+        String bucketKey = safePhase + "|" + safeKind + "|" + safeOp + "|" + ex;
+
+        errorBuckets.computeIfAbsent(bucketKey, k -> new AtomicLong(0)).incrementAndGet();
+
+        if (errorSamples.size() < ERROR_SAMPLE_LIMIT) {
+            String msg = (e != null ? e.getMessage() : null);
+            errorSamples.add(
+                    "phase=" + safePhase
+                            + " kind=" + safeKind
+                            + " id=" + (osmId != null ? osmId : "-")
+                            + " op=" + safeOp
+                            + " ex=" + (e != null ? e.getClass().getName() : "java.lang.Exception")
+                            + (msg != null ? " msg=" + msg : "")
+            );
+        }
+    }
+
+    public long getErrorsTotal() {
+        return errorsTotal.get();
+    }
+
     public String getMemoryStats() {
         Runtime r = Runtime.getRuntime();
         long used = (r.totalMemory() - r.freeMemory()) / 1024 / 1024 / 1024;
@@ -439,6 +524,40 @@ class ImportStatistics {
         System.out.println();
     }
 
+    public void printOutcomeAndErrors() {
+        long err = getErrorsTotal();
+        long denominator = Math.max(1L, getEntitiesRead());
+        double rate = (double) err / (double) denominator;
+
+        String outcome = (rate >= DEGRADED_WARN_RATE) ? "DEGRADED" : "OK";
+        System.out.println("\n\033[1;36mIMPORT OUTCOME: " + outcome
+                                   + " | errors=" + err
+                                   + " | entitiesRead=" + denominator
+                                   + " | errorRate=" + String.format(Locale.ROOT, "%.6f%%", rate * 100.0)
+                                   + "\033[0m");
+
+        if (err == 0) {
+            return;
+        }
+
+        System.err.println("\n=== Import errors summary (best-effort) ===");
+        System.err.println("totalErrors=" + err);
+        System.err.println("topBuckets=" + Math.min(10, errorBuckets.size()) + "/" + errorBuckets.size());
+
+        errorBuckets.entrySet().stream()
+                .sorted((a, b) -> Long.compare(b.getValue().get(), a.getValue().get()))
+                .limit(10)
+                .forEach(e -> System.err.println("  " + e.getValue().get() + "x " + e.getKey()));
+
+        if (!errorSamples.isEmpty()) {
+            System.err.println("\nSamples (first " + errorSamples.size() + "):");
+            for (String s : errorSamples) {
+                System.err.println("  " + s);
+            }
+        }
+
+        System.err.println("=== End import errors summary ===\n");
+    }
 
     private String formatTime(long ms) {
         long s = ms / 1000;
