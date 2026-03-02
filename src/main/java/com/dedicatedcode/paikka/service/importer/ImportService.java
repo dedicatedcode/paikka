@@ -993,10 +993,9 @@ public class ImportService {
                 flushCompactedShard(currentShardChunks, currentShardId, shardsDb,
                                     writeOptions, reusablePoi, reusableName, reusableHier,
                                     reusableAddr, reusableGeom, stats);
-                shardsCompacted++;
-            }
 
-            System.out.println("Compaction complete: " + shardsCompacted + " shards written.");
+                stats.incrementShardsCompacted();
+            }
         }
     }
 
