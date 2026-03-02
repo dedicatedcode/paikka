@@ -55,6 +55,7 @@ import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Stream;
 
 @Service
@@ -367,19 +368,11 @@ public class ImportService {
                                            RocksDB poiIndexDb,
                                            RocksDB gridIndexDb,
                                            ImportStatistics stats) throws Exception {
-        final Map<Long, List<PoiData>> shardBuffer = new ConcurrentHashMap<>();
-
+//        Map<Long, List<PoiData>> shardBuffer = new ConcurrentHashMap<>();
+        AtomicReference<Map<Long, List<PoiData>>> shardBufferRef = new AtomicReference<>(new ConcurrentHashMap<>());
         Runnable flushTask = () -> {
             try {
-                Map<Long, List<PoiData>> bufferToFlush = new HashMap<>();
-                synchronized (shardBuffer) {
-                    shardBuffer.forEach((key, value) -> {
-                        if (!value.isEmpty()) {
-                            bufferToFlush.put(key, new ArrayList<>(value));
-                            value.clear();
-                        }
-                    });
-                }
+                Map<Long, List<PoiData>> bufferToFlush = shardBufferRef.getAndSet(new ConcurrentHashMap<>());
                 if (!bufferToFlush.isEmpty()) {
                     writeShardBatchAppendOnly(bufferToFlush, appendDb, stats);
                 }
@@ -519,18 +512,17 @@ public class ImportService {
                                 }
                                 stats.incrementPoisProcessed(localCount);
                                 if (localShardBuffer.size() > localPoiBufferSize) {
-                                    synchronized (shardBuffer) {
-                                        localShardBuffer.forEach((shardId, poiList) -> shardBuffer.computeIfAbsent(shardId, k -> new ArrayList<>()).addAll(poiList));
-                                    }
+                                    Map<Long, List<PoiData>> currentActiveBuffer = shardBufferRef.get();
+                                    localShardBuffer.forEach((shardId, poiList) -> currentActiveBuffer.computeIfAbsent(shardId, k -> new CopyOnWriteArrayList<>()).addAll(poiList));
                                     localShardBuffer.clear();
                                 }
                             }
                         } catch (InterruptedException e) {
                             Thread.currentThread().interrupt();
                         } finally {
-                            synchronized (shardBuffer) {
-                                localShardBuffer.forEach((shardId, poiList) -> shardBuffer.computeIfAbsent(shardId, k -> new ArrayList<>()).addAll(poiList));
-                            }
+                            Map<Long, List<PoiData>> currentActiveBuffer = shardBufferRef.get();
+                            localShardBuffer.forEach((shardId, poiList) -> currentActiveBuffer.computeIfAbsent(shardId, k -> new CopyOnWriteArrayList<>()).addAll(poiList));
+                            localShardBuffer.clear();
                             hierarchyCacheThreadLocal.remove();
                             stats.decrementActiveThreads();
                             latch.countDown();
