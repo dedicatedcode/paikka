@@ -960,7 +960,6 @@ public class ImportService {
             long currentShardId = Long.MIN_VALUE;
             // Collect raw byte[] chunks per shard, build FlatBuffer only at flush time
             List<byte[]> currentShardChunks = new ArrayList<>();
-            long shardsCompacted = 0;
 
             while (iterator.isValid()) {
                 byte[] key = iterator.key();
@@ -972,7 +971,6 @@ public class ImportService {
                                         writeOptions, reusablePoi, reusableName, reusableHier,
                                         reusableAddr, reusableGeom, stats);
                     currentShardChunks.clear();
-                    shardsCompacted++;
 
                     stats.incrementShardsCompacted();
                 }
