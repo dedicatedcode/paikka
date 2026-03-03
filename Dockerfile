@@ -15,6 +15,7 @@ RUN apt update && DEBIAN_FRONTEND=noninteractive apt-get -yq install osmium-tool
 ENV SPRING_PROFILES_ACTIVE=docker
 ENV APP_HOME=/app
 ENV DATA_DIR=/data
+ENV STATS_DIR=/stats
 
 # Create application directory
 RUN mkdir -p $APP_HOME && \
@@ -45,6 +46,9 @@ fi
 
 mkdir -p $DATA_DIR
 chown -R paikka:paikka $DATA_DIR
+
+mkdir -p $STATS_DIR
+chown -R paikka:paikka $STATS_DIR
 
 # Switch to data directory
 cd $DATA_DIR
