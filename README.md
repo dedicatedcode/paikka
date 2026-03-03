@@ -1,5 +1,16 @@
 ![](.github/banner.png)
 
+## Official Instance
+
+There is an official instance of PAIKKA running at **https://geo.dedicatedcode.com** that you can use for free. 
+
+**Important notes about this instance:**
+- There are **no usage limits or restrictions** – feel free to integrate it into your projects.
+- However, there are **no guarantees about availability or SLA** (Service Level Agreement). The service is provided on a best-effort basis.
+- The instance is shared among all users. **Please do not abuse it** – excessive or abusive usage will affect everyone else.
+
+Be nice to each other and use the service responsibly.
+
 PAIKKA is a specialized reverse geocoding service designed to provide high-performance location resolution for [Reitti](https://github.com/dedicatedcode/reitti). The name comes from the Finnish word for "place" and is pronounced [ˈpɑi̯kːɑ].
 
 ## Overview
