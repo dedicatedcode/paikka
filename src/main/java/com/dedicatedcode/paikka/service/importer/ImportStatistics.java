@@ -94,7 +94,11 @@ class ImportStatistics {
     private final long startTime = System.currentTimeMillis();
     private volatile long phaseStartTime = System.currentTimeMillis();
     private long totalTime;
-    private final AtomicLong shardsCompacted = new AtomicLong(0);
+    private final AtomicLong compactionEntriesTotal = new AtomicLong(0);
+    private final AtomicLong compactionEntriesProcessed = new AtomicLong(0);
+
+
+
     private volatile long compactionStartTime = 0;
 
     private volatile long datasetBytes;
@@ -246,12 +250,22 @@ class ImportStatistics {
         this.totalTime = t;
     }
 
-    public long getShardsCompacted() {
-        return shardsCompacted.get();
+    public void setCompactionEntriesTotal(long v) {
+        this.compactionEntriesTotal.set(v);
     }
 
-    public void incrementShardsCompacted() {
-        shardsCompacted.incrementAndGet();
+    public void incrementCompactionEntriesProcessed(long size) {
+        this.compactionEntriesProcessed.addAndGet(size);
+    }
+
+    public long getCompactionEntriesProcessed() {
+        return compactionEntriesProcessed.get();
+    }
+
+    public long getCompactionEntriesRemaining() {
+        long total = compactionEntriesTotal.get();
+        long done = compactionEntriesProcessed.get();
+        return total > done ? total - done : 0;
     }
 
     public void setCompactionStartTime(long t) {
@@ -440,11 +454,13 @@ class ImportStatistics {
                 } else if (phase.contains("2.2")) {
                     long compactionElapsed = System.currentTimeMillis() - getCompactionStartTime();
                     double compactionPhaseSeconds = compactionElapsed / 1000.0;
-                    long shardsCompacted = getShardsCompacted();
+                    long shardsCompacted = getCompactionEntriesProcessed();
                     long shardsPerSec = compactionPhaseSeconds > 0 ? (long)(shardsCompacted / compactionPhaseSeconds) : 0;
+                    long remaining = getCompactionEntriesRemaining();
                     sb.append(String.format("\033[1;36m[%s]\033[0m \033[1mCompacting POIs\033[0m", formatTime(elapsed)));
                     sb.append(String.format(" │ \033[32mShards Compacted:\033[0m %s \033[33m(%s/s)\033[0m",
                                             formatCompactNumber(shardsCompacted), formatCompactRate(shardsPerSec)));
+                    sb.append(String.format(" │ \033[37mRemaining:\033[0m %s", formatCompactNumber(remaining)));
 
                 } else {
                     sb.append(String.format("\033[1;36m[%s]\033[0m %s", formatTime(elapsed), phase));
@@ -460,7 +476,7 @@ class ImportStatistics {
                 }
 
                 try {
-                    Thread.sleep(isTty ? 500 : 5000);
+                    Thread.sleep(isTty ? 1000 : 5000);
                 } catch (InterruptedException e) {
                     break;
                 }

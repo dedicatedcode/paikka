@@ -258,13 +258,7 @@ public class ImportService {
         String importTimestamp = DateTimeFormatter.ISO_INSTANT.format(now);
         String dataVersion = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss").withZone(ZoneOffset.UTC).format(now);
         ObjectMapper objectMapper = new ObjectMapper();
-        PaikkaMetadata metadata = new PaikkaMetadata(
-                importTimestamp,
-                dataVersion,
-                pbfFile.getFileName().toString(),
-                S2Helper.GRID_LEVEL,
-                "1.0.0"
-        );
+        PaikkaMetadata metadata = new PaikkaMetadata(importTimestamp, dataVersion, pbfFile.getFileName().toString(), S2Helper.GRID_LEVEL, "1.0.0");
 
         objectMapper.writeValue(metadataPath.toFile(), metadata);
         System.out.println("\n\033[1;32mMetadata file written to: " + metadataPath + "\033[0m");
@@ -288,12 +282,7 @@ public class ImportService {
         }
     }
 
-    private void pass1DiscoveryAndIndexing(Path pbfFile,
-                                           RocksDB wayIndexDb,
-                                           RocksDB neededNodesDb,
-                                           RocksDB relIndexDb,
-                                           RocksDB poiIndexDb,
-                                           ImportStatistics stats) throws Exception {
+    private void pass1DiscoveryAndIndexing(Path pbfFile, RocksDB wayIndexDb, RocksDB neededNodesDb, RocksDB relIndexDb, RocksDB poiIndexDb, ImportStatistics stats) throws Exception {
 
         final byte[] ONE = new byte[]{1};
         try (RocksBatchWriter wayWriter = new RocksBatchWriter(wayIndexDb, 10_000, stats);
@@ -350,7 +339,8 @@ public class ImportService {
                             }
                         }
                     } catch (Exception e) {
-                        stats.recordError(ImportStatistics.Stage.SCAN_PBF_STRUCTURE, Kind.STORE, safeEntityId(container), "pass1-indexing", e);                    }
+                        stats.recordError(ImportStatistics.Stage.SCAN_PBF_STRUCTURE, Kind.STORE, safeEntityId(container), "pass1-indexing", e);
+                    }
                 }
             });
 
@@ -368,7 +358,6 @@ public class ImportService {
                                            RocksDB poiIndexDb,
                                            RocksDB gridIndexDb,
                                            ImportStatistics stats) throws Exception {
-//        Map<Long, List<PoiData>> shardBuffer = new ConcurrentHashMap<>();
         AtomicReference<Map<Long, List<PoiData>>> shardBufferRef = new AtomicReference<>(new ConcurrentHashMap<>());
         Runnable flushTask = () -> {
             try {
@@ -377,26 +366,21 @@ public class ImportService {
                     writeShardBatchAppendOnly(bufferToFlush, appendDb, stats);
                 }
             } catch (Exception e) {
-                stats.recordError(ImportStatistics.Stage.PROCESSING_POIS_SHARDING, Kind.STORE, null, "flush-append-batch", e);            }
+                stats.recordError(ImportStatistics.Stage.PROCESSING_POIS_SHARDING, Kind.STORE, null, "flush-append-batch", e);
+            }
         };
 
         try (PeriodicFlusher _ = PeriodicFlusher.start("shard-buffer-flush", 5, 5, flushTask)) {
-            BlockingQueue<List<PoiQueueItem>> queue = new LinkedBlockingQueue<>(200);
+            BlockingQueue<List<PoiQueueItem>> queue = new LinkedBlockingQueue<>(10000);
             int numReaders = Math.max(1, config.getImportConfiguration().getThreads());
             int chunkSize = config.getImportConfiguration().getChunkSize();
-            int localPoiBufferSize = 1000;
+            int localPoiBufferSize = 10_000;
 
             CountDownLatch latch = new CountDownLatch(numReaders);
 
-            try (ExecutorService executor = createExecutorService(numReaders);
-                 ReadOptions ro = new ReadOptions().setReadaheadSize(2 * 1024 * 1024)) {
-                com.github.benmanes.caffeine.cache.Cache<Long, HierarchyCache.CachedBoundary> globalBoundaryCache = Caffeine.newBuilder()
-                        .maximumSize(1000)
-                        .recordStats()
-                        .build();
-                ThreadLocal<HierarchyCache> hierarchyCacheThreadLocal = ThreadLocal.withInitial(
-                        () -> new HierarchyCache(boundariesDb, gridIndexDb, s2Helper, globalBoundaryCache)
-                );
+            try (ExecutorService executor = createExecutorService(numReaders); ReadOptions ro = new ReadOptions().setReadaheadSize(8 * 1024 * 1024)) {
+                com.github.benmanes.caffeine.cache.Cache<Long, HierarchyCache.CachedBoundary> globalBoundaryCache = Caffeine.newBuilder().maximumSize(1000).recordStats().build();
+                ThreadLocal<HierarchyCache> hierarchyCacheThreadLocal = ThreadLocal.withInitial(() -> new HierarchyCache(boundariesDb, gridIndexDb, s2Helper, globalBoundaryCache));
                 long total = 0;
                 try (RocksIterator it = poiIndexDb.newIterator(ro)) {
                     for (it.seekToFirst(); it.isValid(); it.next()) total++;
@@ -474,6 +458,7 @@ public class ImportService {
                         final GeometryFactory geometryFactory = new GeometryFactory();
                         final HierarchyCache hierarchyCache = hierarchyCacheThreadLocal.get();
                         final Map<Long, List<PoiData>> localShardBuffer = new HashMap<>();
+                        int localPoiCount = 0;
                         try {
                             while (true) {
                                 List<PoiQueueItem> batch = queue.take();
@@ -508,13 +493,16 @@ public class ImportService {
                                         PoiData poiData = createPoiDataFromIndex(rec, lat, lon, hierarchy, boundaryWkb);
                                         localShardBuffer.computeIfAbsent(s2Helper.getShardId(lat, lon), k -> new ArrayList<>()).add(poiData);
                                     } catch (Exception e) {
-                                        stats.recordError(ImportStatistics.Stage.PROCESSING_POIS_SHARDING, Kind.READ, null, "poi-reader", e);                                    }
+                                        stats.recordError(ImportStatistics.Stage.PROCESSING_POIS_SHARDING, Kind.READ, null, "poi-reader", e);
+                                    }
+                                    localPoiCount++;
                                 }
                                 stats.incrementPoisProcessed(localCount);
-                                if (localShardBuffer.size() > localPoiBufferSize) {
+                                if (localPoiCount > localPoiBufferSize) {
                                     Map<Long, List<PoiData>> currentActiveBuffer = shardBufferRef.get();
                                     localShardBuffer.forEach((shardId, poiList) -> currentActiveBuffer.computeIfAbsent(shardId, k -> new CopyOnWriteArrayList<>()).addAll(poiList));
                                     localShardBuffer.clear();
+                                    localPoiCount = 0;
                                 }
                             }
                         } catch (InterruptedException e) {
@@ -556,9 +544,7 @@ public class ImportService {
      * locality, then emits to the processing queue in batches.
      * Memory stays bounded: only one chunk is in memory at a time.
      */
-    private void sortAndEmitChunk(List<PoiQueueItem> chunk,
-                                  BlockingQueue<List<PoiQueueItem>> queue,
-                                  ImportStatistics stats) throws InterruptedException {
+    private void sortAndEmitChunk(List<PoiQueueItem> chunk, BlockingQueue<List<PoiQueueItem>> queue, ImportStatistics stats) throws InterruptedException {
         chunk.sort((a, b) -> Long.compareUnsigned(a.s2SortKey, b.s2SortKey));
 
         List<PoiQueueItem> buf = new ArrayList<>(2000);
@@ -663,8 +649,7 @@ public class ImportService {
                 executor.submit(() -> {
                     stats.incrementActiveThreads();
                     // --- OPTIMIZATION 1: ThreadLocal for reusable objects to reduce GC pressure ---
-                    final ThreadLocal<RocksBatchWriter> nodeWriterLocal =
-                            ThreadLocal.withInitial(() -> new RocksBatchWriter(nodeCache, 50_000, stats));
+                    final ThreadLocal<RocksBatchWriter> nodeWriterLocal = ThreadLocal.withInitial(() -> new RocksBatchWriter(nodeCache, 50_000, stats));
                     // Reuse a ByteBuffer for writing values
                     final ThreadLocal<ByteBuffer> valueBufferLocal = ThreadLocal.withInitial(() -> ByteBuffer.allocate(16));
                     // Reuse a List of byte[] for multiGet keys. We only need one per thread.
@@ -729,12 +714,7 @@ public class ImportService {
         }
     }
 
-    private void processAdministrativeBoundariesFromIndex(RocksDB relIndexDb,
-                                                          RocksDB nodeCache,
-                                                          RocksDB wayIndexDb,
-                                                          RocksDB gridsIndexDb,
-                                                          RocksDB boundariesDb,
-                                                          ImportStatistics stats) throws Exception {
+    private void processAdministrativeBoundariesFromIndex(RocksDB relIndexDb, RocksDB nodeCache, RocksDB wayIndexDb, RocksDB gridsIndexDb, RocksDB boundariesDb, ImportStatistics stats) throws Exception {
         int maxConcurrentGeometries = 100;
         Semaphore semaphore = new Semaphore(maxConcurrentGeometries);
 
@@ -829,16 +809,12 @@ public class ImportService {
         return tagCache.computeIfAbsent(s, k -> k);
     }
 
-    private void writeShardBatchAppendOnly(Map<Long, List<PoiData>> shardBuffer,
-                                           RocksDB appendDb,
-                                           ImportStatistics stats) throws Exception {
+    private void writeShardBatchAppendOnly(Map<Long, List<PoiData>> shardBuffer, RocksDB appendDb, ImportStatistics stats) throws Exception {
         FlatBufferBuilder builder = new FlatBufferBuilder(1024 * 32);
 
-        try (WriteBatch batch = new WriteBatch();
-             WriteOptions writeOptions = new WriteOptions()) {
+        try (WriteBatch batch = new WriteBatch(); WriteOptions writeOptions = new WriteOptions()) {
 
-            for (Iterator<Map.Entry<Long, List<PoiData>>> it = shardBuffer.entrySet().iterator();
-                 it.hasNext(); ) {
+            for (Iterator<Map.Entry<Long, List<PoiData>>> it = shardBuffer.entrySet().iterator(); it.hasNext(); ) {
                 Map.Entry<Long, List<PoiData>> entry = it.next();
                 List<PoiData> pois = entry.getValue();
                 if (pois.isEmpty()) {
@@ -869,7 +845,8 @@ public class ImportService {
             try {
                 appendDb.write(writeOptions, batch);
             } catch (RocksDBException e) {
-                stats.recordError(ImportStatistics.Stage.PROCESSING_POIS_SHARDING, Kind.STORE, null, "rocks-write:append_po", e);            }
+                stats.recordError(ImportStatistics.Stage.PROCESSING_POIS_SHARDING, Kind.STORE, null, "rocks-write:append_po", e);
+            }
             stats.incrementRocksDbWrites();
         }
     }
@@ -882,9 +859,7 @@ public class ImportService {
         int[] nameOffs = new int[names.size()];
         for (int j = 0; j < names.size(); j++) {
             NameData n = names.get(j);
-            nameOffs[j] = Name.createName(builder,
-                                          builder.createString(n.lang()),
-                                          builder.createString(n.text()));
+            nameOffs[j] = Name.createName(builder, builder.createString(n.lang()), builder.createString(n.text()));
         }
         int namesVecOff = POI.createNamesVector(builder, nameOffs);
 
@@ -896,8 +871,7 @@ public class ImportService {
             int postcodeOff = addr.postcode() != null ? builder.createString(addr.postcode()) : 0;
             int cityOff = addr.city() != null ? builder.createString(addr.city()) : 0;
             int countryOff = addr.country() != null ? builder.createString(addr.country()) : 0;
-            addressOff = com.dedicatedcode.paikka.flatbuffers.Address.createAddress(
-                    builder, streetOff, houseNumberOff, postcodeOff, cityOff, countryOff);
+            addressOff = com.dedicatedcode.paikka.flatbuffers.Address.createAddress(builder, streetOff, houseNumberOff, postcodeOff, cityOff, countryOff);
         }
 
         List<HierarchyCache.SimpleHierarchyItem> hierarchy = poi.hierarchy();
@@ -905,11 +879,7 @@ public class ImportService {
         int[] hierOffs = new int[hierarchy.size()];
         for (int j = 0; j < hierarchy.size(); j++) {
             HierarchyCache.SimpleHierarchyItem h = hierarchy.get(j);
-            hierOffs[j] = com.dedicatedcode.paikka.flatbuffers.HierarchyItem.createHierarchyItem(
-                    builder, h.level(),
-                    builder.createString(h.type()),
-                    builder.createString(h.name()),
-                    h.osmId());
+            hierOffs[j] = com.dedicatedcode.paikka.flatbuffers.HierarchyItem.createHierarchyItem(builder, h.level(), builder.createString(h.type()), builder.createString(h.name()), h.osmId());
         }
         int hierVecOff = POI.createHierarchyVector(builder, hierOffs);
 
@@ -936,6 +906,7 @@ public class ImportService {
 
     private void compactShards(RocksDB appendDb, RocksDB shardsDb, ImportStatistics stats) throws Exception {
         stats.setCompactionStartTime(System.currentTimeMillis());
+        stats.setCompactionEntriesTotal(sequence.get());
 
         // Reusable FlatBuffer accessor objects
         POI reusablePoi = new POI();
@@ -945,7 +916,7 @@ public class ImportService {
         Geometry reusableGeom = new Geometry();
 
         try (RocksIterator iterator = appendDb.newIterator();
-             WriteOptions writeOptions = new WriteOptions()) {
+             WriteOptions writeOptions = new WriteOptions().setDisableWAL(true)) {
 
             iterator.seekToFirst();
 
@@ -959,12 +930,9 @@ public class ImportService {
 
                 // Shard boundary — flush previous shard
                 if (shardId != currentShardId && currentShardId != Long.MIN_VALUE) {
-                    flushCompactedShard(currentShardChunks, currentShardId, shardsDb,
-                                        writeOptions, reusablePoi, reusableName, reusableHier,
-                                        reusableAddr, reusableGeom, stats);
+                    flushCompactedShard(currentShardChunks, currentShardId, shardsDb, writeOptions, reusablePoi, reusableName, reusableHier, reusableAddr, reusableGeom, stats);
+                    stats.incrementCompactionEntriesProcessed(currentShardChunks.size());
                     currentShardChunks.clear();
-
-                    stats.incrementShardsCompacted();
                 }
 
                 currentShardId = shardId;
@@ -980,11 +948,8 @@ public class ImportService {
 
             // Flush last shard
             if (currentShardId != Long.MIN_VALUE && !currentShardChunks.isEmpty()) {
-                flushCompactedShard(currentShardChunks, currentShardId, shardsDb,
-                                    writeOptions, reusablePoi, reusableName, reusableHier,
-                                    reusableAddr, reusableGeom, stats);
-
-                stats.incrementShardsCompacted();
+                flushCompactedShard(currentShardChunks, currentShardId, shardsDb, writeOptions, reusablePoi, reusableName, reusableHier, reusableAddr, reusableGeom, stats);
+                stats.incrementCompactionEntriesProcessed(currentShardChunks.size());
             }
         }
     }
@@ -993,12 +958,7 @@ public class ImportService {
      * Takes all raw FlatBuffer chunks for a single shard, reads each chunk's POIs,
      * copies them into a fresh FlatBufferBuilder, and writes the merged result.
      */
-    private void flushCompactedShard(List<byte[]> chunks, long shardId,
-                                     RocksDB shardsDb, WriteOptions writeOptions,
-                                     POI reusablePoi, Name reusableName,
-                                     HierarchyItem reusableHier, Address reusableAddr,
-                                     Geometry reusableGeom,
-                                     ImportStatistics stats) throws Exception {
+    private void flushCompactedShard(List<byte[]> chunks, long shardId, RocksDB shardsDb, WriteOptions writeOptions, POI reusablePoi, Name reusableName, HierarchyItem reusableHier, Address reusableAddr, Geometry reusableGeom, ImportStatistics stats) throws Exception {
 
         // Count total POIs first
         int totalPois = 0;
@@ -1025,8 +985,7 @@ public class ImportService {
 
             for (int i = 0; i < count; i++) {
                 poiList.pois(reusablePoi, i);
-                allOffsets[idx++] = copyPoiFromFlatBuffer(builder, reusablePoi,
-                                                          reusableName, reusableHier, reusableAddr, reusableGeom);
+                allOffsets[idx++] = copyPoiFromFlatBuffer(builder, reusablePoi, reusableName, reusableHier, reusableAddr, reusableGeom);
             }
         }
 
@@ -1040,9 +999,7 @@ public class ImportService {
         }
     }
 
-    private int copyPoiFromFlatBuffer(FlatBufferBuilder builder, POI poi,
-                                      Name reusableName, HierarchyItem reusableHier,
-                                      Address reusableAddr, Geometry reusableGeom) {
+    private int copyPoiFromFlatBuffer(FlatBufferBuilder builder, POI poi, Name reusableName, HierarchyItem reusableHier, Address reusableAddr, Geometry reusableGeom) {
 
         String typeStr = poi.type();
         String subtypeStr = poi.subtype();
@@ -1080,8 +1037,7 @@ public class ImportService {
             int cityOff = city != null ? builder.createString(city) : 0;
             int countryOff = country != null ? builder.createString(country) : 0;
 
-            addressOff = com.dedicatedcode.paikka.flatbuffers.Address.createAddress(
-                    builder, streetOff, houseNumberOff, postcodeOff, cityOff, countryOff);
+            addressOff = com.dedicatedcode.paikka.flatbuffers.Address.createAddress(builder, streetOff, houseNumberOff, postcodeOff, cityOff, countryOff);
         }
 
         int hierLen = poi.hierarchyLength();
@@ -1095,8 +1051,7 @@ public class ImportService {
                 String hName = reusableHier.name();
                 int hTypeOff = hType != null ? builder.createString(hType) : 0;
                 int hNameOff = hName != null ? builder.createString(hName) : 0;
-                hierOffs[j] = com.dedicatedcode.paikka.flatbuffers.HierarchyItem.createHierarchyItem(
-                        builder, reusableHier.level(), hTypeOff, hNameOff, reusableHier.osmId());
+                hierOffs[j] = com.dedicatedcode.paikka.flatbuffers.HierarchyItem.createHierarchyItem(builder, reusableHier.level(), hTypeOff, hNameOff, reusableHier.osmId());
             }
             hierVecOff = POI.createHierarchyVector(builder, hierOffs);
         } else {
@@ -1213,8 +1168,8 @@ public class ImportService {
             switch (key) {
                 case "amenity":
                     return switch (val) {
-                        case "bench", "drinking_water", "waste_basket", "bicycle_parking",
-                             "vending_machine", "parking_entrance", "fire_hydrant" -> false;
+                        case "bench", "drinking_water", "waste_basket", "bicycle_parking", "vending_machine",
+                             "parking_entrance", "fire_hydrant" -> false;
 
                         default -> true;
                     };
@@ -1236,8 +1191,8 @@ public class ImportService {
                     }
                     break;
 
-                case "shop", "tourism", "leisure", "office", "craft", "place",
-                     "historic", "public_transport", "aeroway":
+                case "shop", "tourism", "leisure", "office", "craft", "place", "historic", "public_transport",
+                     "aeroway":
                     // Exclude the specific sub-leisure types you mentioned earlier
                     return !key.equals("leisure") || !List.of("picnic_table", "swimming_pool").contains(val);
 
@@ -1324,12 +1279,7 @@ public class ImportService {
         return rings;
     }
 
-    private void storeBoundary(long osmId,
-                               int level,
-                               String name,
-                               org.locationtech.jts.geom.Geometry geometry,
-                               RocksBatchWriter boundariesWriter,
-                               RocksDB gridsIndexDb) throws Exception {
+    private void storeBoundary(long osmId, int level, String name, org.locationtech.jts.geom.Geometry geometry, RocksBatchWriter boundariesWriter, RocksDB gridsIndexDb) throws Exception {
         FlatBufferBuilder fbb = new FlatBufferBuilder(1024);
         byte[] wkb = new WKBWriter().write(geometry);
         int geomDataOffset = Geometry.createDataVector(fbb, wkb);
@@ -1370,8 +1320,7 @@ public class ImportService {
     }
 
     private void withPbfIterator(Path pbfFile, ConsumerWithException<OsmIterator> consumer) throws Exception {
-        try (RandomAccessFile file = new RandomAccessFile(pbfFile.toFile(), "r");
-             FileChannel channel = file.getChannel()) {
+        try (RandomAccessFile file = new RandomAccessFile(pbfFile.toFile(), "r"); FileChannel channel = file.getChannel()) {
 
             long fileSize = channel.size();
 
@@ -1459,15 +1408,13 @@ public class ImportService {
     private void cleanupDatabase(Path dbPath) {
         if (Files.exists(dbPath)) {
             try {
-                Files.walk(dbPath)
-                        .sorted((a, b) -> b.compareTo(a))
-                        .forEach(path -> {
-                            try {
-                                Files.delete(path);
-                            } catch (IOException e) {
-                                System.err.println("Warning: Could not delete " + path + ": " + e.getMessage());
-                            }
-                        });
+                Files.walk(dbPath).sorted((a, b) -> b.compareTo(a)).forEach(path -> {
+                    try {
+                        Files.delete(path);
+                    } catch (IOException e) {
+                        System.err.println("Warning: Could not delete " + path + ": " + e.getMessage());
+                    }
+                });
                 System.out.println("Cleaned up existing database: " + dbPath.getFileName());
             } catch (IOException e) {
                 System.err.println("Warning: Could not clean up database " + dbPath + ": " + e.getMessage());
@@ -1479,34 +1426,24 @@ public class ImportService {
         if (root == null || !Files.exists(root)) return 0L;
         try (Stream<Path> s = Files.walk(root)) {
             return s.filter(p -> {
-                        try {
-                            return Files.isRegularFile(p);
-                        } catch (Exception e) {
-                            return false;
-                        }
-                    })
-                    .mapToLong(p -> {
-                        try {
-                            return Files.size(p);
-                        } catch (IOException e) {
-                            return 0L;
-                        }
-                    }).sum();
+                try {
+                    return Files.isRegularFile(p);
+                } catch (Exception e) {
+                    return false;
+                }
+            }).mapToLong(p -> {
+                try {
+                    return Files.size(p);
+                } catch (IOException e) {
+                    return 0L;
+                }
+            }).sum();
         } catch (IOException e) {
             return 0L;
         }
     }
 
-    private void recordSizeMetrics(ImportStatistics stats,
-                                   Path shardsDbPath,
-                                   Path boundariesDbPath,
-                                   Path gridIndexDbPath,
-                                   Path nodeCacheDbPath,
-                                   Path wayIndexDbPath,
-                                   Path neededNodesDbPath,
-                                   Path relIndexDbPath,
-                                   Path poiIndexDbPath,
-                                   Path appendDbPath) {
+    private void recordSizeMetrics(ImportStatistics stats, Path shardsDbPath, Path boundariesDbPath, Path gridIndexDbPath, Path nodeCacheDbPath, Path wayIndexDbPath, Path neededNodesDbPath, Path relIndexDbPath, Path poiIndexDbPath, Path appendDbPath) {
         long shards = computeDirectorySize(shardsDbPath);
         long boundaries = computeDirectorySize(boundariesDbPath);
         long dataset = shards + boundaries;
@@ -1557,6 +1494,7 @@ public class ImportService {
             return null;
         }
     }
+
     @FunctionalInterface
     private interface ConsumerWithException<T> {
         void accept(T t) throws Exception;
@@ -1762,8 +1700,7 @@ public class ImportService {
         byte[] cityB = bytes(rec.city);
         byte[] countryB = bytes(rec.country);
         int cap = 16 // ← NEW: 8 bytes lat + 8 bytes lon
-                + 4 + typeB.length + 4 + subtypeB.length + namesSize
-                + 4 + streetB.length + 4 + hnB.length + 4 + pcB.length + 4 + cityB.length + 4 + countryB.length;
+                + 4 + typeB.length + 4 + subtypeB.length + namesSize + 4 + streetB.length + 4 + hnB.length + 4 + pcB.length + 4 + cityB.length + 4 + countryB.length;
         ByteBuffer bb = ByteBuffer.allocate(cap);
         bb.putDouble(rec.lat);
         bb.putDouble(rec.lon);
