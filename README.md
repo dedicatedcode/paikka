@@ -125,7 +125,7 @@ The above benchmarks were performed on the following hardware:
 
 - **CPU:** AMD Ryzen 7 5825U with Radeon Graphics (8 cores, 16 threads, 4.5 GHz max)
 - **Memory:** 31 GiB system RAM
-- **Storage:** NVMe SSD (import directory on fast NVMe storage)
+- **Storage:** ZFS Pool on 4 HDD
 
 **Import Command Used:**
 ```bash
