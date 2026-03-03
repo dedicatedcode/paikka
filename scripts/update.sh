@@ -177,7 +177,7 @@ remote_deploy_and_verify() {
       [ -n "\$OLD_RELEASE_DIR" ] && ln -sfn "\$OLD_RELEASE_DIR" "\$LIVE_DATA_SYMLINK"
       exit 1
   fi
- # --- 2. Verify ---
+  # --- 2. Verify ---
   echo_remote "Verifying new data..."
   VERIFICATION_FAILED=0
   for query in "\${!TESTS[@]}"; do
@@ -205,7 +205,6 @@ remote_deploy_and_verify() {
   else
     echo_remote "VERIFICATION SUCCEEDED. Cleaning up old release and archive."
     [ -n "\$OLD_RELEASE_DIR" ] && [ -d "\$OLD_RELEASE_DIR" ] && rm -rf "\$OLD_RELEASE_DIR"
-    rm "\$ZIP_FILENAME"
     echo_remote "Deployment successful."
   fi
 
