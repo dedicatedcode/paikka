@@ -177,8 +177,37 @@ remote_deploy_and_verify() {
       [ -n "\$OLD_RELEASE_DIR" ] && ln -sfn "\$OLD_RELEASE_DIR" "\$LIVE_DATA_SYMLINK"
       exit 1
   fi
+ # --- 2. Verify ---
+  echo_remote "Verifying new data..."
+  VERIFICATION_FAILED=0
+  for query in "\${!TESTS[@]}"; do
+    ACTUAL_ID=\$(curl -s "\$TEST_URL_BASE?\$query" | jq -r '.[0].id // "not_found"')
+    if [ "\$ACTUAL_ID" != "\${TESTS[\$query]}" ]; then
+      echo_remote "  --> FAILED: For \$query, expected '\${TESTS[\$query]}', got '\$ACTUAL_ID'"
+      VERIFICATION_FAILED=1
+    else
+      echo_remote "  --> SUCCESS: Verified query for \$query"
+    fi
+  done
 
-  # ... [Verification logic remains the same] ...
+  # --- 3. Finalize or Rollback ---
+  if [ \$VERIFICATION_FAILED -eq 1 ]; then
+    echo_remote "VERIFICATION FAILED. Rolling back and re-refreshing."
+    if [ -n "\$OLD_RELEASE_DIR" ] && [ -d "\$OLD_RELEASE_DIR" ]; then
+      ln -sfn "\$OLD_RELEASE_DIR" "\$LIVE_DATA_SYMLINK"
+      curl -s -o /dev/null -X POST -H "Authorization: Bearer \$API_TOKEN" "\$ADMIN_URL"
+      echo_remote "Rollback to \$OLD_RELEASE_DIR complete. Faulty data in \$NEW_RELEASE_DIR is kept for inspection."
+      exit 1
+    else
+      echo_remote "ERROR: Verification failed, but no previous version to roll back to!"
+      exit 1
+    fi
+  else
+    echo_remote "VERIFICATION SUCCEEDED. Cleaning up old release and archive."
+    [ -n "\$OLD_RELEASE_DIR" ] && [ -d "\$OLD_RELEASE_DIR" ] && rm -rf "\$OLD_RELEASE_DIR"
+    rm "\$ZIP_FILENAME"
+    echo_remote "Deployment successful."
+  fi
 
   if [ \$VERIFICATION_FAILED -eq 0 ]; then
     echo "Success. Cleaning up old release..."
