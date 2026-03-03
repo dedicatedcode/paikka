@@ -17,7 +17,8 @@ Standard geocoding solutions often fall short for specific personal tracking nee
 
 ## Relationship to Reitti
 
-[Reitti](https://github.com/dedicatedcode/reitti) is a comprehensive personal location tracking and analysis application that helps you understand your movement patterns and significant places. PAIKKA acts as the dedicated "location engine" for Reitti, converting raw GPS coordinates into human-readable context.
+[Reitti](https://github.com/dedicatedcode/reitti) is a comprehensive personal location tracking and analysis application that helps you understand your movement patterns and significant places. PAIKKA acts as the dedicated "location engine" for Reitti, converting raw GPS
+coordinates into human-readable context.
 
 ## Limitations
 
@@ -25,30 +26,30 @@ Standard geocoding solutions often fall short for specific personal tracking nee
 - Optimized for read-heavy serving; updates require re-importing prepared data.
 - Focused strictly on reverse geocoding (coordinates to place).
 - **Highly Opinionated POI Selection:** PAIKKA is deliberately selective about which Points of Interest it imports. It only includes POIs with the following OSM tags:
-  - `amenity` (e.g., restaurant, school, hospital, fuel, atm)
-  - `shop` (e.g., supermarket, clothes, bakery)
-  - `tourism` (e.g., hotel, museum, attraction)
-  - `leisure` (e.g., fitness_centre, playground, park)
-  - `office` (e.g., company, government, insurance)
-  - `craft` (e.g., carpenter, electrician, painter)
-  - `healthcare` (e.g., hospital, pharmacy, clinic)
-  - `emergency` (e.g., ambulance_station, fire_hydrant)
-  - `historic` (e.g., monument, archaeological_site)
-  - `natural` (e.g., peak, cave, waterfall)
-  - `man_made` (e.g., tower, pier, windmill)
-  - `place` (e.g., city, town, village, neighborhood)
-  - `sport` (e.g., tennis, swimming, fitness)
-  - `public_transport` (e.g., stop_position, station)
-  - `railway` (stations only)
-  - `aeroway` (e.g., aerodrome, helipad)
-  - `building` (commercial, retail, industrial, office – but not residential or generic "yes")
-  
+    - `amenity` (e.g., restaurant, school, hospital, fuel, atm)
+    - `shop` (e.g., supermarket, clothes, bakery)
+    - `tourism` (e.g., hotel, museum, attraction)
+    - `leisure` (e.g., fitness_centre, playground, park)
+    - `office` (e.g., company, government, insurance)
+    - `craft` (e.g., carpenter, electrician, painter)
+    - `healthcare` (e.g., hospital, pharmacy, clinic)
+    - `emergency` (e.g., ambulance_station, fire_hydrant)
+    - `historic` (e.g., monument, archaeological_site)
+    - `natural` (e.g., peak, cave, waterfall)
+    - `man_made` (e.g., tower, pier, windmill)
+    - `place` (e.g., city, town, village, neighborhood)
+    - `sport` (e.g., tennis, swimming, fitness)
+    - `public_transport` (e.g., stop_position, station)
+    - `railway` (stations only)
+    - `aeroway` (e.g., aerodrome, helipad)
+    - `building` (commercial, retail, industrial, office – but not residential or generic "yes")
+
   Many common OSM features are explicitly excluded, such as:
-  - Natural features like trees and grass
-  - Man-made structures like electric-poles, trash cans
-  - Amenities like benches, drinking water, and picnic tables
-  - Swimming pools and fountains
-  
+    - Natural features like trees and grass
+    - Man-made structures like electric-poles, trash cans
+    - Amenities like benches, drinking water, and picnic tables
+    - Swimming pools and fountains
+
   If you need comprehensive POI coverage including all OSM features, **Nominatim** would be a better fit for your use case. While it would be technically possible to import the complete unfiltered dataset, this was never the intended design and has not been tested.
 
 ## Features
@@ -124,7 +125,7 @@ The [OpenStreetMap website](https://www.openstreetmap.org/export/) allows you to
 The above benchmarks were performed on the following hardware:
 
 - **CPU:** AMD Ryzen 7 5825U with Radeon Graphics (8 cores, 16 threads, 4.5 GHz max)
-- **Memory:** 31 GiB system RAM
+- **Memory:** 32 GiB system RAM
 - **Storage:** ZFS Pool on 4 HDD
 
 **Import Command Used:**
@@ -134,11 +135,13 @@ docker run -ti -v ./:/data dedicatedcode/paikka:develop import --memory 16G --th
 
 **Memory Considerations:**
 
-The `--memory` flag (e.g., `--memory 16G`) controls the JVM heap size only. RocksDB requires additional memory beyond the heap for its block cache and internal structures. For optimal performance with large imports, ensure your system has significantly more RAM available than the heap size specified. As a guideline, a 16GB heap typically works well on systems with 24-32GB of RAM for medium-sized countries, while planet imports benefit from 32GB+ heap on systems with 64GB+ RAM.
+The `--memory` flag (e.g., `--memory 16G`) controls the JVM heap size only. RocksDB requires additional memory beyond the heap for its block cache and internal structures. For optimal performance with large imports, ensure your system has significantly more RAM available than
+the heap size specified. As a guideline, a 16GB heap typically works well on systems with 24-32GB of RAM for medium-sized countries, while planet imports benefit from 32GB+ heap on systems with 64GB+ RAM.
 
 **Swap Space:**
 
-Ensure adequate swap space is available. During import, memory usage can spike due to RocksDB's internal buffering and compaction operations. Without sufficient swap, the system may invoke the OOM killer to terminate processes when memory limits are exceeded. A good rule of thumb is to have swap space at least equal to or larger than the JVM heap size (e.g., 16GB heap with 16GB+ swap).
+Ensure adequate swap space is available. During import, memory usage can spike due to RocksDB's internal buffering and compaction operations. Without sufficient swap, the system may invoke the OOM killer to terminate processes when memory limits are exceeded. A good rule of
+thumb is to have swap space at least equal to or larger than the JVM heap size (e.g., 16GB heap with 16GB+ swap).
 
 **Storage Considerations:**
 
@@ -186,11 +189,17 @@ docker run -v /path/to/your/data:/data dedicatedcode/paikka prepare input.osm.pb
 Run the `import` script to import the filtered data into the data directory:
 
 ```bash
-docker run -ti -v /path/to/your/data:/data dedicatedcode/paikka:latest import filtered.osm.pbf
+docker run -ti \
+  -v /path/to/your/data:/data \
+  --memory 16g \
+  dedicatedcode/paikka:latest \
+  import filtered.osm.pbf --memory 16g --threads 10
 ```
 
-- `filtered.osm.pbf` is the filtered PBF file from the previous step
-- `/data` is the target directory inside the container (mounted from your local directory)
+Parameters:
+- `--memory`: JVM heap size (e.g., `16g`, `32g`)
+- `--threads`: Number of import threads (default: `10`)
+- `--data-dir`: Directory to store imported data (default: `/data` inside container)
 
 After import completes, your data directory will contain the processed data files ready for the service.
 
@@ -201,12 +210,16 @@ To run the PAIKKA service itself:
 ```bash
 docker run -d \
   -v /path/to/your/data:/data \
+  -v /path/to/stats:/stats \
   -p 8080:8080 \
   -e ADMIN_PASSWORD=your-secure-password \
-  paikka
+  dedicatedcode/paikka:latest
 ```
 
-The data directory is mounted at `/data` inside the container, and the service runs on port 8080.
+- `/data` directory contains the processed POI and geometry data
+- `/stats` directory contains the statistics database
+- The service runs on port 8080
+- Admin interface requires `ADMIN_PASSWORD` to be set
 
 #### Docker Environment Variables
 
@@ -214,27 +227,29 @@ When running with Docker, you can configure the service using environment variab
 
 | Environment Variable | Purpose | Default Value |
 |---------------------|---------|---------------|
-| `DATA_DIR` | Directory where processed data is stored | `./data` |
+| `DATA_DIR` | Directory where processed data is stored | `/data` |
 | `MAX_IMPORT_THREADS` | Maximum number of threads for data import | `10` |
 | `MAX_RESULTS` | Maximum number of results returned by API | `500` |
 | `DEFAULT_RESULTS` | Default number of results when not specified | `10` |
 | `BASE_URL` | Base URL for the service (used in responses) | `http://localhost:8080` |
-| `STATS_DB_PATH` | Path to the statistics database | `./data/stats.db` |
-| `ADMIN_PASSWORD` | Password for admin interface access | _(empty)_ |
-| `APP_LOG_LEVEL` | Log level for the application | `INFO` |
+| `STATS_DB_PATH` | Path to the statistics database | `/stats/stats.db` |
+| `ADMIN_PASSWORD` | Password for admin interface access (required) | _(empty - admin interface disabled if not set)_ |
+| `APP_LOG_LEVEL` | Log level for the application (`DEBUG`, `INFO`, `WARN`, `ERROR`) | `INFO` |
+
+**Note:** The admin interface is disabled if `ADMIN_PASSWORD` is not set. To enable admin features, you must provide a password.
 
 Example with custom configuration:
 
 ```bash
 docker run -d \
   -v /path/to/your/data:/data \
+  -v /path/to/stats:/stats \
   -p 8080:8080 \
-  -e DATA_DIR=/data \
   -e MAX_RESULTS=1000 \
   -e DEFAULT_RESULTS=20 \
   -e ADMIN_PASSWORD=your-secure-password \
   -e APP_LOG_LEVEL=DEBUG \
-  paikka
+  dedicatedcode/paikka:latest
 ```
 
 ### Examples
@@ -264,6 +279,7 @@ mvn spring-boot:run
 ```bash
 java -Xmx8g -jar target/paikka-*.jar --data-dir=/path/to/data
 ```
+
 ## Running with Docker Compose
 
 Docker Compose provides an easy way to run PAIKKA with persistent volumes for data and statistics.
@@ -276,34 +292,61 @@ Docker Compose provides an easy way to run PAIKKA with persistent volumes for da
 
 ### Quick Start
 
-1. Download the docker-compose.yml file:
-   ```bash
-   curl -O https://raw.githubusercontent.com/dedicatedcode/paikka/main/docker-compose.yml
-   ```
+1. Create a `docker-compose.yml` file with the following content:
 
-2. Configure PAIKKA using environment variables in `.env` file or the command line:
-    ```bash
-    # Example .env file
-    ADMIN_PASSWORD=your-secure-password
-    BASE_URL=https://your-domain.com
-    MAX_RESULTS=1000
-    APP_LOG_LEVEL=DEBUG
-    ```
+```yaml
+version: '3.8'
 
-3. Create a data directory:
-   ```bash
-   mkdir -p data
-   mkdir -p stats
-   ```
-4. Start the service:
+services:
+  paikka:
+    image: dedicatedcode/paikka:latest
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "8080:8080"
+    environment:
+      - ADMIN_PASSWORD=your-password-here
+      - BASE_URL=http://localhost:8080
+    volumes:
+      - paikka-data:/data
+      - paikka-stats:/stats
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+volumes:
+  paikka-data:
+  paikka-stats:
+```
+
+2. Create a `.env` file in the same directory to configure your environment variables:
+
+```bash
+# Example .env file
+ADMIN_PASSWORD=your-secure-password
+BASE_URL=http://localhost:8080
+MAX_RESULTS=500
+DEFAULT_RESULTS=10
+MAX_IMPORT_THREADS=10
+APP_LOG_LEVEL=INFO
+```
+
+3. Start the service:
    ```bash
    docker compose up -d
    ```
 
-5. Verify the service is running:
+4. Verify the service is running:
    ```bash
    curl 'http://localhost:8080/api/v1/health'
    ```
+
+### Important: Admin Password
+The admin interface requires a password to be set via the `ADMIN_PASSWORD` environment variable. If not set, the admin endpoints will be inaccessible. Set it in your `.env` file or docker-compose configuration.
 
 ### Volume Management
 
@@ -344,65 +387,50 @@ docker compose up -d
 
 ### Configuration
 
-Configure the service using environment variables or application properties:
+Configure the service using environment variables or application properties. The Docker version uses the following Spring profile properties:
 
 ```properties
-# Server configuration
-server.port=8080
-
-# HTTP compression
-server.compression.enabled=true
-server.compression.min-response-size=1024
-server.compression.mime-types=text/plain,application/json
-
-# Static resource caching
-spring.web.resources.cache.cachecontrol.max-age=31536000
-spring.web.resources.cache.cachecontrol.cache-public=true
-spring.web.resources.chain.strategy.content.enabled=true
-spring.web.resources.chain.strategy.content.paths=/css/**,/js/**,/img/**,/fonts/**
-
-# Data directory
-paikka.data-dir=./data
+# Data directory (Docker default: /data)
+paikka.data-dir=${DATA_DIR:/data}
 
 # Import configuration
-paikka.import.threads=16
-paikka.import.s2-level=14
+paikka.import.threads=${MAX_IMPORT_THREADS:10}
 paikka.import.chunk-size=100000
 
 # Query configuration
-paikka.query.max-results=500
-paikka.query.default-results=10
-paikka.query.base-url=http://localhost:8080
+paikka.query.max-results=${MAX_RESULTS:500}
+paikka.query.default-results=${DEFAULT_RESULTS:10}
+paikka.query.base-url=${BASE_URL:http://localhost:8080}
 
-# Statistics database path
-paikka.stats-db-path=./data/stats.db
+# Statistics database path (Docker default: /stats/stats.db)
+paikka.stats-db-path=${STATS_DB_PATH:/stats/stats.db}
 
-# Admin password
-paikka.admin.password=your-secure-password
+# Admin password (required for admin interface)
+paikka.admin.password=${ADMIN_PASSWORD:}
 
 # Logging
-logging.level.com.dedicatedcode.paikka=INFO
+logging.level.com.dedicatedcode.paikka=${APP_LOG_LEVEL:INFO}
 logging.level.root=WARN
 ```
 
-| Property | Description | Default Value |
-|----------|-------------|---------------|
+| Property | Description | Default Value (Docker) |
+|----------|-------------|------------------------|
 | `server.port` | HTTP server port | `8080` |
 | `server.compression.enabled` | Enable HTTP response compression | `true` |
 | `server.compression.min-response-size` | Minimum response size to trigger compression (bytes) | `1024` |
 | `server.compression.mime-types` | MIME types to compress | `text/plain,application/json` |
 | `spring.web.resources.cache.cachecontrol.max-age` | Static resource cache max age (seconds) | `31536000` |
-| `paikka.data-dir` | Directory where processed data is stored | `./data` |
-| `paikka.import.threads` | Number of threads for data import | `16` |
-| `paikka.import.s2-level` | S2 spatial indexing level (10-15) | `14` |
+| `paikka.data-dir` | Directory where processed data is stored | `/data` |
+| `paikka.import.threads` | Number of threads for data import | `10` |
 | `paikka.import.chunk-size` | Number of elements to process per chunk | `100000` |
 | `paikka.query.max-results` | Maximum number of results returned by API | `500` |
 | `paikka.query.default-results` | Default number of results when not specified | `10` |
 | `paikka.query.base-url` | Base URL for the service (used in responses) | `http://localhost:8080` |
-| `paikka.stats-db-path` | Path to the statistics database | `./data/stats.db` |
-| `paikka.admin.password` | Password for admin interface access | _(empty)_ |
+| `paikka.stats-db-path` | Path to the statistics database | `/stats/stats.db` |
+| `paikka.admin.password` | Password for admin interface access | _(empty - admin interface disabled)_ |
 | `logging.level.com.dedicatedcode.paikka` | Application log level | `INFO` |
 | `logging.level.root` | Root log level | `WARN` |
+
 
 ### Sample Requests
 
@@ -423,7 +451,7 @@ curl 'http://localhost:8080/api/v1/geometry/12345'
 ### Web Interface
 
 - Visit `http://localhost:8080/` for the about page
-- Visit `http://localhost:8080/admin/stats` to access the admin dashboard (login required)
+- Visit `http://localhost:8080/login` to access the admin dashboard (requires `ADMIN_PASSWORD` to be set)
 
 ## Integration with Reitti
 
@@ -433,13 +461,13 @@ TBA
 
 There are multiple ways of getting support:
 
-- Create a [new issue](https://github.com/dedicatedcode/paikka/issues/new/choose) in the repository
+- Create a (https://github.com/dedicatedcode/paikka/issues/new/choose) in the repository
 - Tag me on [Lemmy](https://discuss.tchncs.de/u/danielgraf)
-- Join **#reitti** on [irc.dedicatedcode.com](https://irc.dedicatedcode.com)
+- Join **#reitti** on (https://irc.dedicatedcode.com)
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request to [repository](https://github.com/dedicatedcode/paikka).
+Contributions are welcome! Please feel free to submit a Pull Request to (https://github.com/dedicatedcode/paikka).
 
 ## Technology Stack
 
@@ -457,4 +485,4 @@ This project is licensed under the GNU Affero General Public License v3 (AGPLv3)
 
 ## About
 
-PAIKKA is developed as part of the Reitti ecosystem by [dedicatedcode](https://github.com/dedicatedcode). It provides the geocoding infrastructure that powers location-based features in Reitti.
+PAIKKA is developed as part of the Reitti ecosystem by (https://github.com/dedicatedcode). It provides the geocoding infrastructure that powers location-based features in Reitti.
