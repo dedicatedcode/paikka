@@ -89,7 +89,7 @@ public class HierarchyCache {
 
         return lastActiveBoundaries.stream()
                 .sorted(Comparator.comparingInt(b -> b.level))
-                .map(cb -> new SimpleHierarchyItem(cb.level, "administrative", cb.name, cb.osmId))
+                .map(cb -> new SimpleHierarchyItem(cb.level, "administrative", cb.name, cb.osmId, cb.code))
                 .toList();
     }
 
@@ -107,7 +107,7 @@ public class HierarchyCache {
             wkbBuf.get(wkb);
 
             IndexedPointInAreaLocator locator = new IndexedPointInAreaLocator(wkbReader.read(wkb));
-            return new CachedBoundary(b.level(), b.name(), b.osmId(), mir, mbr, locator);
+            return new CachedBoundary(b.level(), b.name(), b.code(), b.osmId(), mir, mbr, locator);
         } catch (Exception e) { return null; }
     }
 
@@ -118,7 +118,7 @@ public class HierarchyCache {
         } catch (Exception e) { return null; }
     }
 
-    public record CachedBoundary(int level, String name, long osmId, Envelope mir, Envelope mbr,
+    public record CachedBoundary(int level, String name, String code, long osmId, Envelope mir, Envelope mbr,
                                  IndexedPointInAreaLocator locator) {
         public boolean contains(double lon, double lat) {
             if (mir != null && mir.contains(lon, lat)) return true;
@@ -127,5 +127,5 @@ public class HierarchyCache {
         }
     }
 
-    public record SimpleHierarchyItem(int level, String type, String name, long osmId) {}
+    public record SimpleHierarchyItem(int level, String type, String name, long osmId, String code) {}
 }

@@ -795,7 +795,7 @@ public class ImportService {
                 sorted.sort(Comparator.comparingInt(HierarchyCache.SimpleHierarchyItem::level).reversed());
                 for (HierarchyCache.SimpleHierarchyItem item : sorted) {
                     if (city == null && item.level() >= 6 && item.level() <= 10) city = item.name();
-                    if (country == null && item.level() == 2) country = item.name();
+                    if (country == null && item.level() == 2) country = item.code();
                     if (city != null && country != null) break;
                 }
             }
@@ -879,7 +879,7 @@ public class ImportService {
         int[] hierOffs = new int[hierarchy.size()];
         for (int j = 0; j < hierarchy.size(); j++) {
             HierarchyCache.SimpleHierarchyItem h = hierarchy.get(j);
-            hierOffs[j] = com.dedicatedcode.paikka.flatbuffers.HierarchyItem.createHierarchyItem(builder, h.level(), builder.createString(h.type()), builder.createString(h.name()), h.osmId());
+            hierOffs[j] = com.dedicatedcode.paikka.flatbuffers.HierarchyItem.createHierarchyItem(builder, h.level(), builder.createString(h.type()), builder.createString(h.name()), h.osmId(), builder.createString(h.code()));
         }
         int hierVecOff = POI.createHierarchyVector(builder, hierOffs);
 
@@ -1049,9 +1049,11 @@ public class ImportService {
                 poi.hierarchy(reusableHier, j);
                 String hType = reusableHier.type();
                 String hName = reusableHier.name();
+                String hCode = reusableHier.code();
                 int hTypeOff = hType != null ? builder.createString(hType) : 0;
                 int hNameOff = hName != null ? builder.createString(hName) : 0;
-                hierOffs[j] = com.dedicatedcode.paikka.flatbuffers.HierarchyItem.createHierarchyItem(builder, reusableHier.level(), hTypeOff, hNameOff, reusableHier.osmId());
+                int hCodeOff = hCode != null ? builder.createString(hCode) : 0;
+                hierOffs[j] = com.dedicatedcode.paikka.flatbuffers.HierarchyItem.createHierarchyItem(builder, reusableHier.level(), hTypeOff, hNameOff, reusableHier.osmId(), hCodeOff);
             }
             hierVecOff = POI.createHierarchyVector(builder, hierOffs);
         } else {
@@ -1290,7 +1292,7 @@ public class ImportService {
         Coordinate center = mic.getCenter().getCoordinate();
         double offset = radius / Math.sqrt(2);
         int nameOffset = fbb.createString(name != null ? name : "Unknown");
-        int codeOffset = fbb.createString(code != null ? code : "Unknown");
+        int codeOffset = fbb.createString(code != null ? code : "");
         Boundary.startBoundary(fbb);
         Boundary.addOsmId(fbb, osmId);
         Boundary.addLevel(fbb, level);
@@ -1754,7 +1756,11 @@ public class ImportService {
     private byte[] encodeRelRec(RelRec r) {
         byte[] nameB = bytes(r.name);
         byte[] codeB = bytes(r.code);
-        int cap = 4 + nameB.length + 4 + codeB.length + 4 + 8 * (r.outer != null ? r.outer.length : 0) + 4 + 8 * (r.inner != null ? r.inner.length : 0);
+        int cap = 4                                                          // level (was missing!)
+                + 4 + nameB.length                                          // name length + data
+                + 4 + codeB.length                                          // code length + data
+                + 4 + 8 * (r.outer != null ? r.outer.length : 0)           // outer count + data
+                + 4 + 8 * (r.inner != null ? r.inner.length : 0);          // inner count + data
         ByteBuffer bb = ByteBuffer.allocate(cap);
         bb.putInt(r.level);
         putBytes(bb, nameB);
