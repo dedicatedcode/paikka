@@ -740,7 +740,7 @@ public class ImportService {
                             org.locationtech.jts.geom.Geometry geometry = buildGeometryFromRelRec(rec, nodeCache, wayIndexDb, stats);
                             if (geometry != null && geometry.isValid()) {
                                 org.locationtech.jts.geom.Geometry simplified = geometrySimplificationService.simplifyByAdminLevel(geometry, rec.level);
-                                return new BoundaryResultLite(rec.osmId, rec.level, rec.name, simplified);
+                                return new BoundaryResultLite(rec.osmId, rec.level, rec.name, rec.code, simplified);
                             }
                             return null;
                         } finally {
@@ -755,7 +755,7 @@ public class ImportService {
                         try {
                             BoundaryResultLite r = f.get();
                             if (r != null) {
-                                storeBoundary(r.osmId(), r.level(), r.name(), r.geometry(), boundariesWriter, gridsIndexDb);
+                                storeBoundary(r.osmId(), r.level(), r.name(), r.code(), r.geometry(), boundariesWriter, gridsIndexDb);
                                 stats.incrementBoundariesProcessed();
                             }
                         } catch (Exception e) {
@@ -771,7 +771,7 @@ public class ImportService {
                     Future<BoundaryResultLite> f = ecs.take();
                     BoundaryResultLite r = f.get();
                     if (r != null) {
-                        storeBoundary(r.osmId(), r.level(), r.name(), r.geometry(), boundariesWriter, gridsIndexDb);
+                        storeBoundary(r.osmId(), r.level(), r.name(), r.code(), r.geometry(), boundariesWriter, gridsIndexDb);
                         stats.incrementBoundariesProcessed();
                     }
                 } catch (Exception e) {
@@ -1279,7 +1279,7 @@ public class ImportService {
         return rings;
     }
 
-    private void storeBoundary(long osmId, int level, String name, org.locationtech.jts.geom.Geometry geometry, RocksBatchWriter boundariesWriter, RocksDB gridsIndexDb) throws Exception {
+    private void storeBoundary(long osmId, int level, String name, String code, org.locationtech.jts.geom.Geometry geometry, RocksBatchWriter boundariesWriter, RocksDB gridsIndexDb) throws Exception {
         FlatBufferBuilder fbb = new FlatBufferBuilder(1024);
         byte[] wkb = new WKBWriter().write(geometry);
         int geomDataOffset = Geometry.createDataVector(fbb, wkb);
@@ -1290,10 +1290,12 @@ public class ImportService {
         Coordinate center = mic.getCenter().getCoordinate();
         double offset = radius / Math.sqrt(2);
         int nameOffset = fbb.createString(name != null ? name : "Unknown");
+        int codeOffset = fbb.createString(code != null ? code : "Unknown");
         Boundary.startBoundary(fbb);
         Boundary.addOsmId(fbb, osmId);
         Boundary.addLevel(fbb, level);
         Boundary.addName(fbb, nameOffset);
+        Boundary.addCode(fbb, codeOffset);
         Boundary.addMinX(fbb, mbr.getMinX());
         Boundary.addMinY(fbb, mbr.getMinY());
         Boundary.addMaxX(fbb, mbr.getMaxX());
@@ -1483,7 +1485,7 @@ public class ImportService {
     private record AddressData(String street, String houseNumber, String postcode, String city, String country) {
     }
 
-    private record BoundaryResultLite(long osmId, int level, String name, org.locationtech.jts.geom.Geometry geometry) {
+    private record BoundaryResultLite(long osmId, int level, String name, String code, org.locationtech.jts.geom.Geometry geometry) {
     }
 
     private Long safeEntityId(EntityContainer container) {
@@ -1610,6 +1612,7 @@ public class ImportService {
         long osmId;
         int level;
         String name;
+        String code;
         long[] outer;
         long[] inner;
     }
@@ -1664,6 +1667,7 @@ public class ImportService {
         }
         int level = 10;
         String name = null;
+        String code = null;
         for (int i = 0; i < r.getNumberOfTags(); i++) {
             OsmTag t = r.getTag(i);
             if ("admin_level".equals(t.getKey())) {
@@ -1674,12 +1678,15 @@ public class ImportService {
                 }
             } else if ("name".equals(t.getKey())) {
                 name = t.getValue();
+            } else if ("ISO3166-1".equals(t.getKey())) {
+                code = t.getValue();
             }
         }
         RelRec rec = new RelRec();
         rec.osmId = r.getId();
         rec.level = level;
         rec.name = name;
+        rec.code = code;
         rec.outer = outer.stream().mapToLong(x -> x).toArray();
         rec.inner = inner.stream().mapToLong(x -> x).toArray();
         return rec;
@@ -1763,6 +1770,7 @@ public class ImportService {
         r.osmId = id;
         r.level = bb.getInt();
         r.name = getString(bb);
+        r.code = getString(bb);
         int oc = bb.getInt();
         r.outer = new long[oc];
         for (int i = 0; i < oc; i++) r.outer[i] = bb.getLong();
