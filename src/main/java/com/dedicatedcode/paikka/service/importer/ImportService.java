@@ -740,7 +740,7 @@ public class ImportService {
                             org.locationtech.jts.geom.Geometry geometry = buildGeometryFromRelRec(rec, nodeCache, wayIndexDb, stats);
                             if (geometry != null && geometry.isValid()) {
                                 org.locationtech.jts.geom.Geometry simplified = geometrySimplificationService.simplifyByAdminLevel(geometry, rec.level);
-                                return new BoundaryResultLite(rec.osmId, rec.level, rec.name, simplified);
+                                return new BoundaryResultLite(rec.osmId, rec.level, rec.name, rec.code, simplified);
                             }
                             return null;
                         } finally {
@@ -755,7 +755,7 @@ public class ImportService {
                         try {
                             BoundaryResultLite r = f.get();
                             if (r != null) {
-                                storeBoundary(r.osmId(), r.level(), r.name(), r.geometry(), boundariesWriter, gridsIndexDb);
+                                storeBoundary(r.osmId(), r.level(), r.name(), r.code(), r.geometry(), boundariesWriter, gridsIndexDb);
                                 stats.incrementBoundariesProcessed();
                             }
                         } catch (Exception e) {
@@ -771,7 +771,7 @@ public class ImportService {
                     Future<BoundaryResultLite> f = ecs.take();
                     BoundaryResultLite r = f.get();
                     if (r != null) {
-                        storeBoundary(r.osmId(), r.level(), r.name(), r.geometry(), boundariesWriter, gridsIndexDb);
+                        storeBoundary(r.osmId(), r.level(), r.name(), r.code(), r.geometry(), boundariesWriter, gridsIndexDb);
                         stats.incrementBoundariesProcessed();
                     }
                 } catch (Exception e) {
@@ -795,7 +795,7 @@ public class ImportService {
                 sorted.sort(Comparator.comparingInt(HierarchyCache.SimpleHierarchyItem::level).reversed());
                 for (HierarchyCache.SimpleHierarchyItem item : sorted) {
                     if (city == null && item.level() >= 6 && item.level() <= 10) city = item.name();
-                    if (country == null && item.level() == 2) country = item.name();
+                    if (country == null && item.level() == 2) country = item.code();
                     if (city != null && country != null) break;
                 }
             }
@@ -879,7 +879,7 @@ public class ImportService {
         int[] hierOffs = new int[hierarchy.size()];
         for (int j = 0; j < hierarchy.size(); j++) {
             HierarchyCache.SimpleHierarchyItem h = hierarchy.get(j);
-            hierOffs[j] = com.dedicatedcode.paikka.flatbuffers.HierarchyItem.createHierarchyItem(builder, h.level(), builder.createString(h.type()), builder.createString(h.name()), h.osmId());
+            hierOffs[j] = com.dedicatedcode.paikka.flatbuffers.HierarchyItem.createHierarchyItem(builder, h.level(), builder.createString(h.type()), builder.createString(h.name()), h.osmId(), builder.createString(h.code()));
         }
         int hierVecOff = POI.createHierarchyVector(builder, hierOffs);
 
@@ -1049,9 +1049,11 @@ public class ImportService {
                 poi.hierarchy(reusableHier, j);
                 String hType = reusableHier.type();
                 String hName = reusableHier.name();
+                String hCode = reusableHier.code();
                 int hTypeOff = hType != null ? builder.createString(hType) : 0;
                 int hNameOff = hName != null ? builder.createString(hName) : 0;
-                hierOffs[j] = com.dedicatedcode.paikka.flatbuffers.HierarchyItem.createHierarchyItem(builder, reusableHier.level(), hTypeOff, hNameOff, reusableHier.osmId());
+                int hCodeOff = hCode != null ? builder.createString(hCode) : 0;
+                hierOffs[j] = com.dedicatedcode.paikka.flatbuffers.HierarchyItem.createHierarchyItem(builder, reusableHier.level(), hTypeOff, hNameOff, reusableHier.osmId(), hCodeOff);
             }
             hierVecOff = POI.createHierarchyVector(builder, hierOffs);
         } else {
@@ -1279,7 +1281,7 @@ public class ImportService {
         return rings;
     }
 
-    private void storeBoundary(long osmId, int level, String name, org.locationtech.jts.geom.Geometry geometry, RocksBatchWriter boundariesWriter, RocksDB gridsIndexDb) throws Exception {
+    private void storeBoundary(long osmId, int level, String name, String code, org.locationtech.jts.geom.Geometry geometry, RocksBatchWriter boundariesWriter, RocksDB gridsIndexDb) throws Exception {
         FlatBufferBuilder fbb = new FlatBufferBuilder(1024);
         byte[] wkb = new WKBWriter().write(geometry);
         int geomDataOffset = Geometry.createDataVector(fbb, wkb);
@@ -1290,10 +1292,12 @@ public class ImportService {
         Coordinate center = mic.getCenter().getCoordinate();
         double offset = radius / Math.sqrt(2);
         int nameOffset = fbb.createString(name != null ? name : "Unknown");
+        int codeOffset = fbb.createString(code != null ? code : "");
         Boundary.startBoundary(fbb);
         Boundary.addOsmId(fbb, osmId);
         Boundary.addLevel(fbb, level);
         Boundary.addName(fbb, nameOffset);
+        Boundary.addCode(fbb, codeOffset);
         Boundary.addMinX(fbb, mbr.getMinX());
         Boundary.addMinY(fbb, mbr.getMinY());
         Boundary.addMaxX(fbb, mbr.getMaxX());
@@ -1483,7 +1487,7 @@ public class ImportService {
     private record AddressData(String street, String houseNumber, String postcode, String city, String country) {
     }
 
-    private record BoundaryResultLite(long osmId, int level, String name, org.locationtech.jts.geom.Geometry geometry) {
+    private record BoundaryResultLite(long osmId, int level, String name, String code, org.locationtech.jts.geom.Geometry geometry) {
     }
 
     private Long safeEntityId(EntityContainer container) {
@@ -1610,6 +1614,7 @@ public class ImportService {
         long osmId;
         int level;
         String name;
+        String code;
         long[] outer;
         long[] inner;
     }
@@ -1664,6 +1669,7 @@ public class ImportService {
         }
         int level = 10;
         String name = null;
+        String code = null;
         for (int i = 0; i < r.getNumberOfTags(); i++) {
             OsmTag t = r.getTag(i);
             if ("admin_level".equals(t.getKey())) {
@@ -1674,12 +1680,15 @@ public class ImportService {
                 }
             } else if ("name".equals(t.getKey())) {
                 name = t.getValue();
+            } else if ("ISO3166-1".equals(t.getKey())) {
+                code = t.getValue();
             }
         }
         RelRec rec = new RelRec();
         rec.osmId = r.getId();
         rec.level = level;
         rec.name = name;
+        rec.code = code;
         rec.outer = outer.stream().mapToLong(x -> x).toArray();
         rec.inner = inner.stream().mapToLong(x -> x).toArray();
         return rec;
@@ -1746,10 +1755,16 @@ public class ImportService {
 
     private byte[] encodeRelRec(RelRec r) {
         byte[] nameB = bytes(r.name);
-        int cap = 4 + nameB.length + 4 + 8 * (r.outer != null ? r.outer.length : 0) + 4 + 8 * (r.inner != null ? r.inner.length : 0) + 4;
+        byte[] codeB = bytes(r.code);
+        int cap = 4                                                          // level (was missing!)
+                + 4 + nameB.length                                          // name length + data
+                + 4 + codeB.length                                          // code length + data
+                + 4 + 8 * (r.outer != null ? r.outer.length : 0)           // outer count + data
+                + 4 + 8 * (r.inner != null ? r.inner.length : 0);          // inner count + data
         ByteBuffer bb = ByteBuffer.allocate(cap);
         bb.putInt(r.level);
         putBytes(bb, nameB);
+        putBytes(bb, codeB);
         bb.putInt(r.outer != null ? r.outer.length : 0);
         if (r.outer != null) for (long v : r.outer) bb.putLong(v);
         bb.putInt(r.inner != null ? r.inner.length : 0);
@@ -1763,6 +1778,7 @@ public class ImportService {
         r.osmId = id;
         r.level = bb.getInt();
         r.name = getString(bb);
+        r.code = getString(bb);
         int oc = bb.getInt();
         r.outer = new long[oc];
         for (int i = 0; i < oc; i++) r.outer[i] = bb.getLong();

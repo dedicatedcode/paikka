@@ -265,6 +265,7 @@ public class ReverseGeocodingService {
                     item.level(),
                     itemType != null ? itemType : "unknown",
                     itemName != null ? itemName : "Unknown",
+                    item.code(),
                     item.osmId()
                 ));
                 logger.debug("Copied hierarchy: level={}, type={}, name={}", 
@@ -388,11 +389,11 @@ public class ReverseGeocodingService {
         logger.debug("POI {} has {} hierarchy items", poi.id(), poi.hierarchy().size());
 
         for (HierarchyData item : poi.hierarchy()) {
-            logger.debug("Hierarchy: level={}, type={}, name={}, osmId={}",
-                         item.level(), item.type(), item.name(), item.osmId());
+            logger.debug("Hierarchy: level={}, type={}, name={}, osmId={}, code={}",
+                         item.level(), item.type(), item.name(), item.osmId(), item.code());
             
             String geometryUrl = buildGeometryUrl(item.osmId());
-            hierarchy.add(new POIResponse.HierarchyItem(item.level(), item.type(), item.name(), item.osmId(), geometryUrl));
+            hierarchy.add(new POIResponse.HierarchyItem(item.level(), item.type(), item.name(), item.code(), item.osmId(), geometryUrl));
         }
         response.setHierarchy(hierarchy);
         
@@ -428,7 +429,7 @@ public class ReverseGeocodingService {
     private record AddressData(String street, String houseNumber, String postcode, String city, String country) {
     }
 
-    private record HierarchyData(int level, String type, String name, long osmId) {
+    private record HierarchyData(int level, String type, String name, String code, long osmId) {
     }
 
     private record POIWithDistance(POIData poi, double distance) {

@@ -21,6 +21,7 @@ table HierarchyItem {
   type:string;     // e.g., "country", "state", "city"
   name:string;     // Localized name
   osm_id:long;     // Reference to boundary geometry
+  code:string;     // ISO3166-1 if available
 }
 
 // POI Geometry (stored as WKB bytes)

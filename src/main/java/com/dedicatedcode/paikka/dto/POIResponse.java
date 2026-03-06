@@ -111,23 +111,28 @@ public class POIResponse {
         
         @JsonProperty("osm_id")
         private long osmId;
-        
+
+        @JsonProperty("country_code")
+        private String code;
+
         @JsonProperty("geometry_url")
         private String geometryUrl;
         
         public HierarchyItem() {}
         
-        public HierarchyItem(int level, String type, String name, long osmId) {
+        public HierarchyItem(int level, String type, String name, String code, long osmId) {
             this.level = level;
             this.type = type;
             this.name = name;
+            this.code = code;
             this.osmId = osmId;
         }
         
-        public HierarchyItem(int level, String type, String name, long osmId, String geometryUrl) {
+        public HierarchyItem(int level, String type, String name, String code, long osmId, String geometryUrl) {
             this.level = level;
             this.type = type;
             this.name = name;
+            this.code = code;
             this.osmId = osmId;
             this.geometryUrl = geometryUrl;
         }
@@ -146,6 +151,9 @@ public class POIResponse {
         
         public String getGeometryUrl() { return geometryUrl; }
         public void setGeometryUrl(String geometryUrl) { this.geometryUrl = geometryUrl; }
+
+        public String getCode() {  return code; }
+        public void setCode(String code) { this.code = code; }
     }
     
     public static class QueryInfo {

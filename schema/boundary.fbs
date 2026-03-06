@@ -8,7 +8,8 @@ table Boundary {
   osm_id: long;
   level: int;
   name: string;
-  
+  code: string;
+
   // Minimum Bounding Rectangle (The "Outer" box)
   min_x: double;
   min_y: double;
