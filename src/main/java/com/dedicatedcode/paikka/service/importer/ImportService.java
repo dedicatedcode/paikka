@@ -1753,10 +1753,12 @@ public class ImportService {
 
     private byte[] encodeRelRec(RelRec r) {
         byte[] nameB = bytes(r.name);
-        int cap = 4 + nameB.length + 4 + 8 * (r.outer != null ? r.outer.length : 0) + 4 + 8 * (r.inner != null ? r.inner.length : 0) + 4;
+        byte[] codeB = bytes(r.code);
+        int cap = 4 + nameB.length + 4 + codeB.length + 4 + 8 * (r.outer != null ? r.outer.length : 0) + 4 + 8 * (r.inner != null ? r.inner.length : 0);
         ByteBuffer bb = ByteBuffer.allocate(cap);
         bb.putInt(r.level);
         putBytes(bb, nameB);
+        putBytes(bb, codeB);
         bb.putInt(r.outer != null ? r.outer.length : 0);
         if (r.outer != null) for (long v : r.outer) bb.putLong(v);
         bb.putInt(r.inner != null ? r.inner.length : 0);
