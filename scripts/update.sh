@@ -38,7 +38,6 @@ declare -A TEST_CASES=(
 REMOTE_USER=""
 REMOTE_HOST=""
 GEOCODER_API_TOKEN=""
-ZIP_FILENAME=""
 
 # ==============================================================================
 # HELPER FUNCTIONS
@@ -81,7 +80,8 @@ parse_args_and_configure() {
     echo "  Download directory: $DOWNLOAD_DIR"
     echo "  Import data directory: $IMPORT_DATA_DIR"
     echo "  Import memory: $IMPORT_MEMORY"
-    echo "  Import threads: $IMPORT_THREADS"}
+    echo "  Import threads: $IMPORT_THREADS"
+}
 
 ###
 # LOCAL: Creates the necessary working directories.
