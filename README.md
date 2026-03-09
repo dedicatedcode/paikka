@@ -126,7 +126,7 @@ The [OpenStreetMap website](https://www.openstreetmap.org/export/) allows you to
 
 | Dataset    | original | filtered... | time taken | reduction | during import | imported | time taken | reduction |
 |------------|----------|-------------|------------|-----------|---------------|----------|------------|-----------|
-| Planet     | 86 GB    | 34 GB       | 40 min     | ~60%      | ~250 GB       | ~65 GB   | ~85 h      | ~25%      |
+| Planet     | 86 GB    | 34 GB       | 40 min     | ~60%      | ~250 GB       | ~65 GB   | ~11 h      | ~25%      |
 | Germany    | 4.4 GB   | 1.8 GB      | 2 min      | ~59%      | ~14.4 GB      | 3,81 GB  | ~18 min    | ~13%      |
 | Netherland | 1.4 GB   | 394 MB      | 30 s       | ~70%      | ~2,69 GB      | 705,7 MB | ~3 min     | ~50%      |
 
@@ -137,7 +137,7 @@ The above benchmarks were performed on the following hardware:
 
 - **CPU:** AMD Ryzen 7 5825U with Radeon Graphics (8 cores, 16 threads, 4.5 GHz max)
 - **Memory:** 32 GiB system RAM
-- **Storage:** ZFS Pool on 4 HDD
+- **Storage:** pbf on ZFS Pool on 4 HDD, import folder an nvme drive
 
 **Import Command Used:**
 ```bash
@@ -156,7 +156,8 @@ thumb is to have swap space at least equal to or larger than the JVM heap size (
 
 **Storage Considerations:**
 
-A fast NVMe drive or RAID configuration significantly improves import times. The import process involves heavy random I/O operations during the RocksDB compaction phase. Slower storage can double or triple import times compared to fast NVMe storage.
+A fast NVMe drive or RAID configuration significantly improves import times. The import process involves heavy random I/O operations during the RocksDB compaction phase. Slower storage can double or triple import times compared to fast NVMe storage. 
+Or put in other words, a Planet-PBF import took 85h on my system when having everything on the ZFS Pool. When putting the import folder on a NVME drive, the whole import took around 11h. 
 
 </details>
 
