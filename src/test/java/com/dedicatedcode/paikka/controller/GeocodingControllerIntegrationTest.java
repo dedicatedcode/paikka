@@ -17,25 +17,20 @@
 package com.dedicatedcode.paikka.controller;
 
 import com.dedicatedcode.paikka.IntegrationTest;
+import com.dedicatedcode.paikka.TestHelper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
-import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 
-import java.io.BufferedInputStream;
 import java.io.IOException;
-import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Comparator;
 import java.util.stream.Stream;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipInputStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
@@ -54,27 +49,7 @@ class GeocodingControllerIntegrationTest {
 
     @BeforeEach
     void setupDataAndRefresh() throws Exception {
-        // Clear the dataDirectory before we copy
-        if (Files.exists(dataDirectory)) {
-            try (Stream<Path> walk = Files.walk(dataDirectory)) {
-                walk.sorted(Comparator.reverseOrder())
-                    .forEach(path -> {
-                        try {
-                            Files.delete(path);
-                        } catch (IOException e) {
-                            throw new RuntimeException("Failed to delete " + path, e);
-                        }
-                    });
-            }
-        }
-        Files.createDirectories(dataDirectory);
-
-        Path zipPath = Paths.get("src/test/resources/data-monaco.zip");
-        if (!Files.exists(zipPath)) {
-            throw new IllegalStateException("Test resource data-monaco.zip not found at " + zipPath.toAbsolutePath());
-        }
-        extractZip(zipPath, dataDirectory);
-        System.out.println("Extracted data-monaco.zip to: " + dataDirectory.toAbsolutePath());
+        TestHelper.unpack(dataDirectory, "data-monaco.zip");
 
         // Perform admin refresh using MockMvc
         mockMvc.perform(post("/admin/refresh-db").header("X-Admin-Token", "test")
@@ -83,29 +58,6 @@ class GeocodingControllerIntegrationTest {
                 .andExpect(jsonPath("$.success").value(true))
                 .andReturn();
 
-    }
-
-    private static void extractZip(Path zipFilePath, Path destinationDir) throws IOException {
-        try (InputStream fi = Files.newInputStream(zipFilePath);
-             BufferedInputStream bi = new BufferedInputStream(fi);
-             ZipInputStream zip = new ZipInputStream(bi)) {
-
-            ZipEntry entry;
-            while ((entry = zip.getNextEntry()) != null) {
-                Path file = destinationDir.resolve(entry.getName()).normalize();
-                if (!file.startsWith(destinationDir)) {
-                    // Security check: prevent path traversal
-                    throw new IOException("Bad entry: " + entry.getName());
-                }
-                if (entry.isDirectory()) {
-                    Files.createDirectories(file);
-                } else {
-                    Files.createDirectories(file.getParent());
-                    Files.copy(zip, file);
-                }
-                zip.closeEntry();
-            }
-        }
     }
 
     @Test
