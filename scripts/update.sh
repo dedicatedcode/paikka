@@ -13,7 +13,7 @@ LOCAL_WORK_DIR="$(pwd)" # Use the current directory as the working directory.
 PBF_INPUT_FILE="planet-latest.osm.pbf"
 PBF_FILTERED_FILE="planet-filtered.pbf"
 IMPORT_DIR="import"
-DOCKER_IMAGE="dedicatedcode/paikka:develop"
+DOCKER_IMAGE="dedicatedcode/paikka:latest"
 
 DOWNLOAD_DIR="${DOWNLOAD_DIR:-$LOCAL_WORK_DIR}"
 IMPORT_DATA_DIR="${IMPORT_DATA_DIR:-$LOCAL_WORK_DIR/$IMPORT_DIR}"
@@ -115,15 +115,14 @@ local_pull_docker_image() {
 ###
 local_filter_pbf() {
     log "LOCAL: Filtering PBF file (approx. 50 mins)"
-    cd "$DOWNLOAD_DIR"
-    sudo docker run --rm -ti -v "$DOWNLOAD_DIR":/data "$DOCKER_IMAGE" prepare "$PBF_INPUT_FILE" "$PBF_FILTERED_FILE"
+    sudo docker run --rm -v "$DOWNLOAD_DIR":/data "$DOCKER_IMAGE" prepare "/data/$PBF_INPUT_FILE" "/data/$PBF_FILTERED_FILE"
 }
 
 ###
 # LOCAL: Creates the geocoder import bundle from the filtered PBF.
 ###
 local_create_import_bundle() {
-    log "LOCAL: Creating import bundle (approx. 15 hours) with $IMPORT_MEMORY memory and $IMPORT_THREADS threads"
+    log "LOCAL: Creating import bundle with $IMPORT_MEMORY memory and $IMPORT_THREADS threads"
         sudo docker run --rm -ti -v "$DOWNLOAD_DIR":/download -v "$IMPORT_DATA_DIR":/import "$DOCKER_IMAGE" import \
           --memory "$IMPORT_MEMORY" \
           --threads "$IMPORT_THREADS" \
