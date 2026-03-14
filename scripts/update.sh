@@ -27,13 +27,6 @@ REMOTE_BASE_DIR="/opt/paikka/data"
 GEOCODER_ADMIN_URL="http://localhost:8080/admin/refresh-db"
 GEOCODER_TEST_URL_BASE="http://localhost:8080/v1/reverse"
 
-# --- Verification Test Cases ---
-declare -A TEST_CASES=(
-  ["lat=52.516280&lon=13.377635"]="518071791" # Brandenburger Tor
-  ["lat=48.85826&lon=2.2945008"]="5013364"    # Eiffel Tower
-  ["lat=40.68924&lon=-74.044502"]="32965412"  # Statue of Liberty
-)
-
 # Global variables that will be set by parse_args_and_configure or environment
 REMOTE_USER=""
 REMOTE_HOST=""
@@ -166,23 +159,15 @@ remote_sync_bundle() {
 remote_deploy_and_verify() {
     log "REMOTE: Executing remote deployment (Atomic Swap)"
 
-    # Convert TEST_CASES to a format that can be passed to remote shell
-    local test_cases_str=""
-    for key in "${!TEST_CASES}"; do
-        test_cases_str+="[\"$key\"]=\"${TEST_CASES[$key]}\" "
-    done
-
+    # shellcheck disable=SC2087
     ssh "${REMOTE_USER}@${REMOTE_HOST}" /bin/bash << EOF
   set -e
-  BASE_DIR="${REMOTE_BASE_DIR}"
+  BASE_DIR="/opt/paikka/data"
   API_TOKEN="${GEOCODER_API_TOKEN}"
-  ADMIN_URL="${GEOCODER_ADMIN_URL}"
-  TEST_URL_BASE="${GEOCODER_TEST_URL_BASE}"
+  ADMIN_URL="http://localhost:8080/admin/refresh-db"
+  TEST_URL_BASE="http://localhost:8080/api/v1/reverse"
   NEW_RELEASE_DIR="releases/${LATEST_RELEASE_DIR_NAME}"
   LIVE_DATA_SYMLINK="live_data"
-
-  # Define TESTS array on remote side
-  declare -A TESTS=($test_cases_str)
 
   echo_remote() {
     echo "[REMOTE] \$1"
@@ -191,13 +176,13 @@ remote_deploy_and_verify() {
   cd "\$BASE_DIR"
 
   OLD_RELEASE_DIR=""
-  [ -L "\$LIVE_DATA_SYMLINK" ] && OLD_RELEASE_DIR=\$(readlink \$LIVE_DATA_SYMLINK)
+  [ -L "\$LIVE_DATA_SYMLINK" ] && OLD_RELEASE_DIR=\$(readlink "\$LIVE_DATA_SYMLINK")
 
   echo_remote "Switching symlink: \$LIVE_DATA_SYMLINK -> \$NEW_RELEASE_DIR"
   ln -sfn "\$NEW_RELEASE_DIR" "\$LIVE_DATA_SYMLINK"
 
   echo_remote "Refreshing Geocoder DB..."
-  HTTP_STATUS=\$(curl -s -o /dev/null -w "%{http_code}" -X POST -H "X-Admin-Token: \$API_TOKEN" "\$ADMIN_URL")
+  HTTP_STATUS=\$(curl -s -o /dev/null -w "%{http_code}" --max-time 300 -X POST -H "X-Admin-Token: \$API_TOKEN" "\$ADMIN_URL")
 
   if [ "\$HTTP_STATUS" -ne 200 ]; then
       echo_remote "ERROR: Refresh failed (\$HTTP_STATUS). Rolling back."
@@ -205,25 +190,42 @@ remote_deploy_and_verify() {
       exit 1
   fi
 
+  echo_remote "Refresh completed successfully"
+
   # --- 2. Verify ---
   echo_remote "Verifying new data..."
   VERIFICATION_FAILED=0
-  for query in "\${!TESTS}"; do
-    ACTUAL_ID=\$(curl -s "\$TEST_URL_BASE?\$query" | jq -r '.[0].id // "not_found"')
-    if [ "\$ACTUAL_ID" != "\${TESTS[\$query]}" ]; then
-      echo_remote "  --> FAILED: For \$query, expected '\${TESTS[\$query]}', got '\$ACTUAL_ID'"
+
+  QUERIES[0]="lat=52.516280&lon=13.377635"
+  QUERIES[1]="lat=48.85826&lon=2.2945008"
+  QUERIES[2]="lat=40.68924&lon=-74.044502"
+
+  EXPECTED_IDS[0]="518071791"
+  EXPECTED_IDS[1]="5013364"
+  EXPECTED_IDS[2]="32965412"
+
+  # Get the number of elements
+  NUM_TESTS=3
+
+  for ((i=0; i<NUM_TESTS; i++)); do
+    query="\${QUERIES[\$i]}"
+    expected_id="\${EXPECTED_IDS[\$i]}"
+    echo_remote "Testing URL: \$TEST_URL_BASE?\$query"
+    ACTUAL_ID=\$(curl -s --max-time 30 "\$TEST_URL_BASE?\$query" | jq -r '.results[0].id // "not_found"')
+    echo_remote "Got ID: \$ACTUAL_ID, Expected: \$expected_id"
+    if [ "\$ACTUAL_ID" != "\$expected_id" ]; then
+      echo_remote "  --> FAILED: For \$query, expected '\$expected_id', got '\$ACTUAL_ID'"
       VERIFICATION_FAILED=1
     else
       echo_remote "  --> SUCCESS: Verified query for \$query"
     fi
   done
-
   # --- 3. Finalize or Rollback ---
   if [ \$VERIFICATION_FAILED -eq 1 ]; then
     echo_remote "VERIFICATION FAILED. Rolling back and re-refreshing."
     if [ -n "\$OLD_RELEASE_DIR" ] && [ -d "\$OLD_RELEASE_DIR" ]; then
       ln -sfn "\$OLD_RELEASE_DIR" "\$LIVE_DATA_SYMLINK"
-      curl -s -o /dev/null -X POST -H "X-Admin-Token: \$API_TOKEN" "\$ADMIN_URL"
+      curl -s -o /dev/null --max-time 300 -X POST -H "X-Admin-Token: \$API_TOKEN" "\$ADMIN_URL"
       echo_remote "Rollback to \$OLD_RELEASE_DIR complete. Faulty data in \$NEW_RELEASE_DIR is kept for inspection."
       exit 1
     else

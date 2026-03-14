@@ -107,13 +107,14 @@ class ImportStatistics {
     private volatile long tmpGridBytes;
     private volatile long tmpNodeBytes;
     private volatile long tmpWayBytes;
+    private volatile long tmpBoundaryWayBytes;
     private volatile long tmpNeededBytes;
     private volatile long tmpRelBytes;
     private volatile long tmpPoiBytes;
     private volatile long tmpTotalBytes;
     private volatile long tmpAppendBytes;
 
-    private final int TOTAL_STEPS = 5;
+    private final int TOTAL_STEPS = 6;
     private int currentStep = 0;
 
     public long getEntitiesRead() {
@@ -324,6 +325,14 @@ class ImportStatistics {
         this.tmpWayBytes = v;
     }
 
+    public long getTmpBoundaryWayBytes() {
+        return tmpBoundaryWayBytes;
+    }
+
+    public void setTmpBoundaryWayBytes(long v) {
+        this.tmpBoundaryWayBytes = v;
+    }
+
     public long getTmpNeededBytes() {
         return tmpNeededBytes;
     }
@@ -418,7 +427,7 @@ class ImportStatistics {
                 // Add step indicator
                 sb.append(String.format("\033[1;90m[%d/%d]\033[0m ", currentStep, TOTAL_STEPS));
 
-                if (phase.contains("1.1.1")) {
+                if (phase.contains("1.1.1") || phase.contains("1.1.2")) {
                     long pbfPerSec = phaseSeconds > 0 ? (long)(getEntitiesRead() / phaseSeconds) : 0;
                     sb.append(String.format("\033[1;36m[%s]\033[0m \033[1mScanning PBF Structure\033[0m", formatTime(elapsed)));
                     sb.append(String.format(" │ \033[32mPBF Entities:\033[0m %s \033[33m(%s/s)\033[0m",
@@ -427,7 +436,7 @@ class ImportStatistics {
                     sb.append(String.format(" │ \033[34mWays Found:\033[0m %s", formatCompactNumber(getWaysProcessed())));
                     sb.append(String.format(" │ \033[35mRelations:\033[0m %s", formatCompactNumber(getRelationsFound())));
 
-                } else if (phase.contains("1.1.2")) {
+                } else if (phase.contains("1.1.3")) {
                     long nodesPerSec = phaseSeconds > 0 ? (long)(getNodesCached() / phaseSeconds) : 0;
                     sb.append(String.format("\033[1;36m[%s]\033[0m \033[1mCaching Node Coordinates\033[0m", formatTime(elapsed)));
                     sb.append(String.format(" │ \033[32mNodes Cached:\033[0m %s \033[33m(%s/s)\033[0m",
@@ -476,7 +485,7 @@ class ImportStatistics {
                 }
 
                 try {
-                    Thread.sleep(isTty ? 1000 : 5000);
+                    Thread.sleep(1000);
                 } catch (InterruptedException e) {
                     break;
                 }
@@ -530,13 +539,14 @@ class ImportStatistics {
         System.out.println("  • boundaries:  " + formatSize(getBoundariesBytes()));
 
         System.out.println("\n\033[1;37m🧹 Temporary DBs:\033[0m " + formatSize(getTmpTotalBytes()));
-        System.out.println("  • grid_index:  " + formatSize(getTmpGridBytes()));
-        System.out.println("  • node_cache:  " + formatSize(getTmpNodeBytes()));
-        System.out.println("  • way_index:   " + formatSize(getTmpWayBytes()));
-        System.out.println("  • needed_nodes:" + formatSize(getTmpNeededBytes()));
-        System.out.println("  • rel_index:   " + formatSize(getTmpRelBytes()));
-        System.out.println("  • poi_index:   " + formatSize(getTmpPoiBytes()));
-        System.out.println("  • append_index:   " + formatSize(getTmpAppendBytes()));
+        System.out.println("  • grid_index:         " + formatSize(getTmpGridBytes()));
+        System.out.println("  • node_cache:         " + formatSize(getTmpNodeBytes()));
+        System.out.println("  • way_index:          " + formatSize(getTmpWayBytes()));
+        System.out.println("  • boundary_way_index: " + formatSize(getTmpBoundaryWayBytes()));
+        System.out.println("  • needed_nodes:       " + formatSize(getTmpNeededBytes()));
+        System.out.println("  • rel_index:          " + formatSize(getTmpRelBytes()));
+        System.out.println("  • poi_index:          " + formatSize(getTmpPoiBytes()));
+        System.out.println("  • append_index:       " + formatSize(getTmpAppendBytes()));
         System.out.println();
     }
 

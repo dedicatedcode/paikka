@@ -56,9 +56,6 @@ public class POIResponse {
     @JsonProperty("boundary")
     private GeoJsonGeometry boundary;
     
-    @JsonProperty("query")
-    private QueryInfo query;
-    
     // Constructors
     public POIResponse() {}
     
@@ -95,9 +92,6 @@ public class POIResponse {
     
     public GeoJsonGeometry getBoundary() { return boundary; }
     public void setBoundary(GeoJsonGeometry boundary) { this.boundary = boundary; }
-    
-    public QueryInfo getQuery() { return query; }
-    public void setQuery(QueryInfo query) { this.query = query; }
     
     public static class HierarchyItem {
         @JsonProperty("level")
@@ -155,32 +149,5 @@ public class POIResponse {
         public String getCode() {  return code; }
         public void setCode(String code) { this.code = code; }
     }
-    
-    public static class QueryInfo {
-        @JsonProperty("lat")
-        private double lat;
-        
-        @JsonProperty("lon")
-        private double lon;
-        
-        @JsonProperty("lang")
-        private String lang;
-        
-        public QueryInfo() {}
-        
-        public QueryInfo(double lat, double lon, String lang) {
-            this.lat = lat;
-            this.lon = lon;
-            this.lang = lang;
-        }
-        
-        public double getLat() { return lat; }
-        public void setLat(double lat) { this.lat = lat; }
-        
-        public double getLon() { return lon; }
-        public void setLon(double lon) { this.lon = lon; }
-        
-        public String getLang() { return lang; }
-        public void setLang(String lang) { this.lang = lang; }
-    }
+
 }

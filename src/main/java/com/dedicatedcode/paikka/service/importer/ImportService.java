@@ -105,6 +105,7 @@ public class ImportService {
         Path appendDbPath = dataDirectory.resolve("tmp/append_poi");
         Path nodeCacheDbPath = dataDirectory.resolve("tmp/node_cache");
         Path wayIndexDbPath = dataDirectory.resolve("tmp/way_index");
+        Path boundaryWayIndexDbPath = dataDirectory.resolve("tmp/boundary_way_index");
         Path neededNodesDbPath = dataDirectory.resolve("tmp/needed_nodes");
         Path relIndexDbPath = dataDirectory.resolve("tmp/rel_index");
         Path poiIndexDbPath = dataDirectory.resolve("tmp/poi_index");
@@ -114,6 +115,7 @@ public class ImportService {
         cleanupDatabase(gridIndexDbPath);
         cleanupDatabase(nodeCacheDbPath);
         cleanupDatabase(wayIndexDbPath);
+        cleanupDatabase(boundaryWayIndexDbPath);
         cleanupDatabase(neededNodesDbPath);
         cleanupDatabase(relIndexDbPath);
         cleanupDatabase(poiIndexDbPath);
@@ -185,6 +187,7 @@ public class ImportService {
                  RocksDB gridIndexDb = RocksDB.open(gridOpts, gridIndexDbPath.toString());
                  RocksDB nodeCache = RocksDB.open(nodeOpts, nodeCacheDbPath.toString());
                  RocksDB wayIndexDb = RocksDB.open(wayIndexOpts, wayIndexDbPath.toString());
+                 RocksDB neededBoundaryWaysDb = RocksDB.open(wayIndexOpts, boundaryWayIndexDbPath.toString());
                  RocksDB neededNodesDb = RocksDB.open(neededNodesOpts, neededNodesDbPath.toString());
                  RocksDB relIndexDb = RocksDB.open(wayIndexOpts, relIndexDbPath.toString());
                  RocksDB poiIndexDb = RocksDB.open(poiIndexOpts, poiIndexDbPath.toString());
@@ -194,21 +197,23 @@ public class ImportService {
                 stats.printPhaseHeader("PASS 1: Discovery & Indexing");
                 long pass1Start = System.currentTimeMillis();
                 stats.setCurrentPhase(1, "1.1.1: Discovery & Indexing");
-                pass1DiscoveryAndIndexing(pbfFile, wayIndexDb, neededNodesDb, relIndexDb, poiIndexDb, stats);
+                pass1DiscoveryAndIndexing(pbfFile, wayIndexDb, neededBoundaryWaysDb, neededNodesDb, relIndexDb, poiIndexDb, stats);
+                stats.setCurrentPhase(2, "1.1.2: Indexing boundary member ways");
+                indexBoundaryMemberWays(pbfFile, neededBoundaryWaysDb, wayIndexDb, neededNodesDb, stats);
                 stats.printPhaseSummary("PASS 1", pass1Start);
 
                 // PASS 2: Nodes Cache, Boundaries, POIs
                 stats.printPhaseHeader("PASS 2: Nodes Cache, Boundaries, POIs");
                 long pass2Start = System.currentTimeMillis();
-                stats.setCurrentPhase(2, "1.1.2: Caching node coordinates");
+                stats.setCurrentPhase(3, "1.1.3: Caching node coordinates");
                 cacheNeededNodeCoordinates(pbfFile, neededNodesDb, nodeCache, stats);
 
-                stats.setCurrentPhase(3, "1.2: Processing administrative boundaries");
+                stats.setCurrentPhase(4, "1.2: Processing administrative boundaries");
                 processAdministrativeBoundariesFromIndex(relIndexDb, nodeCache, wayIndexDb, gridIndexDb, boundariesDb, stats);
-                stats.setCurrentPhase(4, "2.1: Processing POIs & Sharding");
+                stats.setCurrentPhase(5, "2.1: Processing POIs & Sharding");
                 pass2PoiShardingFromIndex(nodeCache, wayIndexDb, appendDb, boundariesDb, poiIndexDb, gridIndexDb, stats);
 
-                stats.setCurrentPhase(5, "2.2: Compacting POIs");
+                stats.setCurrentPhase(6, "2.2: Compacting POIs");
                 compactShards(appendDb, shardsDb, stats);
                 stats.stop();
                 stats.printPhaseSummary("PASS 2", pass2Start);
@@ -226,6 +231,7 @@ public class ImportService {
                                   gridIndexDbPath,
                                   nodeCacheDbPath,
                                   wayIndexDbPath,
+                                  boundaryWayIndexDbPath,
                                   neededNodesDbPath,
                                   relIndexDbPath,
                                   poiIndexDbPath,
@@ -264,6 +270,43 @@ public class ImportService {
         System.out.println("\n\033[1;32mMetadata file written to: " + metadataPath + "\033[0m");
     }
 
+    private void indexBoundaryMemberWays(Path pbfFile,
+                                         RocksDB neededBoundaryWaysDb,
+                                         RocksDB wayIndexDb,
+                                         RocksDB neededNodesDb,
+                                         ImportStatistics stats) throws Exception {
+        final byte[] ONE = new byte[]{1};
+        try (RocksBatchWriter wayWriter = new RocksBatchWriter(wayIndexDb, 10_000, stats);
+             RocksBatchWriter neededWriter = new RocksBatchWriter(neededNodesDb, 500_000, stats)) {
+
+            withPbfIterator(pbfFile, iterator -> {
+
+                while (iterator.hasNext()) {
+                    EntityContainer container = iterator.next();
+                    if (container.getType() != EntityType.Way) continue;
+
+                    OsmWay way = (OsmWay) container.getEntity();
+                    byte[] wayKey = s2Helper.longToByteArray(way.getId());
+
+                    // Only process ways that are needed AND not already indexed
+                    if (neededBoundaryWaysDb.get(wayKey) == null) continue;
+                    if (wayIndexDb.get(wayKey) != null) { continue; }
+                    int n = way.getNumberOfNodes();
+                    long[] nodeIds = new long[n];
+                    for (int j = 0; j < n; j++) {
+                        long nid = way.getNodeId(j);
+                        nodeIds[j] = nid;
+                        neededWriter.put(s2Helper.longToByteArray(nid), ONE);
+                    }
+                    wayWriter.put(wayKey, s2Helper.longArrayToByteArray(nodeIds));
+                    stats.incrementWaysProcessed();
+                }
+            });
+
+            wayWriter.flush();
+            neededWriter.flush();
+        }
+    }
 
     private void updateGridIndexEntry(RocksDB gridIndexDb, long cellId, long osmId) throws Exception {
         byte[] key = s2Helper.longToByteArray(cellId);
@@ -282,10 +325,11 @@ public class ImportService {
         }
     }
 
-    private void pass1DiscoveryAndIndexing(Path pbfFile, RocksDB wayIndexDb, RocksDB neededNodesDb, RocksDB relIndexDb, RocksDB poiIndexDb, ImportStatistics stats) throws Exception {
+    private void pass1DiscoveryAndIndexing(Path pbfFile, RocksDB wayIndexDb, RocksDB boundaryWayIndexDb, RocksDB neededNodesDb, RocksDB relIndexDb, RocksDB poiIndexDb, ImportStatistics stats) throws Exception {
 
         final byte[] ONE = new byte[]{1};
         try (RocksBatchWriter wayWriter = new RocksBatchWriter(wayIndexDb, 10_000, stats);
+             RocksBatchWriter boundaryWayWriter = new RocksBatchWriter(boundaryWayIndexDb, 10_000, stats);
              RocksBatchWriter neededWriter = new RocksBatchWriter(neededNodesDb, 500_000, stats);
              RocksBatchWriter relWriter = new RocksBatchWriter(relIndexDb, 2_000, stats);
              RocksBatchWriter poiWriter = new RocksBatchWriter(poiIndexDb, 20_000, stats)) {
@@ -336,6 +380,13 @@ public class ImportService {
                                 stats.incrementRelationsFound();
                                 RelRec rec = buildRelRec(relation);
                                 relWriter.put(s2Helper.longToByteArray(relation.getId()), encodeRelRec(rec));
+                                for (long wid : rec.outer) {
+                                    boundaryWayWriter.put(s2Helper.longToByteArray(wid), ONE);
+                                }
+                                for (long wid : rec.inner) {
+                                    boundaryWayWriter.put(s2Helper.longToByteArray(wid), ONE);
+                                }
+
                             }
                         }
                     } catch (Exception e) {
@@ -1447,7 +1498,17 @@ public class ImportService {
         }
     }
 
-    private void recordSizeMetrics(ImportStatistics stats, Path shardsDbPath, Path boundariesDbPath, Path gridIndexDbPath, Path nodeCacheDbPath, Path wayIndexDbPath, Path neededNodesDbPath, Path relIndexDbPath, Path poiIndexDbPath, Path appendDbPath) {
+    private void recordSizeMetrics(ImportStatistics stats,
+                                   Path shardsDbPath,
+                                   Path boundariesDbPath,
+                                   Path gridIndexDbPath,
+                                   Path nodeCacheDbPath,
+                                   Path wayIndexDbPath,
+                                   Path boundaryWayIndexDbPath,
+                                   Path neededNodesDbPath,
+                                   Path relIndexDbPath,
+                                   Path poiIndexDbPath,
+                                   Path appendDbPath) {
         long shards = computeDirectorySize(shardsDbPath);
         long boundaries = computeDirectorySize(boundariesDbPath);
         long dataset = shards + boundaries;
@@ -1455,11 +1516,12 @@ public class ImportService {
         long grid = computeDirectorySize(gridIndexDbPath);
         long node = computeDirectorySize(nodeCacheDbPath);
         long way = computeDirectorySize(wayIndexDbPath);
+        long boundaryWay = computeDirectorySize(boundaryWayIndexDbPath);
         long needed = computeDirectorySize(neededNodesDbPath);
         long rel = computeDirectorySize(relIndexDbPath);
         long poi = computeDirectorySize(poiIndexDbPath);
         long append = computeDirectorySize(appendDbPath);
-        long tmpTotal = grid + node + way + needed + rel + poi + append;
+        long tmpTotal = grid + node + way + boundaryWay + needed + rel + poi + append;
 
         stats.setShardsBytes(shards);
         stats.setBoundariesBytes(boundaries);
@@ -1468,6 +1530,7 @@ public class ImportService {
         stats.setTmpGridBytes(grid);
         stats.setTmpNodeBytes(node);
         stats.setTmpWayBytes(way);
+        stats.setTmpBoundaryWayBytes(boundaryWay);
         stats.setTmpNeededBytes(needed);
         stats.setTmpRelBytes(rel);
         stats.setTmpPoiBytes(poi);
