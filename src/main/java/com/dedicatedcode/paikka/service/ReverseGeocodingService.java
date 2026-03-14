@@ -415,9 +415,6 @@ public class ReverseGeocodingService {
             }
         }
         
-        // Query information
-        response.setQuery(new POIResponse.QueryInfo(queryLat, queryLon, lang));
-        
         return response;
     }
     
