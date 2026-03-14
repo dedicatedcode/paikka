@@ -123,7 +123,9 @@ public class HierarchyCache {
         public boolean contains(double lon, double lat) {
             if (mir != null && mir.contains(lon, lat)) return true;
             if (!mbr.contains(lon, lat)) return false;
-            return locator.locate(new Coordinate(lon, lat)) != Location.EXTERIOR;
+            synchronized (this) {
+                return locator.locate(new Coordinate(lon, lat)) != Location.EXTERIOR;
+            }
         }
     }
 

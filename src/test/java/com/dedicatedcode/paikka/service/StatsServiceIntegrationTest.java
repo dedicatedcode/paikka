@@ -38,6 +38,7 @@ class StatsServiceIntegrationTest {
 
     @BeforeEach
     void setUp() {
+        statsService.flushPendingStats();
         statsService.clearDatabase();
     }
     @Test
