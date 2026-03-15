@@ -789,16 +789,38 @@ public class ImportService {
                     ecs.submit(() -> {
                         try {
                             org.locationtech.jts.geom.Geometry geometry = buildGeometryFromRelRec(rec, nodeCache, wayIndexDb, stats);
-                            if (geometry != null && geometry.isValid()) {
-                                org.locationtech.jts.geom.Geometry simplified = geometrySimplificationService.simplifyByAdminLevel(geometry, rec.level);
-                                return new BoundaryResultLite(rec.osmId, rec.level, rec.name, rec.code, simplified);
+                            if (geometry == null) return null;
+
+                            if (!geometry.isValid()) {
+                                try {
+                                    geometry = geometry.buffer(0);
+                                } catch (Exception e) {
+                                    return null;
+                                }
                             }
-                            return null;
+                            if (geometry == null || geometry.isEmpty() || !geometry.isValid()) return null;
+
+                            org.locationtech.jts.geom.Geometry simplified = geometrySimplificationService.simplifyByAdminLevel(geometry, rec.level);
+
+                            // Simplification can produce invalid results too
+                            if (simplified == null || simplified.isEmpty() || !simplified.isValid()) {
+                                try {
+                                    simplified = simplified != null ? simplified.buffer(0) : null;
+                                } catch (Exception e) {
+                                    simplified = geometry; // fall back to unsimplified
+                                }
+                            }
+                            if (simplified == null || simplified.isEmpty() || !simplified.isValid()) {
+                                simplified = geometry; // fall back to unsimplified
+                            }
+
+                            return new BoundaryResultLite(rec.osmId, rec.level, rec.name, rec.code, simplified);
                         } finally {
                             semaphore.release();
                             stats.decrementActiveThreads();
                         }
                     });
+                    ;
                     submitted.incrementAndGet();
 
                     for (Future<BoundaryResultLite> f; (f = ecs.poll()) != null; ) {
@@ -955,7 +977,7 @@ public class ImportService {
     }
 
 
-    private void compactShards(RocksDB appendDb, RocksDB shardsDb, ImportStatistics stats) throws Exception {
+    private void compactShards(RocksDB appendDb, RocksDB shardsDb, ImportStatistics stats) {
         stats.setCompactionStartTime(System.currentTimeMillis());
         stats.setCompactionEntriesTotal(sequence.get());
 
@@ -1009,7 +1031,7 @@ public class ImportService {
      * Takes all raw FlatBuffer chunks for a single shard, reads each chunk's POIs,
      * copies them into a fresh FlatBufferBuilder, and writes the merged result.
      */
-    private void flushCompactedShard(List<byte[]> chunks, long shardId, RocksDB shardsDb, WriteOptions writeOptions, POI reusablePoi, Name reusableName, HierarchyItem reusableHier, Address reusableAddr, Geometry reusableGeom, ImportStatistics stats) throws Exception {
+    private void flushCompactedShard(List<byte[]> chunks, long shardId, RocksDB shardsDb, WriteOptions writeOptions, POI reusablePoi, Name reusableName, HierarchyItem reusableHier, Address reusableAddr, Geometry reusableGeom, ImportStatistics stats) {
 
         // Count total POIs first
         int totalPois = 0;
@@ -1160,7 +1182,23 @@ public class ImportService {
                         stats.recordError(ImportStatistics.Stage.PROCESSING_ADMIN_BOUNDARIES, Kind.READ, rec.osmId, "rocks-get:way_index", e);
                     }
                 Polygon polygon = GEOMETRY_FACTORY.createPolygon(shell, holes.toArray(new LinearRing[0]));
-                if (polygon.isValid()) validPolygons.add(polygon);
+                if (polygon.isValid()) {
+                    validPolygons.add(polygon);
+                } else {
+                    try {
+                        org.locationtech.jts.geom.Geometry repaired = polygon.buffer(0);
+                        if (repaired != null && repaired.isValid() && !repaired.isEmpty()) {
+                            for (int i = 0; i < repaired.getNumGeometries(); i++) {
+                                org.locationtech.jts.geom.Geometry part = repaired.getGeometryN(i);
+                                if (part instanceof Polygon && part.isValid()) {
+                                    validPolygons.add((Polygon) part);
+                                }
+                            }
+                        }
+                    } catch (Exception repairEx) {
+                        stats.recordError(ImportStatistics.Stage.PROCESSING_ADMIN_BOUNDARIES, Kind.GEOMETRY, rec.osmId, "repair-polygon", repairEx);
+                    }
+                }
             } catch (Exception e) {
                 stats.recordError(ImportStatistics.Stage.PROCESSING_ADMIN_BOUNDARIES, Kind.GEOMETRY, null, "build-boundary-geometry", e);
             }
@@ -1332,16 +1370,33 @@ public class ImportService {
         return rings;
     }
 
-    private void storeBoundary(long osmId, int level, String name, String code, org.locationtech.jts.geom.Geometry geometry, RocksBatchWriter boundariesWriter, RocksDB gridsIndexDb) throws Exception {
+    private void storeBoundary(long osmId, int level, String name, String code,
+                               org.locationtech.jts.geom.Geometry geometry,
+                               RocksBatchWriter boundariesWriter, RocksDB gridsIndexDb) throws Exception {
         FlatBufferBuilder fbb = new FlatBufferBuilder(1024);
         byte[] wkb = new WKBWriter().write(geometry);
         int geomDataOffset = Geometry.createDataVector(fbb, wkb);
         int geomOffset = Geometry.createGeometry(fbb, geomDataOffset);
         Envelope mbr = geometry.getEnvelopeInternal();
-        MaximumInscribedCircle mic = new MaximumInscribedCircle(geometry, 0.00001);
-        double radius = mic.getRadiusLine().getLength();
-        Coordinate center = mic.getCenter().getCoordinate();
-        double offset = radius / Math.sqrt(2);
+
+        double mirMinX = 0, mirMinY = 0, mirMaxX = 0, mirMaxY = 0;
+        boolean hasMir = false;
+        try {
+            MaximumInscribedCircle mic = new MaximumInscribedCircle(geometry, 0.00001);
+            double radius = mic.getRadiusLine().getLength();
+            if (radius > 0) {
+                Coordinate center = mic.getCenter().getCoordinate();
+                double offset = radius / Math.sqrt(2);
+                mirMinX = center.x - offset;
+                mirMinY = center.y - offset;
+                mirMaxX = center.x + offset;
+                mirMaxY = center.y + offset;
+                hasMir = true;
+            }
+        } catch (Exception e) {
+            // MIR computation failed — boundary still works, just no fast-path optimisation
+        }
+
         int nameOffset = fbb.createString(name != null ? name : "Unknown");
         int codeOffset = fbb.createString(code != null ? code : "");
         Boundary.startBoundary(fbb);
@@ -1353,11 +1408,11 @@ public class ImportService {
         Boundary.addMinY(fbb, mbr.getMinY());
         Boundary.addMaxX(fbb, mbr.getMaxX());
         Boundary.addMaxY(fbb, mbr.getMaxY());
-        if (radius > 0) {
-            Boundary.addMirMinX(fbb, center.x - offset);
-            Boundary.addMirMinY(fbb, center.y - offset);
-            Boundary.addMirMaxX(fbb, center.x + offset);
-            Boundary.addMirMaxY(fbb, center.y + offset);
+        if (hasMir) {
+            Boundary.addMirMinX(fbb, mirMinX);
+            Boundary.addMirMinY(fbb, mirMinY);
+            Boundary.addMirMaxX(fbb, mirMaxX);
+            Boundary.addMirMaxY(fbb, mirMaxY);
         }
         Boundary.addGeometry(fbb, geomOffset);
         int root = Boundary.endBoundary(fbb);
@@ -1366,12 +1421,64 @@ public class ImportService {
         S2LatLng low = S2LatLng.fromDegrees(mbr.getMinY(), mbr.getMinX());
         S2LatLng high = S2LatLng.fromDegrees(mbr.getMaxY(), mbr.getMaxX());
         S2LatLngRect rect = S2LatLngRect.fromPointPair(low, high);
-        S2RegionCoverer coverer = S2RegionCoverer.builder().setMinLevel(S2Helper.GRID_LEVEL).setMaxLevel(S2Helper.GRID_LEVEL).build();
+        S2RegionCoverer coverer = S2RegionCoverer.builder()
+                .setMinLevel(S2Helper.GRID_LEVEL)
+                .setMaxLevel(S2Helper.GRID_LEVEL)
+                .setMaxCells(Integer.MAX_VALUE)
+                .build();
         ArrayList<S2CellId> covering = new ArrayList<>();
         coverer.getCovering(rect, covering);
-        for (S2CellId cellId : covering) updateGridIndexEntry(gridsIndexDb, cellId.id(), osmId);
+
+        // Batched grid index update instead of per-cell synchronized writes
+        batchUpdateGridIndex(gridsIndexDb, covering, osmId);
 
         boundariesWriter.put(s2Helper.longToByteArray(osmId), fbb.sizedByteArray());
+    }
+
+    /**
+     * Registers a boundary in the grid index for all covered cells.
+     * Uses chunked multiGet + WriteBatch for much better throughput than
+     * the previous per-cell synchronized approach.
+     */
+    private void batchUpdateGridIndex(RocksDB gridIndexDb, ArrayList<S2CellId> cells, long osmId) throws RocksDBException {
+        final int CHUNK_SIZE = 5_000;
+        for (int offset = 0; offset < cells.size(); offset += CHUNK_SIZE) {
+            int end = Math.min(offset + CHUNK_SIZE, cells.size());
+
+            List<byte[]> keys = new ArrayList<>(end - offset);
+            for (int i = offset; i < end; i++) {
+                keys.add(s2Helper.longToByteArray(cells.get(i).id()));
+            }
+
+            synchronized (this) {
+                List<byte[]> existing = gridIndexDb.multiGetAsList(keys);
+
+                try (WriteBatch batch = new WriteBatch();
+                     WriteOptions wo = new WriteOptions().setDisableWAL(true)) {
+                    for (int i = 0; i < keys.size(); i++) {
+                        byte[] ex = existing.get(i);
+                        long[] newArray;
+                        if (ex == null) {
+                            newArray = new long[]{osmId};
+                        } else {
+                            long[] old = s2Helper.byteArrayToLongArray(ex);
+                            boolean found = false;
+                            for (long id : old) {
+                                if (id == osmId) {
+                                    found = true;
+                                    break;
+                                }
+                            }
+                            if (found) continue;
+                            newArray = Arrays.copyOf(old, old.length + 1);
+                            newArray[old.length] = osmId;
+                        }
+                        batch.put(keys.get(i), s2Helper.longArrayToByteArray(newArray));
+                    }
+                    gridIndexDb.write(wo, batch);
+                }
+            }
+        }
     }
 
     private void withPbfIterator(Path pbfFile, ConsumerWithException<OsmIterator> consumer) throws Exception {
@@ -1463,7 +1570,7 @@ public class ImportService {
     private void cleanupDatabase(Path dbPath) {
         if (Files.exists(dbPath)) {
             try {
-                Files.walk(dbPath).sorted((a, b) -> b.compareTo(a)).forEach(path -> {
+                Files.walk(dbPath).sorted(Comparator.reverseOrder()).forEach(path -> {
                     try {
                         Files.delete(path);
                     } catch (IOException e) {
@@ -1735,16 +1842,19 @@ public class ImportService {
         String code = null;
         for (int i = 0; i < r.getNumberOfTags(); i++) {
             OsmTag t = r.getTag(i);
-            if ("admin_level".equals(t.getKey())) {
-                try {
-                    level = Integer.parseInt(t.getValue());
-                } catch (NumberFormatException ignore) {
-                    level = 10;
+            switch (t.getKey()) {
+                case "admin_level" -> {
+                    try {
+                        level = Integer.parseInt(t.getValue());
+                    } catch (NumberFormatException ignore) {
+                        level = 10;
+                    }
                 }
-            } else if ("name".equals(t.getKey())) {
-                name = t.getValue();
-            } else if ("ISO3166-1".equals(t.getKey())) {
-                code = t.getValue();
+                case "name" -> name = t.getValue();
+                case "ISO3166-1" -> code = t.getValue();
+                case "ISO3166-1:alpha2" -> {
+                    if (code == null) code = t.getValue();
+                }
             }
         }
         RelRec rec = new RelRec();
@@ -1819,11 +1929,11 @@ public class ImportService {
     private byte[] encodeRelRec(RelRec r) {
         byte[] nameB = bytes(r.name);
         byte[] codeB = bytes(r.code);
-        int cap = 4                                                          // level (was missing!)
-                + 4 + nameB.length                                          // name length + data
-                + 4 + codeB.length                                          // code length + data
-                + 4 + 8 * (r.outer != null ? r.outer.length : 0)           // outer count + data
-                + 4 + 8 * (r.inner != null ? r.inner.length : 0);          // inner count + data
+        int cap = 4
+                + 4 + nameB.length
+                + 4 + codeB.length
+                + 4 + 8 * (r.outer != null ? r.outer.length : 0)
+                + 4 + 8 * (r.inner != null ? r.inner.length : 0);
         ByteBuffer bb = ByteBuffer.allocate(cap);
         bb.putInt(r.level);
         putBytes(bb, nameB);

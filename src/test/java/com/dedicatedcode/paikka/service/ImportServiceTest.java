@@ -18,10 +18,7 @@ package com.dedicatedcode.paikka.service;
 
 import com.dedicatedcode.paikka.IntegrationTest;
 import com.dedicatedcode.paikka.config.PaikkaConfiguration;
-import com.dedicatedcode.paikka.flatbuffers.Address;
-import com.dedicatedcode.paikka.flatbuffers.Name;
-import com.dedicatedcode.paikka.flatbuffers.POI;
-import com.dedicatedcode.paikka.flatbuffers.POIList;
+import com.dedicatedcode.paikka.flatbuffers.*;
 import com.dedicatedcode.paikka.service.importer.GeometrySimplificationService;
 import com.dedicatedcode.paikka.service.importer.ImportService;
 import org.junit.jupiter.api.AfterEach;
@@ -215,7 +212,7 @@ class ImportServiceTest {
         POI poiById = findPoiById(tempDataDir, 432751852);
         assertEquals(1, poiById.namesLength(), "POI should have no");
         assertEquals("Jardin des Boulingrins", poiById.names(0).text(), "POI should have no");
-        assertEquals(3, poiById.hierarchyLength());
+        assertEquals(6, poiById.hierarchyLength());
     }
 
     @Test
