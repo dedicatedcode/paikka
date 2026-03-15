@@ -427,7 +427,16 @@ class ImportStatistics {
                 // Add step indicator
                 sb.append(String.format("\033[1;90m[%d/%d]\033[0m ", currentStep, TOTAL_STEPS));
 
-                if (phase.contains("1.1.1") || phase.contains("1.1.2")) {
+                if (phase.contains("1.1.1")) {
+                    long pbfPerSec = phaseSeconds > 0 ? (long)(getEntitiesRead() / phaseSeconds) : 0;
+                    sb.append(String.format("\033[1;36m[%s]\033[0m \033[1mScanning PBF Structure\033[0m", formatTime(elapsed)));
+                    sb.append(String.format(" │ \033[32mPBF Entities:\033[0m %s \033[33m(%s/s)\033[0m",
+                                            formatCompactNumber(getEntitiesRead()), formatCompactRate(pbfPerSec)));
+                    sb.append(String.format(" │ \033[37mNodes Found:\033[0m %s", formatCompactNumber(getNodesFound())));
+                    sb.append(String.format(" │ \033[34mWays Found:\033[0m %s", formatCompactNumber(getWaysProcessed())));
+                    sb.append(String.format(" │ \033[35mRelations:\033[0m %s", formatCompactNumber(getRelationsFound())));
+
+                } else  if (phase.contains("1.1.2")) {
                     long pbfPerSec = phaseSeconds > 0 ? (long)(getEntitiesRead() / phaseSeconds) : 0;
                     sb.append(String.format("\033[1;36m[%s]\033[0m \033[1mScanning PBF Structure\033[0m", formatTime(elapsed)));
                     sb.append(String.format(" │ \033[32mPBF Entities:\033[0m %s \033[33m(%s/s)\033[0m",
@@ -454,9 +463,13 @@ class ImportStatistics {
                 } else if (phase.contains("2.1")) {
                     long poisPerSec = phaseSeconds > 0 ? (long)(getPoisProcessed() / phaseSeconds) : 0;
                     long poisReadSec = phaseSeconds > 0 ? (long)(getPoiIndexRecRead() / phaseSeconds) : 0;
+                    long totalFromPhase1 = getNodesFound() + getWaysProcessed();
+                    double percentage = totalFromPhase1 > 0 ? (double) getPoisProcessed() / totalFromPhase1 * 100.0 : 0.0;
+
                     sb.append(String.format("\033[1;36m[%s]\033[0m \033[1mProcessing POIs & Sharding\033[0m", formatTime(elapsed)));
                     sb.append(String.format(" │ \033[32mPOI Index Rec Read:\033[0m %s \033[33m%s\033[0m", formatCompactNumber(getPoiIndexRecRead()), isPoiIndexRecReadDone() ? "(done)" : String.format("(%s/s)",formatCompactRate(poisReadSec))));
                     sb.append(String.format(" │ \033[32mPOIs Processed:\033[0m %s \033[33m(%s/s)\033[0m", formatCompactNumber(getPoisProcessed()), formatCompactRate(poisPerSec)));
+                    sb.append(String.format(" │ \033[35mProgress:\033[0m %.4f%%", percentage));
                     sb.append(String.format(" │ \033[36mQueue:\033[0m %s", formatCompactNumber(getQueueSize())));
                     sb.append(String.format(" │ \033[37mThreads:\033[0m %d", getActiveThreads()));
 
