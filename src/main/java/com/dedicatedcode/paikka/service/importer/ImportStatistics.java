@@ -89,6 +89,9 @@ class ImportStatistics {
     private final AtomicLong rocksDbWrites = new AtomicLong(0);
     private final AtomicLong queueSize = new AtomicLong(0);
     private final AtomicLong activeThreads = new AtomicLong(0);
+    private final AtomicLong boundaryWaysProcessed = new AtomicLong(0);
+    private final AtomicLong boundaryPhaseEntitiesRead = new AtomicLong(0);
+
     private volatile String currentPhase = "Initializing";
     private volatile boolean running = true;
     private final long startTime = System.currentTimeMillis();
@@ -96,8 +99,6 @@ class ImportStatistics {
     private long totalTime;
     private final AtomicLong compactionEntriesTotal = new AtomicLong(0);
     private final AtomicLong compactionEntriesProcessed = new AtomicLong(0);
-
-
 
     private volatile long compactionStartTime = 0;
 
@@ -217,6 +218,25 @@ class ImportStatistics {
         activeThreads.decrementAndGet();
     }
 
+    public long getBoundaryWaysProcessed() {
+        return boundaryWaysProcessed.get();
+    }
+
+    public void incrementBoundaryWaysProcessed() {
+        boundaryWaysProcessed.incrementAndGet();
+    }
+
+    public long getBoundaryPhaseEntitiesRead() {
+        return boundaryPhaseEntitiesRead.get();
+    }
+
+    public void incrementBoundaryPhaseEntitiesRead() {
+        boundaryPhaseEntitiesRead.incrementAndGet();
+    }
+
+    public void resetBoundaryPhaseEntitiesRead() {
+        boundaryPhaseEntitiesRead.set(0);
+    }
     public String getCurrentPhase() {
         return currentPhase;
     }
@@ -437,12 +457,12 @@ class ImportStatistics {
                     sb.append(String.format(" │ \033[35mRelations:\033[0m %s", formatCompactNumber(getRelationsFound())));
 
                 } else  if (phase.contains("1.1.2")) {
-                    long pbfPerSec = phaseSeconds > 0 ? (long)(getEntitiesRead() / phaseSeconds) : 0;
-                    sb.append(String.format("\033[1;36m[%s]\033[0m \033[1mScanning PBF Structure\033[0m", formatTime(elapsed)));
+                    long boundaryEntities = getBoundaryPhaseEntitiesRead();
+                    long pbfPerSec = phaseSeconds > 0 ? (long)(boundaryEntities / phaseSeconds) : 0;
+                    sb.append(String.format("\033[1;36m[%s]\033[0m \033[1mIndexing Boundary Member Ways\033[0m", formatTime(elapsed)));
                     sb.append(String.format(" │ \033[32mPBF Entities:\033[0m %s \033[33m(%s/s)\033[0m",
-                                            formatCompactNumber(getEntitiesRead()), formatCompactRate(pbfPerSec)));
-                    sb.append(String.format(" │ \033[37mNodes Found:\033[0m %s", formatCompactNumber(getNodesFound())));
-                    sb.append(String.format(" │ \033[34mWays Found:\033[0m %s", formatCompactNumber(getWaysProcessed())));
+                                            formatCompactNumber(boundaryEntities), formatCompactRate(pbfPerSec)));
+                    sb.append(String.format(" │ \033[34mBoundary Ways:\033[0m %s", formatCompactNumber(getBoundaryWaysProcessed())));
                     sb.append(String.format(" │ \033[35mRelations:\033[0m %s", formatCompactNumber(getRelationsFound())));
 
                 } else if (phase.contains("1.1.3")) {

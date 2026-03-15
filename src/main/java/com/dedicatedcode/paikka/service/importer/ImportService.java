@@ -275,6 +275,7 @@ public class ImportService {
                                          RocksDB wayIndexDb,
                                          RocksDB neededNodesDb,
                                          ImportStatistics stats) throws Exception {
+        stats.resetBoundaryPhaseEntitiesRead();
         final byte[] ONE = new byte[]{1};
         try (RocksBatchWriter wayWriter = new RocksBatchWriter(wayIndexDb, 10_000, stats);
              RocksBatchWriter neededWriter = new RocksBatchWriter(neededNodesDb, 500_000, stats)) {
@@ -283,6 +284,7 @@ public class ImportService {
 
                 while (iterator.hasNext()) {
                     EntityContainer container = iterator.next();
+                    stats.incrementBoundaryPhaseEntitiesRead();
                     if (container.getType() != EntityType.Way) continue;
 
                     OsmWay way = (OsmWay) container.getEntity();
@@ -299,29 +301,12 @@ public class ImportService {
                         neededWriter.put(s2Helper.longToByteArray(nid), ONE);
                     }
                     wayWriter.put(wayKey, s2Helper.longArrayToByteArray(nodeIds));
-                    stats.incrementWaysProcessed();
+                    stats.incrementBoundaryWaysProcessed();
                 }
             });
 
             wayWriter.flush();
             neededWriter.flush();
-        }
-    }
-
-    private void updateGridIndexEntry(RocksDB gridIndexDb, long cellId, long osmId) throws Exception {
-        byte[] key = s2Helper.longToByteArray(cellId);
-        synchronized (this) {
-            byte[] existingData = gridIndexDb.get(key);
-            long[] newArray;
-            if (existingData == null) {
-                newArray = new long[]{osmId};
-            } else {
-                long[] oldArray = s2Helper.byteArrayToLongArray(existingData);
-                if (Arrays.stream(oldArray).anyMatch(id -> id == osmId)) return;
-                newArray = Arrays.copyOf(oldArray, oldArray.length + 1);
-                newArray[oldArray.length] = osmId;
-            }
-            gridIndexDb.put(key, s2Helper.longArrayToByteArray(newArray));
         }
     }
 
@@ -1394,7 +1379,7 @@ public class ImportService {
                 hasMir = true;
             }
         } catch (Exception e) {
-            // MIR computation failed — boundary still works, just no fast-path optimisation
+            // MIR computation failed — boundary still works, just no fast-path optimization
         }
 
         int nameOffset = fbb.createString(name != null ? name : "Unknown");
