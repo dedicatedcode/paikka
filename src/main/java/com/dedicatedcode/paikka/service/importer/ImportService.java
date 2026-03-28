@@ -856,89 +856,81 @@ public class ImportService {
     }
 
     private void processBuildingBoundariesFromIndex(RocksDB poiIndexDb, RocksDB nodeCache, RocksDB wayIndexDb, RocksDB buildingGridIndexDb, RocksDB buildingsDb, ImportStatistics stats) throws Exception {
-        int maxConcurrentGeometries = 100;
-        Semaphore semaphore = new Semaphore(maxConcurrentGeometries);
-
+        int batchSize = 1000; // Process buildings in batches to reduce overhead
         int numThreads = Math.max(1, config.getImportConfiguration().getThreads());
         ExecutorService executor = createExecutorService(numThreads);
-        ExecutorCompletionService<BoundaryResultLite> ecs = new ExecutorCompletionService<>(executor);
-        AtomicInteger submitted = new AtomicInteger(0);
-        AtomicLong collected = new AtomicLong(0);
-
-        try (RocksBatchWriter buildingsWriter = new RocksBatchWriter(buildingsDb, 10_000, stats)) {
-            try (RocksIterator it = poiIndexDb.newIterator()) {
-                it.seekToFirst();
-                while (it.isValid()) {
-                    byte[] key = it.key();
-                    if (key[0] != 'W') { // Buildings must be ways
-                        it.next();
-                        continue;
-                    }
-
+        ExecutorCompletionService<List<BoundaryResultLite>> ecs = new ExecutorCompletionService<>(executor);
+        
+        List<Long> buildingIds = new ArrayList<>();
+        List<PoiIndexRec> buildingRecs = new ArrayList<>();
+        
+        // First, collect all building IDs and their records
+        try (RocksIterator it = poiIndexDb.newIterator()) {
+            it.seekToFirst();
+            while (it.isValid()) {
+                byte[] key = it.key();
+                if (key[0] == 'W') { // Buildings must be ways
                     byte[] val = it.value();
                     final PoiIndexRec rec = decodePoiIndexRec(val);
-                    if (!"building".equals(rec.type)) {
-                        it.next();
-                        continue;
+                    if ("building".equals(rec.type)) {
+                        final long wayId = bytesToLong(key, 1);
+                        buildingIds.add(wayId);
+                        buildingRecs.add(rec);
                     }
-                    final long wayId = bytesToLong(key, 1);
-
-                    semaphore.acquire();
-                    stats.incrementActiveThreads();
-                    ecs.submit(() -> {
-                        try {
-                            org.locationtech.jts.geom.Geometry geometry = buildGeometryFromWay(wayId, nodeCache, wayIndexDb, stats);
-                            if (geometry == null) return null;
-                            if (!geometry.isValid()) {
-                                try {
-                                    geometry = geometry.buffer(0);
-                                } catch (Exception e) {
-                                    return null;
-                                }
-                            }
-                            if (geometry == null || geometry.isEmpty() || !geometry.isValid()) return null;
-
-                            // name=subtype (e.g., "residential"), code=null, level=100 (for hierarchy)
-                            return new BoundaryResultLite(wayId, 100, rec.subtype, null, geometry);
-                        } finally {
-                            semaphore.release();
-                            stats.decrementActiveThreads();
-                        }
-                    });
-
-                    submitted.incrementAndGet();
-
-                    for (Future<BoundaryResultLite> f; (f = ecs.poll()) != null;) {
-                        collected.incrementAndGet();
-                        try {
-                            BoundaryResultLite r = f.get();
-                            if (r != null) {
-                                // Re-use the same storage logic as administrative boundaries
-                                storeBoundary(r.osmId(), r.level(), r.name(), r.code(), r.geometry(), buildingsWriter, buildingGridIndexDb);
-                                stats.incrementBuildingsProcessed();
-                            }
-                        } catch (Exception e) {
-                            stats.recordError(ImportStatistics.Stage.PROCESSING_BUILDINGS, Kind.CONCURRENCY, null, "building-future-poll", e);
-                        }
-                    }
-                    it.next();
                 }
+                it.next();
             }
-            long remaining = submitted.get() - collected.get();
-            for (int i = 0; i < remaining; i++) {
-                try {
-                    Future<BoundaryResultLite> f = ecs.take();
-                    BoundaryResultLite r = f.get();
-                    if (r != null) {
-                        storeBoundary(r.osmId(), r.level(), r.name(), r.code(), r.geometry(), buildingsWriter, buildingGridIndexDb);
-                        stats.incrementBuildingsProcessed();
+        }
+        
+        stats.setTotalBuildingsToProcess(buildingIds.size());
+        
+        // Process in batches
+        int submitted = 0;
+        for (int start = 0; start < buildingIds.size(); start += batchSize) {
+            int end = Math.min(start + batchSize, buildingIds.size());
+            List<Long> batchIds = buildingIds.subList(start, end);
+            List<PoiIndexRec> batchRecs = buildingRecs.subList(start, end);
+            
+            final int batchStart = start;
+            ecs.submit(() -> {
+                List<BoundaryResultLite> results = new ArrayList<>();
+                for (int i = 0; i < batchIds.size(); i++) {
+                    long wayId = batchIds.get(i);
+                    PoiIndexRec rec = batchRecs.get(i);
+                    try {
+                        org.locationtech.jts.geom.Geometry geometry = buildGeometryFromWay(wayId, nodeCache, wayIndexDb, stats);
+                        if (geometry == null) continue;
+                        if (!geometry.isValid()) {
+                            try {
+                                geometry = geometry.buffer(0);
+                            } catch (Exception e) {
+                                continue;
+                            }
+                        }
+                        if (geometry == null || geometry.isEmpty() || !geometry.isValid()) continue;
+                        
+                        results.add(new BoundaryResultLite(wayId, 100, rec.subtype, null, geometry));
+                    } catch (Exception e) {
+                        stats.recordError(ImportStatistics.Stage.PROCESSING_BUILDINGS, Kind.GEOMETRY, wayId, "build-building-geometry-batch", e);
                     }
-                } catch (Exception e) {
-                    stats.recordError(ImportStatistics.Stage.PROCESSING_BUILDINGS, Kind.CONCURRENCY, null, "building-future-take", e);
                 }
+                return results;
+            });
+            submitted++;
+        }
+        
+        try (RocksBatchWriter buildingsWriter = new RocksBatchWriter(buildingsDb, 10_000, stats)) {
+            int completed = 0;
+            while (completed < submitted) {
+                Future<List<BoundaryResultLite>> future = ecs.take();
+                List<BoundaryResultLite> batchResults = future.get();
+                for (BoundaryResultLite r : batchResults) {
+                    storeBoundary(r.osmId(), r.level(), r.name(), r.code(), r.geometry(), buildingsWriter, buildingGridIndexDb);
+                    stats.incrementBuildingsProcessed();
+                }
+                completed++;
             }
             buildingsWriter.flush();
-
         } finally {
             executor.shutdown();
             executor.awaitTermination(30, TimeUnit.MINUTES);
@@ -1395,6 +1387,14 @@ public class ImportService {
                 case "building":
                     isInterestingBuilding = true;
                     break;
+
+                case "natural":
+                    // Filter out natural features that are not useful as POIs
+                    return switch (val) {
+                        case "tree", "wood", "scrub", "heath", "grassland", "fell",
+                             "bare_rock", "scree", "shingle", "sand", "mud" -> false;
+                        default -> true;
+                    };
 
                 case "shop", "tourism", "leisure", "office", "craft", "place",
                      "historic", "public_transport", "aeroway":
