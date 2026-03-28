@@ -882,8 +882,6 @@ public class ImportService {
             }
         }
         
-        stats.setTotalBuildingsToProcess(buildingIds.size());
-        
         // Process in batches
         int submitted = 0;
         for (int start = 0; start < buildingIds.size(); start += batchSize) {
@@ -891,7 +889,6 @@ public class ImportService {
             List<Long> batchIds = buildingIds.subList(start, end);
             List<PoiIndexRec> batchRecs = buildingRecs.subList(start, end);
             
-            final int batchStart = start;
             ecs.submit(() -> {
                 List<BoundaryResultLite> results = new ArrayList<>();
                 for (int i = 0; i < batchIds.size(); i++) {
