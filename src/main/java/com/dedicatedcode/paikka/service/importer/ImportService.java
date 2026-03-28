@@ -67,6 +67,8 @@ public class ImportService {
     private final PaikkaConfiguration config;
 
     private final Map<String, String> tagCache = new ConcurrentHashMap<>(1000);
+    private final Map<Long, Long> nodeToBuildingWayCache = new ConcurrentHashMap<>();
+
     private final int fileReadWindowSize;
 
     private final AtomicLong sequence = new AtomicLong(0);
@@ -327,7 +329,9 @@ public class ImportService {
                     try {
                         if (type == EntityType.Node) {
                             OsmNode node = (OsmNode) container.getEntity();
-                            if (isPoi(node)) {
+                            boolean isAddressNode = hasAddressTags(node);
+
+                            if (isPoi(node) || isAddressNode) {
                                 PoiIndexRec rec = buildPoiIndexRecFromEntity(node);
                                 rec.lat = node.getLatitude();
                                 rec.lon = node.getLongitude();
@@ -335,12 +339,17 @@ public class ImportService {
                                 poiWriter.put(key, encodePoiIndexRec(rec));
                                 neededWriter.put(s2Helper.longToByteArray(node.getId()), ONE);
                                 stats.incrementNodesFound();
+                                if (isAddressNode) {
+                                    stats.incrementAddressNodesFound();
+                                }
                             }
 
                         } else if (type == EntityType.Way) {
                             OsmWay way = (OsmWay) container.getEntity();
                             boolean isPoi = isPoi(way);
                             boolean isAdmin = isAdministrativeBoundaryWay(way);
+                            boolean isBuilding = isBuildingWay(way);
+
                             if (isPoi || isAdmin) {
                                 stats.incrementWaysProcessed();
                                 int n = way.getNumberOfNodes();
@@ -349,16 +358,21 @@ public class ImportService {
                                     long nid = way.getNodeId(j);
                                     nodeIds[j] = nid;
                                     neededWriter.put(s2Helper.longToByteArray(nid), ONE);
+
+                                    // Cache node-to-building-way mapping for address resolution
+                                    if (isPoi && isBuilding) {
+                                        nodeToBuildingWayCache.put(nid, way.getId());
+                                    }
                                 }
-                                wayWriter.put(s2Helper.longToByteArray(way.getId()), s2Helper.longArrayToByteArray(nodeIds));
+                                wayWriter.put(s2Helper.longToByteArray(way.getId()),
+                                              s2Helper.longArrayToByteArray(nodeIds));
+
                                 if (isPoi) {
                                     PoiIndexRec rec = buildPoiIndexRecFromEntity(way);
-                                    // lat/lon remain NaN for ways — resolved in Pass 2 reader
                                     byte[] key = buildPoiKey((byte) 'W', way.getId());
                                     poiWriter.put(key, encodePoiIndexRec(rec));
                                 }
                             }
-
                         } else if (type == EntityType.Relation) {
                             OsmRelation relation = (OsmRelation) container.getEntity();
                             if (isAdministrativeBoundary(relation)) {
@@ -453,6 +467,18 @@ public class ImportService {
                                 rec.kind = kind;
                                 rec.id = id;
 
+                                if (kind == 'N' && "address".equals(rec.type)) {
+                                    Long buildingWayId = nodeToBuildingWayCache.get(id);
+                                    if (buildingWayId != null) {
+                                        byte[] wayPoiBytes = poiIndexDb.get(buildPoiKey((byte) 'W', buildingWayId));
+                                        if (wayPoiBytes != null) {
+                                            PoiIndexRec wayRec = decodePoiIndexRec(wayPoiBytes);
+                                            rec.type = wayRec.type;
+                                            rec.subtype = wayRec.subtype;
+                                            stats.incrementAddressNodesWithBuildingType();
+                                        }
+                                    }
+                                }
                                 // For way POIs, lat/lon is NaN — resolve from nodeCache/wayIndexDb
                                 byte[] cacheWayNodes = null;
                                 if (Double.isNaN(rec.lat) && kind == 'W') {
@@ -867,6 +893,30 @@ public class ImportService {
         return tagCache.computeIfAbsent(s, k -> k);
     }
 
+    private boolean hasAddressTags(OsmEntity entity) {
+        for (int i = 0; i < entity.getNumberOfTags(); i++) {
+            if (entity.getTag(i).getKey().startsWith("addr:")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean isBuildingWay(OsmWay way) {
+        for (int i = 0; i < way.getNumberOfTags(); i++) {
+            OsmTag tag = way.getTag(i);
+            if ("building".equals(tag.getKey())) {
+                String val = tag.getValue();
+                return switch (val) {
+                    case "yes", "commercial", "retail", "industrial",
+                         "office", "apartments", "residential" -> true;
+                    default -> false;
+                };
+            }
+        }
+        return false;
+    }
+
     private void writeShardBatchAppendOnly(Map<Long, List<PoiData>> shardBuffer, RocksDB appendDb, ImportStatistics stats) throws Exception {
         FlatBufferBuilder builder = new FlatBufferBuilder(1024 * 32);
 
@@ -1244,32 +1294,27 @@ public class ImportService {
             switch (key) {
                 case "amenity":
                     return switch (val) {
-                        case "bench", "drinking_water", "waste_basket", "bicycle_parking", "vending_machine",
-                             "parking_entrance", "fire_hydrant" -> false;
-
+                        case "bench", "drinking_water", "waste_basket", "bicycle_parking",
+                             "vending_machine", "parking_entrance", "fire_hydrant" -> false;
                         default -> true;
                     };
 
                 case "healthcare":
                     return true;
+
                 case "emergency":
                     return switch (val) {
-                        case "fire_hydrant", "defibrillator", "fire_extinguisher", "siren", "life_ring", "lifeline",
-                             "phone", "drinking_water" -> false;
+                        case "fire_hydrant", "defibrillator", "fire_extinguisher",
+                             "siren", "life_ring", "lifeline", "phone", "drinking_water" -> false;
                         default -> true;
                     };
+
                 case "building":
-                    if (switch (val) {
-                        case "yes", "commercial", "retail", "industrial", "office", "apartments" -> true;
-                        default -> false;
-                    }) {
-                        isInterestingBuilding = true;
-                    }
+                    isInterestingBuilding = true;
                     break;
 
-                case "shop", "tourism", "leisure", "office", "craft", "place", "historic", "public_transport",
-                     "aeroway":
-                    // Exclude the specific sub-leisure types you mentioned earlier
+                case "shop", "tourism", "leisure", "office", "craft", "place",
+                     "historic", "public_transport", "aeroway":
                     return !key.equals("leisure") || !List.of("picnic_table", "swimming_pool").contains(val);
 
                 case "railway":
@@ -1277,7 +1322,6 @@ public class ImportService {
                     break;
 
                 default:
-                    // If it's any other key in your fast-key list (like 'natural'), allow it
                     if (isPoiFastKey(key)) return true;
             }
         }
@@ -1778,20 +1822,39 @@ public class ImportService {
         PoiIndexRec rec = new PoiIndexRec();
         rec.type = "unknown";
         rec.subtype = "";
+
+        boolean hasPoiType = false;
+        boolean hasAddressTags = false;
+
         for (int i = 0; i < e.getNumberOfTags(); i++) {
             OsmTag t = e.getTag(i);
-            if (isPoiFastKey(t.getKey())) {
+            String k = t.getKey();
+
+            if (isPoiFastKey(k)) {
                 rec.type = intern(t.getKey());
                 rec.subtype = intern(t.getValue());
-                break;
+                hasPoiType = true;
+            }
+
+            if (k.startsWith("addr:")) {
+                hasAddressTags = true;
             }
         }
+
+        if (hasAddressTags && !hasPoiType) {
+            rec.type = "address";
+            rec.subtype = "node";
+        }
+
+        // Second pass: collect names and address details
         List<NameData> names = new ArrayList<>();
         Set<String> dedup = new HashSet<>();
+
         for (int i = 0; i < e.getNumberOfTags(); i++) {
             OsmTag t = e.getTag(i);
             String k = t.getKey(), v = t.getValue();
             if (v == null || v.trim().isEmpty()) continue;
+
             if ("name".equals(k)) {
                 if (dedup.add("default:" + v)) names.add(new NameData("default", v));
             } else if (k.startsWith("name:")) {
@@ -1807,6 +1870,7 @@ public class ImportService {
                 }
             }
         }
+
         rec.names = names;
         return rec;
     }

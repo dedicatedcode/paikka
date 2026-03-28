@@ -70,6 +70,7 @@ osmium tags-filter "$INPUT_FILE" \
   w/building=yes,commercial,retail,industrial,office,apartments,residential \
   r/boundary=administrative \
   r/type=multipolygon \
+  n/addr:* \
   -o "$OUTPUT_FILE" --overwrite
 
 if [ $? -eq 0 ]; then

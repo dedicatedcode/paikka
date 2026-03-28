@@ -91,6 +91,8 @@ class ImportStatistics {
     private final AtomicLong activeThreads = new AtomicLong(0);
     private final AtomicLong boundaryWaysProcessed = new AtomicLong(0);
     private final AtomicLong boundaryPhaseEntitiesRead = new AtomicLong(0);
+    private AtomicLong addressNodesFound = new AtomicLong(0);
+    private AtomicLong addressNodesWithBuildingType = new AtomicLong(0);
 
     private volatile String currentPhase = "Initializing";
     private volatile boolean running = true;
@@ -234,6 +236,13 @@ class ImportStatistics {
         boundaryPhaseEntitiesRead.incrementAndGet();
     }
 
+    public void incrementAddressNodesFound() {
+        addressNodesFound.incrementAndGet();
+    }
+
+    public void incrementAddressNodesWithBuildingType() {
+        addressNodesWithBuildingType.incrementAndGet();
+    }
     public void resetBoundaryPhaseEntitiesRead() {
         boundaryPhaseEntitiesRead.set(0);
     }
