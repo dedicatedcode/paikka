@@ -19,6 +19,7 @@ package com.dedicatedcode.paikka.controller;
 import com.dedicatedcode.paikka.service.ReverseGeocodingService;
 import com.dedicatedcode.paikka.service.BoundaryService;
 import com.dedicatedcode.paikka.service.MetadataService;
+import com.dedicatedcode.paikka.service.BuildingService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -44,11 +45,16 @@ public class AdminController {
     private final ReverseGeocodingService reverseGeocodingService;
     private final BoundaryService boundaryService;
     private final MetadataService metadataService;
+    private final BuildingService buildingService;
 
-    public AdminController(ReverseGeocodingService reverseGeocodingService, BoundaryService boundaryService, MetadataService metadataService) {
+    public AdminController(ReverseGeocodingService reverseGeocodingService, 
+                          BoundaryService boundaryService, 
+                          MetadataService metadataService,
+                          BuildingService buildingService) {
         this.reverseGeocodingService = reverseGeocodingService;
         this.boundaryService = boundaryService;
         this.metadataService = metadataService;
+        this.buildingService = buildingService;
     }
 
     @PostMapping(value = "/refresh-db", produces = "application/json")
@@ -63,6 +69,10 @@ public class AdminController {
             // Reload the boundary service (boundaries database)
             logger.info("Reloading boundaries database...");
             boundaryService.reloadDatabase();
+
+            // Reload the building service (buildings database)
+            logger.info("Reloading buildings database...");
+            buildingService.reloadDatabase();
 
             // Reload metadata
             logger.info("Reloading metadata...");

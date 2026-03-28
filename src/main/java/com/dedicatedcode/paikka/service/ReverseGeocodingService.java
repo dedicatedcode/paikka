@@ -50,11 +50,13 @@ public class ReverseGeocodingService {
 
     private final PaikkaConfiguration config;
     private final S2Helper s2Helper;
+    private final BuildingService buildingService;
     private RocksDB shardsDb;
     
-    public ReverseGeocodingService(PaikkaConfiguration config, S2Helper s2Helper) {
+    public ReverseGeocodingService(PaikkaConfiguration config, S2Helper s2Helper, BuildingService buildingService) {
         this.config = config;
         this.s2Helper = s2Helper;
+        this.buildingService = buildingService;
         initializeRocksDB();
     }
     
@@ -176,10 +178,15 @@ public class ReverseGeocodingService {
             // Find the closest POIs up to the limit
             List<POIData> closestPOIs = findClosestPOIs(allPOIs, lat, lon, limit);
             
-            // Convert POIs to response format
+            // Convert POIs to response format and enhance with building info if needed
             List<POIResponse> results = new ArrayList<>();
             for (POIData poi : closestPOIs) {
-                results.add(convertPOIToResponse(poi, lat, lon, lang));
+                POIResponse response = convertPOIToResponse(poi, lat, lon, lang);
+                
+                // Enhance with building information if this is a building or related to a building
+                enhanceWithBuildingInfo(response, poi);
+                
+                results.add(response);
             }
             
             logger.debug("Final result: {} POIs found from {} searched shards", results.size(), searchedShards.size());
