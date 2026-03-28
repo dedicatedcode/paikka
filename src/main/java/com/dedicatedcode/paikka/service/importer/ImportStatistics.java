@@ -523,6 +523,14 @@ class ImportStatistics {
                     sb.append(String.format(" │ \033[37mThreads:\033[0m %d", getActiveThreads()));
 
                 } else if (phase.contains("1.2")) {
+                    long nodesPerSec = phaseSeconds > 0 ? (long) (getNodesCached() / phaseSeconds) : 0;
+                    sb.append(String.format("\033[1;36m[%s]\033[0m \033[1mCaching Node Coordinates\033[0m", formatTime(elapsed)));
+                    sb.append(String.format(" │ \033[32mNodes Cached:\033[0m %s \033[33m(%s/s)\033[0m",
+                                            formatCompactNumber(getNodesCached()), formatCompactRate(nodesPerSec)));
+                    sb.append(String.format(" │ \033[36mQueue:\033[0m %s", formatCompactNumber(getQueueSize())));
+                    sb.append(String.format(" │ \033[37mThreads:\033[0m %d", getActiveThreads()));
+
+                } else if (phase.contains("1.3")) {
                     long boundsPerSec = phaseSeconds > 0 ? (long) (getBoundariesProcessed() / phaseSeconds) : 0;
                     sb.append(String.format("\033[1;36m[%s]\033[0m \033[1mProcessing Admin Boundaries\033[0m", formatTime(elapsed)));
                     sb.append(String.format(" │ \033[32mBoundaries:\033[0m %s \033[33m(%s/s)\033[0m",
