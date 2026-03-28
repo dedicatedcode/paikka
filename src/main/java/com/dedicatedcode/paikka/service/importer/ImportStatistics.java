@@ -23,6 +23,23 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 class ImportStatistics {
+
+    public void incrementBuildingsFound() {
+
+    }
+
+    public void incrementBuildingsProcessed() {
+
+    }
+
+    public void setBuildingsBytes(long buildings) {
+
+    }
+
+    public void setTmpBuildingGridBytes(long buildingGrid) {
+
+    }
+
     public enum Pass {
         ONE,
         TWO
@@ -35,7 +52,8 @@ class ImportStatistics {
         SCAN_PBF_STRUCTURE("Scan PBF Structure"),
         CACHING_NODE_COORDINATES("Caching Node Coordinates"),
         PROCESSING_ADMIN_BOUNDARIES("Processing Admin Boundaries"),
-        COMPACTING_POIS("Compacting POIs"),;
+        COMPACTING_POIS("Compacting POIs"),
+        PROCESSING_BUILDINGS("Processing Buildings");
         private final String shortName;
 
         Stage(String shortName) {
@@ -243,9 +261,11 @@ class ImportStatistics {
     public void incrementAddressNodesWithBuildingType() {
         addressNodesWithBuildingType.incrementAndGet();
     }
+
     public void resetBoundaryPhaseEntitiesRead() {
         boundaryPhaseEntitiesRead.set(0);
     }
+
     public String getCurrentPhase() {
         return currentPhase;
     }
@@ -457,7 +477,7 @@ class ImportStatistics {
                 sb.append(String.format("\033[1;90m[%d/%d]\033[0m ", currentStep, TOTAL_STEPS));
 
                 if (phase.contains("1.1.1")) {
-                    long pbfPerSec = phaseSeconds > 0 ? (long)(getEntitiesRead() / phaseSeconds) : 0;
+                    long pbfPerSec = phaseSeconds > 0 ? (long) (getEntitiesRead() / phaseSeconds) : 0;
                     sb.append(String.format("\033[1;36m[%s]\033[0m \033[1mScanning PBF Structure\033[0m", formatTime(elapsed)));
                     sb.append(String.format(" │ \033[32mPBF Entities:\033[0m %s \033[33m(%s/s)\033[0m",
                                             formatCompactNumber(getEntitiesRead()), formatCompactRate(pbfPerSec)));
@@ -465,9 +485,9 @@ class ImportStatistics {
                     sb.append(String.format(" │ \033[34mWays Found:\033[0m %s", formatCompactNumber(getWaysProcessed())));
                     sb.append(String.format(" │ \033[35mRelations:\033[0m %s", formatCompactNumber(getRelationsFound())));
 
-                } else  if (phase.contains("1.1.2")) {
+                } else if (phase.contains("1.1.2")) {
                     long boundaryEntities = getBoundaryPhaseEntitiesRead();
-                    long pbfPerSec = phaseSeconds > 0 ? (long)(boundaryEntities / phaseSeconds) : 0;
+                    long pbfPerSec = phaseSeconds > 0 ? (long) (boundaryEntities / phaseSeconds) : 0;
                     sb.append(String.format("\033[1;36m[%s]\033[0m \033[1mIndexing Boundary Member Ways\033[0m", formatTime(elapsed)));
                     sb.append(String.format(" │ \033[32mPBF Entities:\033[0m %s \033[33m(%s/s)\033[0m",
                                             formatCompactNumber(boundaryEntities), formatCompactRate(pbfPerSec)));
@@ -475,7 +495,7 @@ class ImportStatistics {
                     sb.append(String.format(" │ \033[35mRelations:\033[0m %s", formatCompactNumber(getRelationsFound())));
 
                 } else if (phase.contains("1.1.3")) {
-                    long nodesPerSec = phaseSeconds > 0 ? (long)(getNodesCached() / phaseSeconds) : 0;
+                    long nodesPerSec = phaseSeconds > 0 ? (long) (getNodesCached() / phaseSeconds) : 0;
                     sb.append(String.format("\033[1;36m[%s]\033[0m \033[1mCaching Node Coordinates\033[0m", formatTime(elapsed)));
                     sb.append(String.format(" │ \033[32mNodes Cached:\033[0m %s \033[33m(%s/s)\033[0m",
                                             formatCompactNumber(getNodesCached()), formatCompactRate(nodesPerSec)));
@@ -483,20 +503,20 @@ class ImportStatistics {
                     sb.append(String.format(" │ \033[37mThreads:\033[0m %d", getActiveThreads()));
 
                 } else if (phase.contains("1.2")) {
-                    long boundsPerSec = phaseSeconds > 0 ? (long)(getBoundariesProcessed() / phaseSeconds) : 0;
+                    long boundsPerSec = phaseSeconds > 0 ? (long) (getBoundariesProcessed() / phaseSeconds) : 0;
                     sb.append(String.format("\033[1;36m[%s]\033[0m \033[1mProcessing Admin Boundaries\033[0m", formatTime(elapsed)));
                     sb.append(String.format(" │ \033[32mBoundaries:\033[0m %s \033[33m(%s/s)\033[0m",
                                             formatCompactNumber(getBoundariesProcessed()), formatCompactRate(boundsPerSec)));
                     sb.append(String.format(" │ \033[37mThreads:\033[0m %d", getActiveThreads()));
 
                 } else if (phase.contains("2.1")) {
-                    long poisPerSec = phaseSeconds > 0 ? (long)(getPoisProcessed() / phaseSeconds) : 0;
-                    long poisReadSec = phaseSeconds > 0 ? (long)(getPoiIndexRecRead() / phaseSeconds) : 0;
+                    long poisPerSec = phaseSeconds > 0 ? (long) (getPoisProcessed() / phaseSeconds) : 0;
+                    long poisReadSec = phaseSeconds > 0 ? (long) (getPoiIndexRecRead() / phaseSeconds) : 0;
                     long totalFromPhase1 = getNodesFound() + getWaysProcessed();
                     double percentage = totalFromPhase1 > 0 ? (double) getPoisProcessed() / totalFromPhase1 * 100.0 : 0.0;
 
                     sb.append(String.format("\033[1;36m[%s]\033[0m \033[1mProcessing POIs & Sharding\033[0m", formatTime(elapsed)));
-                    sb.append(String.format(" │ \033[32mPOI Index Rec Read:\033[0m %s \033[33m%s\033[0m", formatCompactNumber(getPoiIndexRecRead()), isPoiIndexRecReadDone() ? "(done)" : String.format("(%s/s)",formatCompactRate(poisReadSec))));
+                    sb.append(String.format(" │ \033[32mPOI Index Rec Read:\033[0m %s \033[33m%s\033[0m", formatCompactNumber(getPoiIndexRecRead()), isPoiIndexRecReadDone() ? "(done)" : String.format("(%s/s)", formatCompactRate(poisReadSec))));
                     sb.append(String.format(" │ \033[32mPOIs Processed:\033[0m %s \033[33m(%s/s)\033[0m", formatCompactNumber(getPoisProcessed()), formatCompactRate(poisPerSec)));
                     sb.append(String.format(" │ \033[35mProgress:\033[0m %.4f%%", percentage));
                     sb.append(String.format(" │ \033[36mQueue:\033[0m %s", formatCompactNumber(getQueueSize())));
@@ -506,7 +526,7 @@ class ImportStatistics {
                     long compactionElapsed = System.currentTimeMillis() - getCompactionStartTime();
                     double compactionPhaseSeconds = compactionElapsed / 1000.0;
                     long shardsCompacted = getCompactionEntriesProcessed();
-                    long shardsPerSec = compactionPhaseSeconds > 0 ? (long)(shardsCompacted / compactionPhaseSeconds) : 0;
+                    long shardsPerSec = compactionPhaseSeconds > 0 ? (long) (shardsCompacted / compactionPhaseSeconds) : 0;
                     long remaining = getCompactionEntriesRemaining();
                     sb.append(String.format("\033[1;36m[%s]\033[0m \033[1mCompacting POIs\033[0m", formatTime(elapsed)));
                     sb.append(String.format(" │ \033[32mShards Compacted:\033[0m %s \033[33m(%s/s)\033[0m",
@@ -550,28 +570,28 @@ class ImportStatistics {
         System.out.println("├─────────────────┼─────────────────┼─────────────────┤");
         System.out.printf("│ \033[32mPBF Entities\033[0m    │ %15s │ %13s/s │%n",
                           formatCompactNumber(getEntitiesRead()),
-                          formatCompactNumber((long)(getEntitiesRead() / totalSeconds)));
+                          formatCompactNumber((long) (getEntitiesRead() / totalSeconds)));
         System.out.printf("│ \033[37mNodes Found\033[0m     │ %15s │ %13s/s │%n",
                           formatCompactNumber(getNodesFound()),
-                          formatCompactNumber((long)(getNodesFound() / totalSeconds)));
+                          formatCompactNumber((long) (getNodesFound() / totalSeconds)));
         System.out.printf("│ \033[34mNodes Cached\033[0m    │ %15s │ %13s/s │%n",
                           formatCompactNumber(getNodesCached()),
-                          formatCompactNumber((long)(getNodesCached() / totalSeconds)));
+                          formatCompactNumber((long) (getNodesCached() / totalSeconds)));
         System.out.printf("│ \033[35mWays Processed\033[0m  │ %15s │ %13s/s │%n",
                           formatCompactNumber(getWaysProcessed()),
-                          formatCompactNumber((long)(getWaysProcessed() / totalSeconds)));
+                          formatCompactNumber((long) (getWaysProcessed() / totalSeconds)));
         System.out.printf("│ \033[36mBoundaries\033[0m      │ %15s │ %13s/s │%n",
                           formatCompactNumber(getBoundariesProcessed()),
-                          formatCompactNumber((long)(getBoundariesProcessed() / totalSeconds)));
+                          formatCompactNumber((long) (getBoundariesProcessed() / totalSeconds)));
         System.out.printf("│ \033[33mPOIs Created\033[0m    │ %15s │ %13s/s │%n",
                           formatCompactNumber(getPoisProcessed()),
-                          formatCompactNumber((long)(getPoisProcessed() / totalSeconds)));
+                          formatCompactNumber((long) (getPoisProcessed() / totalSeconds)));
         System.out.println("└─────────────────┴─────────────────┴─────────────────┘");
 
         long totalObjects = getNodesFound() + getNodesCached() + getWaysProcessed() + getBoundariesProcessed() + getPoisProcessed();
         System.out.printf("%n\033[1;37m🚀 Overall Throughput:\033[0m \033[1;32m%s objects\033[0m processed at \033[1;33m%s objects/sec\033[0m%n",
                           formatCompactNumber(totalObjects),
-                          formatCompactNumber((long)(totalObjects / totalSeconds)));
+                          formatCompactNumber((long) (totalObjects / totalSeconds)));
 
         System.out.printf("\033[1;37m💾 Database Operations:\033[0m \033[1;36m%s writes\033[0m%n",
                           formatCompactNumber(getRocksDbWrites()));
@@ -637,7 +657,7 @@ class ImportStatistics {
         if (n < 1_000_000) return String.format("%.2fk", n / 1000.0);
         return String.format("%.3fM", n / 1_000_000.0);
     }
-    
+
     private String formatCompactRate(long n) {
         if (n < 1000) return String.valueOf(n);
         if (n < 1_000_000) return String.format("%.1fk", n / 1000.0);
