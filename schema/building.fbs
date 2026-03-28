@@ -1,0 +1,17 @@
+namespace com.dedicatedcode.paikka.flatbuffers;
+
+table Geometry {
+  data:[ubyte];    // WKB binary
+}
+table Building {
+    id: long;
+    name: string;      // building type (residential, commercial, etc.)
+    code: string;      // always "building"
+    geometry: Geometry;
+}
+
+table BuildingList {
+    buildings: [Building];
+}
+
+root_type BuildingList;
