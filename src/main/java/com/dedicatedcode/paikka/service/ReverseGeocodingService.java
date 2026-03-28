@@ -424,6 +424,36 @@ public class ReverseGeocodingService {
         
         return response;
     }
+
+    private void enhanceWithBuildingInfo(POIResponse response, POIData poi) {
+        // Try to get building info for the POI's OSM ID
+        BuildingService.BuildingInfo buildingInfo = buildingService.getBuildingInfo(poi.id());
+        if (buildingInfo != null) {
+            // Update type and subtype with building information
+            if (buildingInfo.getType() != null) {
+                response.setType(buildingInfo.getType());
+            }
+            // For subtype, we can use building name or code
+            if (buildingInfo.getName() != null) {
+                response.setSubtype(buildingInfo.getName());
+            } else if (buildingInfo.getCode() != null) {
+                response.setSubtype(buildingInfo.getCode());
+            }
+            
+            // If building has boundary data, set it in the response
+            if (buildingInfo.getBoundaryWkb() != null && buildingInfo.getBoundaryWkb().length > 0) {
+                try {
+                    WKBReader wkbReader = new WKBReader();
+                    Geometry geometry = wkbReader.read(buildingInfo.getBoundaryWkb());
+                    GeoJsonGeometry geoJsonGeometry = convertJtsToGeoJson(geometry);
+                    response.setBoundary(geoJsonGeometry);
+                    logger.debug("Enhanced POI {} with building boundary", poi.id());
+                } catch (Exception e) {
+                    logger.warn("Failed to convert building boundary to GeoJSON for POI {}: {}", poi.id(), e.getMessage());
+                }
+            }
+        }
+    }
     
 
     private record POIData(long id, float lat, float lon, String type, String subtype, Map<String, String> names,
