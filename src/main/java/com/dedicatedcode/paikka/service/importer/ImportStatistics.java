@@ -410,6 +410,22 @@ class ImportStatistics {
         this.tmpPoiBytes = v;
     }
 
+    public long getBuildingsBytes() {
+        return buildingsBytes;
+    }
+
+    public long getTmpBuildingGridBytes() {
+        return tmpBuildingGridBytes;
+    }
+
+    public long getBuildingsFound() {
+        return buildingsFound.get();
+    }
+
+    public long getBuildingsProcessed() {
+        return buildingsProcessed.get();
+    }
+
     public long getTmpAppendBytes() {
         return tmpAppendBytes;
     }
