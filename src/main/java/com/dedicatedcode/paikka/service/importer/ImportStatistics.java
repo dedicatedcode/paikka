@@ -600,34 +600,34 @@ class ImportStatistics {
         System.out.printf("\n\033[1;37m⏱️  Total Import Time:\033[0m \033[1;33m%s\033[0m%n%n", formatTime(getTotalTime()));
 
         System.out.println("\033[1;37m📊 Processing Summary:\033[0m");
-        System.out.println("┌─────────────────┬─────────────────┬─────────────────┐");
-        System.out.println("│ \033[1mEntity Type\033[0m     │ \033[1mTotal Count\033[0m     │ \033[1mAvg Speed\033[0m       │");
-        System.out.println("├─────────────────┼─────────────────┼─────────────────┤");
-        System.out.printf("│ \033[32mPBF Entities\033[0m    │ %15s │ %13s/s │%n",
+        System.out.println("┌────────────────────┬─────────────────┬─────────────────┐");
+        System.out.println("│ \033[1mEntity Type\033[0m        │ \033[1mTotal Count\033[0m     │ \033[1mAvg Speed\033[0m       │");
+        System.out.println("├────────────────────┼─────────────────┼─────────────────┤");
+        System.out.printf("│ \033[32mPBF Entities\033[0m       │ %15s │ %13s/s │%n",
                           formatCompactNumber(getEntitiesRead()),
                           formatCompactNumber((long) (getEntitiesRead() / totalSeconds)));
-        System.out.printf("│ \033[37mNodes Found\033[0m     │ %15s │ %13s/s │%n",
+        System.out.printf("│ \033[37mNodes Found\033[0m        │ %15s │ %13s/s │%n",
                           formatCompactNumber(getNodesFound()),
                           formatCompactNumber((long) (getNodesFound() / totalSeconds)));
-        System.out.printf("│ \033[34mNodes Cached\033[0m    │ %15s │ %13s/s │%n",
+        System.out.printf("│ \033[34mNodes Cached\033[0m       │ %15s │ %13s/s │%n",
                           formatCompactNumber(getNodesCached()),
                           formatCompactNumber((long) (getNodesCached() / totalSeconds)));
-        System.out.printf("│ \033[35mWays Processed\033[0m  │ %15s │ %13s/s │%n",
+        System.out.printf("│ \033[35mWays Processed\033[0m     │ %15s │ %13s/s │%n",
                           formatCompactNumber(getWaysProcessed()),
                           formatCompactNumber((long) (getWaysProcessed() / totalSeconds)));
-        System.out.printf("│ \033[36mBoundaries\033[0m      │ %15s │ %13s/s │%n",
+        System.out.printf("│ \033[36mBoundaries\033[0m         │ %15s │ %13s/s │%n",
                           formatCompactNumber(getBoundariesProcessed()),
                           formatCompactNumber((long) (getBoundariesProcessed() / totalSeconds)));
-        System.out.printf("│ \033[33mBuildings Found\033[0m │ %15s │ %13s/s │%n",
+        System.out.printf("│ \033[31mBuildings Found\033[0m    │ %15s │ %13s/s │%n",
                           formatCompactNumber(getBuildingsFound()),
                           formatCompactNumber((long) (getBuildingsFound() / totalSeconds)));
-        System.out.printf("│ \033[33mBuildings Processed\033[0m│ %15s │ %13s/s │%n",
+        System.out.printf("│ \033[31mBuildings Processed\033[0m│ %15s │ %13s/s │%n",
                           formatCompactNumber(getBuildingsProcessed()),
                           formatCompactNumber((long) (getBuildingsProcessed() / totalSeconds)));
-        System.out.printf("│ \033[33mPOIs Created\033[0m    │ %15s │ %13s/s │%n",
+        System.out.printf("│ \033[33mPOIs Created\033[0m       │ %15s │ %13s/s │%n",
                           formatCompactNumber(getPoisProcessed()),
                           formatCompactNumber((long) (getPoisProcessed() / totalSeconds)));
-        System.out.println("└─────────────────┴─────────────────┴─────────────────┘");
+        System.out.println("└────────────────────┴─────────────────┴─────────────────┘");
 
         long totalObjects = getNodesFound() + getNodesCached() + getWaysProcessed() + 
                             getBoundariesProcessed() + getBuildingsProcessed() + getPoisProcessed();
