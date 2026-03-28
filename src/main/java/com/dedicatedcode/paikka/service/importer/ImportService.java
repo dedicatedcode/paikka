@@ -856,17 +856,23 @@ public class ImportService {
     }
 
     private void processBuildingBoundariesFromIndex(RocksDB poiIndexDb, RocksDB nodeCache, RocksDB wayIndexDb, RocksDB buildingGridIndexDb, RocksDB buildingsDb, ImportStatistics stats) throws Exception {
+        int maxInFlight = 100; // maximum number of batches submitted but not yet completed
+        Semaphore semaphore = new Semaphore(maxInFlight);
         int batchSize = 1000; // Process buildings in batches to reduce overhead
         int numThreads = Math.max(1, config.getImportConfiguration().getThreads());
         ExecutorService executor = createExecutorService(numThreads);
         ExecutorCompletionService<List<BoundaryResultLite>> ecs = new ExecutorCompletionService<>(executor);
         
-        List<Long> buildingIds = new ArrayList<>();
-        List<PoiIndexRec> buildingRecs = new ArrayList<>();
+        AtomicInteger submitted = new AtomicInteger(0);
+        AtomicLong collected = new AtomicLong(0);
         
-        // First, collect all building IDs and their records
-        try (RocksIterator it = poiIndexDb.newIterator()) {
+        try (RocksBatchWriter buildingsWriter = new RocksBatchWriter(buildingsDb, 10_000, stats);
+             RocksIterator it = poiIndexDb.newIterator()) {
+            
             it.seekToFirst();
+            List<Long> currentBatchIds = new ArrayList<>(batchSize);
+            List<PoiIndexRec> currentBatchRecs = new ArrayList<>(batchSize);
+            
             while (it.isValid()) {
                 byte[] key = it.key();
                 if (key[0] == 'W') { // Buildings must be ways
@@ -874,59 +880,121 @@ public class ImportService {
                     final PoiIndexRec rec = decodePoiIndexRec(val);
                     if ("building".equals(rec.type)) {
                         final long wayId = bytesToLong(key, 1);
-                        buildingIds.add(wayId);
-                        buildingRecs.add(rec);
+                        currentBatchIds.add(wayId);
+                        currentBatchRecs.add(rec);
+                        
+                        if (currentBatchIds.size() >= batchSize) {
+                            // submit this batch
+                            semaphore.acquire();
+                            stats.incrementActiveThreads();
+                            List<Long> idsToProcess = new ArrayList<>(currentBatchIds);
+                            List<PoiIndexRec> recsToProcess = new ArrayList<>(currentBatchRecs);
+                            ecs.submit(() -> {
+                                try {
+                                    List<BoundaryResultLite> results = new ArrayList<>();
+                                    for (int i = 0; i < idsToProcess.size(); i++) {
+                                        long wayIdInner = idsToProcess.get(i);
+                                        PoiIndexRec recInner = recsToProcess.get(i);
+                                        try {
+                                            org.locationtech.jts.geom.Geometry geometry = buildGeometryFromWay(wayIdInner, nodeCache, wayIndexDb, stats);
+                                            if (geometry == null) continue;
+                                            if (!geometry.isValid()) {
+                                                try {
+                                                    geometry = geometry.buffer(0);
+                                                } catch (Exception e) {
+                                                    continue;
+                                                }
+                                            }
+                                            if (geometry == null || geometry.isEmpty() || !geometry.isValid()) continue;
+                                            
+                                            results.add(new BoundaryResultLite(wayIdInner, 100, recInner.subtype, null, geometry));
+                                        } catch (Exception e) {
+                                            stats.recordError(ImportStatistics.Stage.PROCESSING_BUILDINGS, Kind.GEOMETRY, wayIdInner, "build-building-geometry-batch", e);
+                                        }
+                                    }
+                                    return results;
+                                } finally {
+                                    semaphore.release();
+                                    stats.decrementActiveThreads();
+                                }
+                            });
+                            submitted.incrementAndGet();
+                            currentBatchIds.clear();
+                            currentBatchRecs.clear();
+                            
+                            // drain completed futures to keep memory bounded
+                            Future<List<BoundaryResultLite>> f;
+                            while ((f = ecs.poll()) != null) {
+                                collected.incrementAndGet();
+                                try {
+                                    List<BoundaryResultLite> batchResults = f.get();
+                                    for (BoundaryResultLite r : batchResults) {
+                                        storeBoundary(r.osmId(), r.level(), r.name(), r.code(), r.geometry(), buildingsWriter, buildingGridIndexDb);
+                                        stats.incrementBuildingsProcessed();
+                                    }
+                                } catch (Exception e) {
+                                    stats.recordError(ImportStatistics.Stage.PROCESSING_BUILDINGS, Kind.CONCURRENCY, null, "building-future-poll", e);
+                                }
+                            }
+                        }
                     }
                 }
                 it.next();
             }
-        }
-        
-        // Process in batches
-        int submitted = 0;
-        for (int start = 0; start < buildingIds.size(); start += batchSize) {
-            int end = Math.min(start + batchSize, buildingIds.size());
-            List<Long> batchIds = buildingIds.subList(start, end);
-            List<PoiIndexRec> batchRecs = buildingRecs.subList(start, end);
             
-            ecs.submit(() -> {
-                List<BoundaryResultLite> results = new ArrayList<>();
-                for (int i = 0; i < batchIds.size(); i++) {
-                    long wayId = batchIds.get(i);
-                    PoiIndexRec rec = batchRecs.get(i);
+            // submit remaining partial batch
+            if (!currentBatchIds.isEmpty()) {
+                semaphore.acquire();
+                stats.incrementActiveThreads();
+                List<Long> idsToProcess = new ArrayList<>(currentBatchIds);
+                List<PoiIndexRec> recsToProcess = new ArrayList<>(currentBatchRecs);
+                ecs.submit(() -> {
                     try {
-                        org.locationtech.jts.geom.Geometry geometry = buildGeometryFromWay(wayId, nodeCache, wayIndexDb, stats);
-                        if (geometry == null) continue;
-                        if (!geometry.isValid()) {
+                        List<BoundaryResultLite> results = new ArrayList<>();
+                        for (int i = 0; i < idsToProcess.size(); i++) {
+                            long wayIdInner = idsToProcess.get(i);
+                            PoiIndexRec recInner = recsToProcess.get(i);
                             try {
-                                geometry = geometry.buffer(0);
+                                org.locationtech.jts.geom.Geometry geometry = buildGeometryFromWay(wayIdInner, nodeCache, wayIndexDb, stats);
+                                if (geometry == null) continue;
+                                if (!geometry.isValid()) {
+                                    try {
+                                        geometry = geometry.buffer(0);
+                                    } catch (Exception e) {
+                                        continue;
+                                    }
+                                }
+                                if (geometry == null || geometry.isEmpty() || !geometry.isValid()) continue;
+                                
+                                results.add(new BoundaryResultLite(wayIdInner, 100, recInner.subtype, null, geometry));
                             } catch (Exception e) {
-                                continue;
+                                stats.recordError(ImportStatistics.Stage.PROCESSING_BUILDINGS, Kind.GEOMETRY, wayIdInner, "build-building-geometry-batch", e);
                             }
                         }
-                        if (geometry == null || geometry.isEmpty() || !geometry.isValid()) continue;
-                        
-                        results.add(new BoundaryResultLite(wayId, 100, rec.subtype, null, geometry));
-                    } catch (Exception e) {
-                        stats.recordError(ImportStatistics.Stage.PROCESSING_BUILDINGS, Kind.GEOMETRY, wayId, "build-building-geometry-batch", e);
+                        return results;
+                    } finally {
+                        semaphore.release();
+                        stats.decrementActiveThreads();
                     }
-                }
-                return results;
-            });
-            submitted++;
-        }
-        
-        try (RocksBatchWriter buildingsWriter = new RocksBatchWriter(buildingsDb, 10_000, stats)) {
-            int completed = 0;
-            while (completed < submitted) {
-                Future<List<BoundaryResultLite>> future = ecs.take();
-                List<BoundaryResultLite> batchResults = future.get();
-                for (BoundaryResultLite r : batchResults) {
-                    storeBoundary(r.osmId(), r.level(), r.name(), r.code(), r.geometry(), buildingsWriter, buildingGridIndexDb);
-                    stats.incrementBuildingsProcessed();
-                }
-                completed++;
+                });
+                submitted.incrementAndGet();
             }
+            
+            // drain all remaining futures
+            long remaining = submitted.get() - collected.get();
+            for (int i = 0; i < remaining; i++) {
+                try {
+                    Future<List<BoundaryResultLite>> f = ecs.take();
+                    List<BoundaryResultLite> batchResults = f.get();
+                    for (BoundaryResultLite r : batchResults) {
+                        storeBoundary(r.osmId(), r.level(), r.name(), r.code(), r.geometry(), buildingsWriter, buildingGridIndexDb);
+                        stats.incrementBuildingsProcessed();
+                    }
+                } catch (Exception e) {
+                    stats.recordError(ImportStatistics.Stage.PROCESSING_BUILDINGS, Kind.CONCURRENCY, null, "building-future-take", e);
+                }
+            }
+            
             buildingsWriter.flush();
         } finally {
             executor.shutdown();
