@@ -25,19 +25,19 @@ import java.util.concurrent.atomic.AtomicLong;
 class ImportStatistics {
 
     public void incrementBuildingsFound() {
-
+        buildingsFound.incrementAndGet();
     }
 
     public void incrementBuildingsProcessed() {
-
+        buildingsProcessed.incrementAndGet();
     }
 
     public void setBuildingsBytes(long buildings) {
-
+        this.buildingsBytes = buildings;
     }
 
     public void setTmpBuildingGridBytes(long buildingGrid) {
-
+        this.tmpBuildingGridBytes = buildingGrid;
     }
 
     public enum Pass {
@@ -109,6 +109,8 @@ class ImportStatistics {
     private final AtomicLong activeThreads = new AtomicLong(0);
     private final AtomicLong boundaryWaysProcessed = new AtomicLong(0);
     private final AtomicLong boundaryPhaseEntitiesRead = new AtomicLong(0);
+    private final AtomicLong buildingsFound = new AtomicLong(0);
+    private final AtomicLong buildingsProcessed = new AtomicLong(0);
     private AtomicLong addressNodesFound = new AtomicLong(0);
     private AtomicLong addressNodesWithBuildingType = new AtomicLong(0);
 
@@ -125,7 +127,9 @@ class ImportStatistics {
     private volatile long datasetBytes;
     private volatile long shardsBytes;
     private volatile long boundariesBytes;
+    private volatile long buildingsBytes;
     private volatile long tmpGridBytes;
+    private volatile long tmpBuildingGridBytes;
     private volatile long tmpNodeBytes;
     private volatile long tmpWayBytes;
     private volatile long tmpBoundaryWayBytes;
@@ -509,6 +513,13 @@ class ImportStatistics {
                                             formatCompactNumber(getBoundariesProcessed()), formatCompactRate(boundsPerSec)));
                     sb.append(String.format(" │ \033[37mThreads:\033[0m %d", getActiveThreads()));
 
+                } else if (phase.contains("1.4")) {
+                    long buildingsPerSec = phaseSeconds > 0 ? (long) (getBuildingsProcessed() / phaseSeconds) : 0;
+                    sb.append(String.format("\033[1;36m[%s]\033[0m \033[1mProcessing Building Boundaries\033[0m", formatTime(elapsed)));
+                    sb.append(String.format(" │ \033[32mBuildings:\033[0m %s \033[33m(%s/s)\033[0m",
+                                            formatCompactNumber(getBuildingsProcessed()), formatCompactRate(buildingsPerSec)));
+                    sb.append(String.format(" │ \033[37mThreads:\033[0m %d", getActiveThreads()));
+
                 } else if (phase.contains("2.1")) {
                     long poisPerSec = phaseSeconds > 0 ? (long) (getPoisProcessed() / phaseSeconds) : 0;
                     long poisReadSec = phaseSeconds > 0 ? (long) (getPoiIndexRecRead() / phaseSeconds) : 0;
@@ -583,12 +594,19 @@ class ImportStatistics {
         System.out.printf("│ \033[36mBoundaries\033[0m      │ %15s │ %13s/s │%n",
                           formatCompactNumber(getBoundariesProcessed()),
                           formatCompactNumber((long) (getBoundariesProcessed() / totalSeconds)));
+        System.out.printf("│ \033[33mBuildings Found\033[0m │ %15s │ %13s/s │%n",
+                          formatCompactNumber(getBuildingsFound()),
+                          formatCompactNumber((long) (getBuildingsFound() / totalSeconds)));
+        System.out.printf("│ \033[33mBuildings Processed\033[0m│ %15s │ %13s/s │%n",
+                          formatCompactNumber(getBuildingsProcessed()),
+                          formatCompactNumber((long) (getBuildingsProcessed() / totalSeconds)));
         System.out.printf("│ \033[33mPOIs Created\033[0m    │ %15s │ %13s/s │%n",
                           formatCompactNumber(getPoisProcessed()),
                           formatCompactNumber((long) (getPoisProcessed() / totalSeconds)));
         System.out.println("└─────────────────┴─────────────────┴─────────────────┘");
 
-        long totalObjects = getNodesFound() + getNodesCached() + getWaysProcessed() + getBoundariesProcessed() + getPoisProcessed();
+        long totalObjects = getNodesFound() + getNodesCached() + getWaysProcessed() + 
+                            getBoundariesProcessed() + getBuildingsProcessed() + getPoisProcessed();
         System.out.printf("%n\033[1;37m🚀 Overall Throughput:\033[0m \033[1;32m%s objects\033[0m processed at \033[1;33m%s objects/sec\033[0m%n",
                           formatCompactNumber(totalObjects),
                           formatCompactNumber((long) (totalObjects / totalSeconds)));
@@ -599,9 +617,11 @@ class ImportStatistics {
         System.out.println("\n\033[1;37m📦 Dataset Size:\033[0m " + formatSize(getDatasetBytes()));
         System.out.println("  • poi_shards:  " + formatSize(getShardsBytes()));
         System.out.println("  • boundaries:  " + formatSize(getBoundariesBytes()));
+        System.out.println("  • buildings:   " + formatSize(getBuildingsBytes()));
 
         System.out.println("\n\033[1;37m🧹 Temporary DBs:\033[0m " + formatSize(getTmpTotalBytes()));
         System.out.println("  • grid_index:         " + formatSize(getTmpGridBytes()));
+        System.out.println("  • building_grid_index:" + formatSize(getTmpBuildingGridBytes()));
         System.out.println("  • node_cache:         " + formatSize(getTmpNodeBytes()));
         System.out.println("  • way_index:          " + formatSize(getTmpWayBytes()));
         System.out.println("  • boundary_way_index: " + formatSize(getTmpBoundaryWayBytes()));
