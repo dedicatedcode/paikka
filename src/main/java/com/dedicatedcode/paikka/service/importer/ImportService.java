@@ -103,7 +103,7 @@ public class ImportService {
 
         Path shardsDbPath = dataDirectory.resolve("poi_shards");
         Path boundariesDbPath = dataDirectory.resolve("boundaries");
-        Path buildingsDbPath = dataDirectory.resolve("buildings");
+        Path buildingsDbPath = dataDirectory.resolve("buildings_shards");
         Path appendBuildingDbPath = dataDirectory.resolve("tmp/append_building");
         Path gridIndexDbPath = dataDirectory.resolve("tmp/grid_index");
         Path buildingGridIndexDbPath = dataDirectory.resolve("tmp/building_grid_index");

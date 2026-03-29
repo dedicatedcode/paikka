@@ -62,7 +62,7 @@ public class BuildingService {
         
         try {
             RocksDB.loadLibrary();
-            Path buildingsDbPath = Paths.get(config.getDataDir(), "buildings");
+            Path buildingsDbPath = Paths.get(config.getDataDir(), "buildings_shards");
             
             // Check if the database directory exists
             if (!buildingsDbPath.toFile().exists()) {
