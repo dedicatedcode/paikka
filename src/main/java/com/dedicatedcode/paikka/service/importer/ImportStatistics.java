@@ -53,6 +53,7 @@ class ImportStatistics {
         CACHING_NODE_COORDINATES("Caching Node Coordinates"),
         PROCESSING_ADMIN_BOUNDARIES("Processing Admin Boundaries"),
         COMPACTING_POIS("Compacting POIs"),
+        COMPACTING_BUILDINGS("Compacting Buildings"),
         PROCESSING_BUILDINGS("Processing Buildings");
         private final String shortName;
 
@@ -139,7 +140,7 @@ class ImportStatistics {
     private volatile long tmpTotalBytes;
     private volatile long tmpAppendBytes;
 
-    private final int TOTAL_STEPS = 6;
+    private final int TOTAL_STEPS = 8;
     private int currentStep = 0;
 
     public long getEntitiesRead() {
@@ -539,9 +540,11 @@ class ImportStatistics {
 
                 } else if (phase.contains("1.4")) {
                     long buildingsPerSec = phaseSeconds > 0 ? (long) (getBuildingsProcessed() / phaseSeconds) : 0;
+                    double percentage = getBuildingsFound() > 0 ? (double) getBuildingsProcessed() / getBuildingsFound() * 100.0 : 0.0;
                     sb.append(String.format("\033[1;36m[%s]\033[0m \033[1mProcessing Building Boundaries\033[0m", formatTime(elapsed)));
                     sb.append(String.format(" │ \033[32mBuildings:\033[0m %s \033[33m(%s/s)\033[0m",
                                             formatCompactNumber(getBuildingsProcessed()), formatCompactRate(buildingsPerSec)));
+                    sb.append(String.format(" │ \033[35mProgress:\033[0m %.2f%%", percentage));
                     sb.append(String.format(" │ \033[37mThreads:\033[0m %d", getActiveThreads()));
 
                 } else if (phase.contains("2.1")) {
@@ -564,6 +567,17 @@ class ImportStatistics {
                     long shardsPerSec = compactionPhaseSeconds > 0 ? (long) (shardsCompacted / compactionPhaseSeconds) : 0;
                     long remaining = getCompactionEntriesRemaining();
                     sb.append(String.format("\033[1;36m[%s]\033[0m \033[1mCompacting POIs\033[0m", formatTime(elapsed)));
+                    sb.append(String.format(" │ \033[32mShards Compacted:\033[0m %s \033[33m(%s/s)\033[0m",
+                                            formatCompactNumber(shardsCompacted), formatCompactRate(shardsPerSec)));
+                    sb.append(String.format(" │ \033[37mRemaining:\033[0m %s", formatCompactNumber(remaining)));
+
+                } else if (phase.contains("2.3")) {
+                    long compactionElapsed = System.currentTimeMillis() - getCompactionStartTime();
+                    double compactionPhaseSeconds = compactionElapsed / 1000.0;
+                    long shardsCompacted = getCompactionEntriesProcessed();
+                    long shardsPerSec = compactionPhaseSeconds > 0 ? (long) (shardsCompacted / compactionPhaseSeconds) : 0;
+                    long remaining = getCompactionEntriesRemaining();
+                    sb.append(String.format("\033[1;36m[%s]\033[0m \033[1mCompacting Buildings\033[0m", formatTime(elapsed)));
                     sb.append(String.format(" │ \033[32mShards Compacted:\033[0m %s \033[33m(%s/s)\033[0m",
                                             formatCompactNumber(shardsCompacted), formatCompactRate(shardsPerSec)));
                     sb.append(String.format(" │ \033[37mRemaining:\033[0m %s", formatCompactNumber(remaining)));

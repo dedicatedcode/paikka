@@ -230,6 +230,7 @@ public class ImportService {
 
                 stats.setCurrentPhase(7, "2.2: Compacting POIs");
                 compactShards(appendDb, shardsDb, stats);
+                stats.setCurrentPhase(8, "2.3: Compacting Buildings");
                 compactBuildingShards(appendBuildingDb, buildingsDb, stats);
                 stats.stop();
                 stats.printPhaseSummary("PASS 2", pass2Start);
