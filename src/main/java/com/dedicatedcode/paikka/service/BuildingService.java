@@ -19,7 +19,9 @@ package com.dedicatedcode.paikka.service;
 import com.dedicatedcode.paikka.config.PaikkaConfiguration;
 import com.dedicatedcode.paikka.flatbuffers.Boundary;
 import com.dedicatedcode.paikka.flatbuffers.Geometry;
+import org.locationtech.jts.geom.Coordinate;
 import org.locationtech.jts.geom.GeometryFactory;
+import org.locationtech.jts.geom.Point;
 import org.locationtech.jts.io.WKBReader;
 import org.rocksdb.Options;
 import org.rocksdb.RocksDB;
@@ -102,7 +104,7 @@ public class BuildingService {
     }
     
     /**
-     * Get building information for a specific OSM ID.
+     * Get building information for a point (lat, lon) by checking if it is contained in a building.
      * This searches in the given shard and surrounding shards if needed.
      */
     public BuildingInfo getBuildingInfo(long osmId, double lat, double lon) {
@@ -112,6 +114,7 @@ public class BuildingService {
         }
 
         try {
+            Point point = GEOMETRY_FACTORY.createPoint(new Coordinate(lon, lat));
             long centerShardId = s2Helper.getShardId(lat, lon);
             List<Long> shardsToSearch = new ArrayList<>();
             shardsToSearch.add(centerShardId);
@@ -126,21 +129,36 @@ public class BuildingService {
                     com.dedicatedcode.paikka.flatbuffers.BuildingList buildingList = com.dedicatedcode.paikka.flatbuffers.BuildingList.getRootAsBuildingList(buffer);
                     for (int i = 0; i < buildingList.buildingsLength(); i++) {
                         com.dedicatedcode.paikka.flatbuffers.Building building = buildingList.buildings(i);
-                        if (building != null && building.id() == osmId) {
-                            return decodeBuildingInfo(building);
+                        if (building != null && building.geometry() != null) {
+                            Geometry geometryFb = building.geometry();
+                            if (geometryFb.dataLength() > 0) {
+                                byte[] wkbData = new byte[geometryFb.dataLength()];
+                                for (int j = 0; j < geometryFb.dataLength(); j++) {
+                                    wkbData[j] = (byte) geometryFb.data(j);
+                                }
+                                try {
+                                    WKBReader wkbReader = new WKBReader();
+                                    org.locationtech.jts.geom.Geometry jtsGeometry = wkbReader.read(wkbData);
+                                    if (jtsGeometry.contains(point)) {
+                                        return decodeBuildingInfo(building);
+                                    }
+                                } catch (Exception e) {
+                                    logger.warn("Failed to read geometry for building {}", building.id(), e);
+                                }
+                            }
                         }
                     }
                 }
             }
 
-            logger.debug("Building with OSM ID {} not found in buildings database", osmId);
+            logger.debug("Building containing point ({}, {}) not found in buildings database", lon, lat);
             return null;
 
         } catch (RocksDBException e) {
-            logger.error("RocksDB error while querying building info for OSM ID {}", osmId, e);
+            logger.error("RocksDB error while querying building info for point ({}, {})", lon, lat, e);
             return null;
         } catch (Exception e) {
-            logger.error("Error while querying building info for OSM ID {}", osmId, e);
+            logger.error("Error while querying building info for point ({}, {})", lon, lat, e);
             return null;
         }
     }
