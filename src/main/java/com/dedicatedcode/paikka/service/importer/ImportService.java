@@ -71,6 +71,7 @@ public class ImportService {
     private final int fileReadWindowSize;
 
     private final AtomicLong sequence = new AtomicLong(0);
+    private final AtomicLong buildingSequence = new AtomicLong(0);
 
     public ImportService(S2Helper s2Helper, GeometrySimplificationService geometrySimplificationService, PaikkaConfiguration config) {
         this.s2Helper = s2Helper;
@@ -103,6 +104,7 @@ public class ImportService {
         Path shardsDbPath = dataDirectory.resolve("poi_shards");
         Path boundariesDbPath = dataDirectory.resolve("boundaries");
         Path buildingsDbPath = dataDirectory.resolve("buildings");
+        Path appendBuildingDbPath = dataDirectory.resolve("tmp/append_building");
         Path gridIndexDbPath = dataDirectory.resolve("tmp/grid_index");
         Path buildingGridIndexDbPath = dataDirectory.resolve("tmp/building_grid_index");
         Path appendDbPath = dataDirectory.resolve("tmp/append_poi");
@@ -116,6 +118,7 @@ public class ImportService {
         cleanupDatabase(shardsDbPath);
         cleanupDatabase(boundariesDbPath);
         cleanupDatabase(buildingsDbPath);
+        cleanupDatabase(appendBuildingDbPath);
         cleanupDatabase(gridIndexDbPath);
         cleanupDatabase(buildingGridIndexDbPath);
         cleanupDatabase(nodeCacheDbPath);
@@ -190,6 +193,7 @@ public class ImportService {
             try (RocksDB shardsDb = RocksDB.open(poiShardsOpts, shardsDbPath.toString());
                  RocksDB boundariesDb = RocksDB.open(poiShardsOpts, boundariesDbPath.toString());
                  RocksDB buildingsDb = RocksDB.open(poiShardsOpts, buildingsDbPath.toString());
+                 RocksDB appendBuildingDb = RocksDB.open(appendOpts, appendBuildingDbPath.toString());
                  RocksDB gridIndexDb = RocksDB.open(gridOpts, gridIndexDbPath.toString());
                  RocksDB buildingGridIndexDb = RocksDB.open(gridOpts, buildingGridIndexDbPath.toString());
                  RocksDB nodeCache = RocksDB.open(nodeOpts, nodeCacheDbPath.toString());
@@ -219,13 +223,14 @@ public class ImportService {
                 processAdministrativeBoundariesFromIndex(relIndexDb, nodeCache, wayIndexDb, gridIndexDb, boundariesDb, stats);
 
                 stats.setCurrentPhase(5, "1.4: Processing building boundaries");
-                processBuildingBoundariesFromIndex(poiIndexDb, nodeCache, wayIndexDb, buildingGridIndexDb, buildingsDb, stats);
+                processBuildingBoundariesFromIndex(poiIndexDb, nodeCache, wayIndexDb, buildingGridIndexDb, appendBuildingDb, stats);
 
                 stats.setCurrentPhase(6, "2.1: Processing POIs & Sharding");
                 pass2PoiShardingFromIndex(nodeCache, wayIndexDb, appendDb, boundariesDb, poiIndexDb, gridIndexDb, stats);
 
                 stats.setCurrentPhase(7, "2.2: Compacting POIs");
                 compactShards(appendDb, shardsDb, stats);
+                compactBuildingShards(appendBuildingDb, buildingsDb, stats);
                 stats.stop();
                 stats.printPhaseSummary("PASS 2", pass2Start);
 
@@ -240,6 +245,7 @@ public class ImportService {
                                   shardsDbPath,
                                   boundariesDbPath,
                                   buildingsDbPath,
+                                  appendBuildingDbPath,
                                   gridIndexDbPath,
                                   buildingGridIndexDbPath,
                                   nodeCacheDbPath,
@@ -855,24 +861,36 @@ public class ImportService {
         }
     }
 
-    private void processBuildingBoundariesFromIndex(RocksDB poiIndexDb, RocksDB nodeCache, RocksDB wayIndexDb, RocksDB buildingGridIndexDb, RocksDB buildingsDb, ImportStatistics stats) throws Exception {
-        int maxInFlight = 100; // maximum number of batches submitted but not yet completed
+    private void processBuildingBoundariesFromIndex(RocksDB poiIndexDb, RocksDB nodeCache, RocksDB wayIndexDb, RocksDB buildingGridIndexDb, RocksDB appendBuildingDb, ImportStatistics stats) throws Exception {
+        int maxInFlight = 100;
         Semaphore semaphore = new Semaphore(maxInFlight);
-        int batchSize = 1000; // Process buildings in batches to reduce overhead
+        int batchSize = 1000;
         int numThreads = Math.max(1, config.getImportConfiguration().getThreads());
         ExecutorService executor = createExecutorService(numThreads);
-        ExecutorCompletionService<List<BoundaryResultLite>> ecs = new ExecutorCompletionService<>(executor);
-        
+        ExecutorCompletionService<List<BuildingData>> ecs = new ExecutorCompletionService<>(executor);
+
         AtomicInteger submitted = new AtomicInteger(0);
         AtomicLong collected = new AtomicLong(0);
-        
-        try (RocksBatchWriter buildingsWriter = new RocksBatchWriter(buildingsDb, 10_000, stats);
+
+        AtomicReference<Map<Long, List<BuildingData>>> shardBufferRef = new AtomicReference<>(new ConcurrentHashMap<>());
+        Runnable flushTask = () -> {
+            try {
+                Map<Long, List<BuildingData>> bufferToFlush = shardBufferRef.getAndSet(new ConcurrentHashMap<>());
+                if (!bufferToFlush.isEmpty()) {
+                    writeBuildingShardBatchAppendOnly(bufferToFlush, appendBuildingDb, stats);
+                }
+            } catch (Exception e) {
+                stats.recordError(ImportStatistics.Stage.PROCESSING_BUILDINGS, Kind.STORE, null, "flush-building-append-batch", e);
+            }
+        };
+
+        try (PeriodicFlusher _ = PeriodicFlusher.start("building-shard-flush", 5, 5, flushTask);
              RocksIterator it = poiIndexDb.newIterator()) {
-            
+
             it.seekToFirst();
             List<Long> currentBatchIds = new ArrayList<>(batchSize);
             List<PoiIndexRec> currentBatchRecs = new ArrayList<>(batchSize);
-            
+
             while (it.isValid()) {
                 byte[] key = it.key();
                 if (key[0] == 'W') { // Buildings must be ways
@@ -882,16 +900,15 @@ public class ImportService {
                         final long wayId = bytesToLong(key, 1);
                         currentBatchIds.add(wayId);
                         currentBatchRecs.add(rec);
-                        
+
                         if (currentBatchIds.size() >= batchSize) {
-                            // submit this batch
                             semaphore.acquire();
                             stats.incrementActiveThreads();
                             List<Long> idsToProcess = new ArrayList<>(currentBatchIds);
                             List<PoiIndexRec> recsToProcess = new ArrayList<>(currentBatchRecs);
                             ecs.submit(() -> {
                                 try {
-                                    List<BoundaryResultLite> results = new ArrayList<>();
+                                    List<BuildingData> results = new ArrayList<>();
                                     for (int i = 0; i < idsToProcess.size(); i++) {
                                         long wayIdInner = idsToProcess.get(i);
                                         PoiIndexRec recInner = recsToProcess.get(i);
@@ -906,8 +923,7 @@ public class ImportService {
                                                 }
                                             }
                                             if (geometry == null || geometry.isEmpty() || !geometry.isValid()) continue;
-                                            
-                                            results.add(new BoundaryResultLite(wayIdInner, 100, recInner.subtype, null, geometry));
+                                            results.add(new BuildingData(wayIdInner, recInner.subtype, null, geometry));
                                         } catch (Exception e) {
                                             stats.recordError(ImportStatistics.Stage.PROCESSING_BUILDINGS, Kind.GEOMETRY, wayIdInner, "build-building-geometry-batch", e);
                                         }
@@ -921,15 +937,17 @@ public class ImportService {
                             submitted.incrementAndGet();
                             currentBatchIds.clear();
                             currentBatchRecs.clear();
-                            
-                            // drain completed futures to keep memory bounded
-                            Future<List<BoundaryResultLite>> f;
+
+                            Future<List<BuildingData>> f;
                             while ((f = ecs.poll()) != null) {
                                 collected.incrementAndGet();
                                 try {
-                                    List<BoundaryResultLite> batchResults = f.get();
-                                    for (BoundaryResultLite r : batchResults) {
-                                        storeBoundary(r.osmId(), r.level(), r.name(), r.code(), r.geometry(), buildingsWriter, buildingGridIndexDb);
+                                    List<BuildingData> batchResults = f.get();
+                                    Map<Long, List<BuildingData>> currentActiveBuffer = shardBufferRef.get();
+                                    for (BuildingData r : batchResults) {
+                                        Coordinate center = r.geometry().getEnvelopeInternal().centre();
+                                        long shardId = s2Helper.getShardId(center.getY(), center.getX());
+                                        currentActiveBuffer.computeIfAbsent(shardId, k -> new CopyOnWriteArrayList<>()).add(r);
                                         stats.incrementBuildingsProcessed();
                                     }
                                 } catch (Exception e) {
@@ -941,8 +959,7 @@ public class ImportService {
                 }
                 it.next();
             }
-            
-            // submit remaining partial batch
+
             if (!currentBatchIds.isEmpty()) {
                 semaphore.acquire();
                 stats.incrementActiveThreads();
@@ -950,7 +967,7 @@ public class ImportService {
                 List<PoiIndexRec> recsToProcess = new ArrayList<>(currentBatchRecs);
                 ecs.submit(() -> {
                     try {
-                        List<BoundaryResultLite> results = new ArrayList<>();
+                        List<BuildingData> results = new ArrayList<>();
                         for (int i = 0; i < idsToProcess.size(); i++) {
                             long wayIdInner = idsToProcess.get(i);
                             PoiIndexRec recInner = recsToProcess.get(i);
@@ -965,8 +982,7 @@ public class ImportService {
                                     }
                                 }
                                 if (geometry == null || geometry.isEmpty() || !geometry.isValid()) continue;
-                                
-                                results.add(new BoundaryResultLite(wayIdInner, 100, recInner.subtype, null, geometry));
+                                results.add(new BuildingData(wayIdInner, recInner.subtype, null, geometry));
                             } catch (Exception e) {
                                 stats.recordError(ImportStatistics.Stage.PROCESSING_BUILDINGS, Kind.GEOMETRY, wayIdInner, "build-building-geometry-batch", e);
                             }
@@ -979,23 +995,24 @@ public class ImportService {
                 });
                 submitted.incrementAndGet();
             }
-            
-            // drain all remaining futures
+
             long remaining = submitted.get() - collected.get();
             for (int i = 0; i < remaining; i++) {
                 try {
-                    Future<List<BoundaryResultLite>> f = ecs.take();
-                    List<BoundaryResultLite> batchResults = f.get();
-                    for (BoundaryResultLite r : batchResults) {
-                        storeBoundary(r.osmId(), r.level(), r.name(), r.code(), r.geometry(), buildingsWriter, buildingGridIndexDb);
+                    Future<List<BuildingData>> f = ecs.take();
+                    List<BuildingData> batchResults = f.get();
+                    Map<Long, List<BuildingData>> currentActiveBuffer = shardBufferRef.get();
+                    for (BuildingData r : batchResults) {
+                        Coordinate center = r.geometry().getEnvelopeInternal().centre();
+                        long shardId = s2Helper.getShardId(center.getY(), center.getX());
+                        currentActiveBuffer.computeIfAbsent(shardId, k -> new CopyOnWriteArrayList<>()).add(r);
                         stats.incrementBuildingsProcessed();
                     }
                 } catch (Exception e) {
                     stats.recordError(ImportStatistics.Stage.PROCESSING_BUILDINGS, Kind.CONCURRENCY, null, "building-future-take", e);
                 }
             }
-            
-            buildingsWriter.flush();
+            flushTask.run();
         } finally {
             executor.shutdown();
             executor.awaitTermination(30, TimeUnit.MINUTES);
@@ -1139,6 +1156,167 @@ public class ImportService {
         POI.addHierarchy(builder, hierVecOff);
         if (boundaryOff != 0) POI.addBoundary(builder, boundaryOff);
         return POI.endPOI(builder);
+    }
+
+    private void compactBuildingShards(RocksDB appendDb, RocksDB buildingsDb, ImportStatistics stats) {
+        stats.setCompactionStartTime(System.currentTimeMillis());
+        stats.setCompactionEntriesTotal(buildingSequence.get());
+
+        Building reusableBuilding = new Building();
+        Geometry reusableGeom = new Geometry();
+
+        try (RocksIterator iterator = appendDb.newIterator();
+             WriteOptions writeOptions = new WriteOptions().setDisableWAL(true)) {
+
+            iterator.seekToFirst();
+
+            long currentShardId = Long.MIN_VALUE;
+            List<byte[]> currentShardChunks = new ArrayList<>();
+
+            while (iterator.isValid()) {
+                byte[] key = iterator.key();
+                long shardId = ByteBuffer.wrap(key).order(ByteOrder.BIG_ENDIAN).getLong();
+
+                if (shardId != currentShardId && currentShardId != Long.MIN_VALUE) {
+                    flushCompactedBuildingShard(currentShardChunks, currentShardId, buildingsDb, writeOptions, reusableBuilding, reusableGeom, stats);
+                    stats.incrementCompactionEntriesProcessed(currentShardChunks.size());
+                    currentShardChunks.clear();
+                }
+
+                currentShardId = shardId;
+
+                byte[] value = iterator.value();
+                byte[] valueCopy = new byte[value.length];
+                System.arraycopy(value, 0, valueCopy, 0, value.length);
+                currentShardChunks.add(valueCopy);
+
+                iterator.next();
+            }
+
+            if (currentShardId != Long.MIN_VALUE && !currentShardChunks.isEmpty()) {
+                flushCompactedBuildingShard(currentShardChunks, currentShardId, buildingsDb, writeOptions, reusableBuilding, reusableGeom, stats);
+                stats.incrementCompactionEntriesProcessed(currentShardChunks.size());
+            }
+        }
+    }
+
+    private void flushCompactedBuildingShard(List<byte[]> chunks, long shardId, RocksDB buildingsDb, WriteOptions writeOptions, Building reusableBuilding, Geometry reusableGeom, ImportStatistics stats) {
+        int totalBuildings = 0;
+        try {
+            for (byte[] chunk : chunks) {
+                ByteBuffer buf = ByteBuffer.wrap(chunk);
+                BuildingList buildingList = BuildingList.getRootAsBuildingList(buf);
+                totalBuildings += buildingList.buildingsLength();
+            }
+        } catch (Exception e) {
+            stats.recordError(ImportStatistics.Stage.COMPACTING_POIS, Kind.DECODE, null, "flatbuffers-read:BuildingList", e);
+        }
+
+        FlatBufferBuilder builder = new FlatBufferBuilder(Math.max(1024, totalBuildings * 256));
+        int[] allOffsets = new int[totalBuildings];
+        int idx = 0;
+
+        for (byte[] chunk : chunks) {
+            ByteBuffer buf = ByteBuffer.wrap(chunk);
+            BuildingList buildingList = BuildingList.getRootAsBuildingList(buf);
+            int count = buildingList.buildingsLength();
+
+            for (int i = 0; i < count; i++) {
+                buildingList.buildings(reusableBuilding, i);
+                allOffsets[idx++] = copyBuildingFromFlatBuffer(builder, reusableBuilding, reusableGeom);
+            }
+        }
+
+        int buildingsVec = BuildingList.createBuildingsVector(builder, allOffsets);
+        int buildingList = BuildingList.createBuildingList(builder, buildingsVec);
+        builder.finish(buildingList);
+        try {
+            buildingsDb.put(writeOptions, s2Helper.longToByteArray(shardId), builder.sizedByteArray());
+        } catch (RocksDBException e) {
+            stats.recordError(ImportStatistics.Stage.COMPACTING_POIS, Kind.STORE, null, "rocks-put:buildings", e);
+        }
+    }
+
+    private int copyBuildingFromFlatBuffer(FlatBufferBuilder builder, Building building, Geometry reusableGeom) {
+        String nameStr = building.name();
+        String codeStr = building.code();
+        int nameOff = nameStr != null ? builder.createString(nameStr) : 0;
+        int codeOff = codeStr != null ? builder.createString(codeStr) : 0;
+
+        int geometryOff = 0;
+        if (building.geometry(reusableGeom) != null && reusableGeom.dataLength() > 0) {
+            ByteBuffer geometryBuf = reusableGeom.dataAsByteBuffer();
+            if (geometryBuf != null) {
+                int geometryDataOff = Geometry.createDataVector(builder, geometryBuf);
+                geometryOff = Geometry.createGeometry(builder, geometryDataOff);
+            }
+        }
+
+        Building.startBuilding(builder);
+        Building.addId(builder, building.id());
+        if (nameOff != 0) Building.addName(builder, nameOff);
+        if (codeOff != 0) Building.addCode(builder, codeOff);
+        if (geometryOff != 0) Building.addGeometry(builder, geometryOff);
+        return Building.endBuilding(builder);
+    }
+
+    private void writeBuildingShardBatchAppendOnly(Map<Long, List<BuildingData>> shardBuffer, RocksDB appendDb, ImportStatistics stats) throws Exception {
+        FlatBufferBuilder builder = new FlatBufferBuilder(1024 * 32);
+
+        try (WriteBatch batch = new WriteBatch(); WriteOptions writeOptions = new WriteOptions()) {
+
+            for (Iterator<Map.Entry<Long, List<BuildingData>>> it = shardBuffer.entrySet().iterator(); it.hasNext(); ) {
+                Map.Entry<Long, List<BuildingData>> entry = it.next();
+                List<BuildingData> buildings = entry.getValue();
+                if (buildings.isEmpty()) {
+                    it.remove();
+                    continue;
+                }
+
+                builder.clear();
+
+                int[] buildingOffsets = new int[buildings.size()];
+                for (int i = 0; i < buildings.size(); i++) {
+                    buildingOffsets[i] = serializeBuildingData(builder, buildings.get(i));
+                }
+                int buildingsVectorOffset = BuildingList.createBuildingsVector(builder, buildingOffsets);
+                int buildingListOffset = BuildingList.createBuildingList(builder, buildingsVectorOffset);
+                builder.finish(buildingListOffset);
+
+                long seq = buildingSequence.incrementAndGet();
+                byte[] key = new byte[16];
+                ByteBuffer.wrap(key).putLong(entry.getKey()).putLong(seq);
+
+                batch.put(key, builder.sizedByteArray());
+                it.remove();
+            }
+
+            try {
+                appendDb.write(writeOptions, batch);
+            } catch (RocksDBException e) {
+                stats.recordError(ImportStatistics.Stage.PROCESSING_BUILDINGS, Kind.STORE, null, "rocks-write:append_building", e);
+            }
+            stats.incrementRocksDbWrites();
+        }
+    }
+
+    private int serializeBuildingData(FlatBufferBuilder builder, BuildingData building) {
+        int nameOff = building.name() != null ? builder.createString(building.name()) : 0;
+        int codeOff = building.code() != null ? builder.createString(building.code()) : 0;
+
+        int geometryOff = 0;
+        if (building.geometry() != null) {
+            byte[] wkb = new WKBWriter().write(building.geometry());
+            int geometryDataOff = Geometry.createDataVector(builder, wkb);
+            geometryOff = Geometry.createGeometry(builder, geometryDataOff);
+        }
+
+        Building.startBuilding(builder);
+        Building.addId(builder, building.id());
+        if (nameOff != 0) Building.addName(builder, nameOff);
+        if (codeOff != 0) Building.addCode(builder, codeOff);
+        if (geometryOff != 0) Building.addGeometry(builder, geometryOff);
+        return Building.endBuilding(builder);
     }
 
 
@@ -1780,6 +1958,7 @@ public class ImportService {
                                    Path shardsDbPath,
                                    Path boundariesDbPath,
                                    Path buildingsDbPath,
+                                   Path appendBuildingDbPath,
                                    Path gridIndexDbPath,
                                    Path buildingGridIndexDbPath,
                                    Path nodeCacheDbPath,
@@ -1803,7 +1982,8 @@ public class ImportService {
         long rel = computeDirectorySize(relIndexDbPath);
         long poi = computeDirectorySize(poiIndexDbPath);
         long append = computeDirectorySize(appendDbPath);
-        long tmpTotal = grid + buildingGrid + node + way + boundaryWay + needed + rel + poi + append;
+        long appendBuilding = computeDirectorySize(appendBuildingDbPath);
+        long tmpTotal = grid + buildingGrid + node + way + boundaryWay + needed + rel + poi + append + appendBuilding;
 
         stats.setShardsBytes(shards);
         stats.setBoundariesBytes(boundaries);
@@ -1835,6 +2015,9 @@ public class ImportService {
     }
 
     private record BoundaryResultLite(long osmId, int level, String name, String code, org.locationtech.jts.geom.Geometry geometry) {
+    }
+
+    private record BuildingData(long id, String name, String code, org.locationtech.jts.geom.Geometry geometry) {
     }
 
     private Long safeEntityId(EntityContainer container) {

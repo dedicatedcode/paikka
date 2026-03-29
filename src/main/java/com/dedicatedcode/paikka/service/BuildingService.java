@@ -110,42 +110,32 @@ public class BuildingService {
             logger.debug("Buildings database not initialized");
             return null;
         }
-        
+
         try {
-            // First, try to get the building directly by its OSM ID
-            byte[] key = s2Helper.longToByteArray(osmId);
-            byte[] data = buildingsDb.get(key);
-            
-            if (data != null) {
-                return decodeBuildingInfo(data, osmId);
-            }
-            
-            // If not found directly, search in surrounding shards
-            // Get the shard ID for the given coordinates
             long centerShardId = s2Helper.getShardId(lat, lon);
-            
-            // Search in the center shard and neighbor shards
             List<Long> shardsToSearch = new ArrayList<>();
             shardsToSearch.add(centerShardId);
-            
-            // Add neighbor shards
             shardsToSearch.addAll(s2Helper.getNeighborShards(centerShardId));
-            
-            // Search through all shards
+
             for (Long shardId : shardsToSearch) {
-                // In the buildings database, buildings are stored by OSM ID, not shard ID
-                // So we need a different approach. Let's scan for the building by OSM ID
-                // Actually, buildings are stored by OSM ID, so we already tried that.
-                // If not found, we need to search by location.
-                
-                // We could implement a spatial search, but for now, let's just return null
-                // if not found by direct OSM ID lookup
-                break;
+                byte[] key = s2Helper.longToByteArray(shardId);
+                byte[] data = buildingsDb.get(key);
+
+                if (data != null) {
+                    ByteBuffer buffer = ByteBuffer.wrap(data);
+                    com.dedicatedcode.paikka.flatbuffers.BuildingList buildingList = com.dedicatedcode.paikka.flatbuffers.BuildingList.getRootAsBuildingList(buffer);
+                    for (int i = 0; i < buildingList.buildingsLength(); i++) {
+                        com.dedicatedcode.paikka.flatbuffers.Building building = buildingList.buildings(i);
+                        if (building != null && building.id() == osmId) {
+                            return decodeBuildingInfo(building);
+                        }
+                    }
+                }
             }
-            
+
             logger.debug("Building with OSM ID {} not found in buildings database", osmId);
             return null;
-            
+
         } catch (RocksDBException e) {
             logger.error("RocksDB error while querying building info for OSM ID {}", osmId, e);
             return null;
@@ -155,68 +145,38 @@ public class BuildingService {
         }
     }
     
-    /**
-     * Get building information for a specific OSM ID without location.
-     * This is a simpler version that doesn't search surrounding shards.
-     */
-    public BuildingInfo getBuildingInfo(long osmId) {
-        if (buildingsDb == null) {
-            logger.debug("Buildings database not initialized");
-            return null;
-        }
-        
+    private BuildingInfo decodeBuildingInfo(com.dedicatedcode.paikka.flatbuffers.Building building) {
         try {
-            byte[] key = s2Helper.longToByteArray(osmId);
-            byte[] data = buildingsDb.get(key);
-            
-            if (data != null) {
-                return decodeBuildingInfo(data, osmId);
-            }
-            
-            logger.debug("Building with OSM ID {} not found in buildings database", osmId);
-            return null;
-            
-        } catch (RocksDBException e) {
-            logger.error("RocksDB error while querying building info for OSM ID {}", osmId, e);
-            return null;
-        }
-    }
-    
-    private BuildingInfo decodeBuildingInfo(byte[] data, long osmId) {
-        try {
-            ByteBuffer buffer = ByteBuffer.wrap(data);
-            Boundary boundary = Boundary.getRootAsBoundary(buffer);
-            
             BuildingInfo info = new BuildingInfo();
-            info.setOsmId(osmId);
-            info.setLevel(boundary.level());
-            info.setName(boundary.name());
-            info.setCode(boundary.code());
-            info.setType(boundary.name()); // In buildings, name often contains building type
-            
+            info.setOsmId(building.id());
+            info.setLevel(100); // Buildings don't have an admin_level, using a high value.
+            info.setName(building.name());
+            info.setCode(building.code());
+            info.setType(building.name()); // In buildings, name often contains building type
+
             // Decode geometry if present
-            if (boundary.geometry() != null) {
-                Geometry geometry = boundary.geometry();
+            if (building.geometry() != null) {
+                Geometry geometry = building.geometry();
                 if (geometry.dataLength() > 0) {
                     byte[] wkbData = new byte[geometry.dataLength()];
                     for (int i = 0; i < geometry.dataLength(); i++) {
                         wkbData[i] = (byte) geometry.data(i);
                     }
-                    
+
                     try {
                         WKBReader wkbReader = new WKBReader();
                         org.locationtech.jts.geom.Geometry jtsGeometry = wkbReader.read(wkbData);
                         info.setGeometry(jtsGeometry);
                         info.setBoundaryWkb(wkbData);
                     } catch (Exception e) {
-                        logger.warn("Failed to decode geometry for building OSM ID {}: {}", osmId, e.getMessage());
+                        logger.warn("Failed to decode geometry for building OSM ID {}: {}", building.id(), e.getMessage());
                     }
                 }
             }
-            
+
             return info;
         } catch (Exception e) {
-            logger.error("Failed to decode building info for OSM ID {}", osmId, e);
+            logger.error("Failed to decode building info for OSM ID {}", building.id(), e);
             return null;
         }
     }
