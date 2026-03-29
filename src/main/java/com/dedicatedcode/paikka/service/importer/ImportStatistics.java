@@ -54,7 +54,8 @@ class ImportStatistics {
         PROCESSING_ADMIN_BOUNDARIES("Processing Admin Boundaries"),
         COMPACTING_POIS("Compacting POIs"),
         COMPACTING_BUILDINGS("Compacting Buildings"),
-        PROCESSING_BUILDINGS("Processing Buildings");
+        PROCESSING_BUILDINGS("Processing Buildings"),
+        PREPARING_POI_SHARDING("Preparing POI Sharding");
         private final String shortName;
 
         Stage(String shortName) {
@@ -104,6 +105,7 @@ class ImportStatistics {
     private final AtomicLong boundariesProcessed = new AtomicLong(0);
     private final AtomicLong poisProcessed = new AtomicLong(0);
     private final AtomicLong poiIndexRecRead = new AtomicLong(0);
+    private final AtomicLong poiIndexEntriesScanned = new AtomicLong(0);
     private final AtomicBoolean poiIndexRecReadDone = new AtomicBoolean(false);
     private final AtomicLong rocksDbWrites = new AtomicLong(0);
     private final AtomicLong queueSize = new AtomicLong(0);
@@ -140,7 +142,7 @@ class ImportStatistics {
     private volatile long tmpTotalBytes;
     private volatile long tmpAppendBytes;
 
-    private final int TOTAL_STEPS = 8;
+    private final int TOTAL_STEPS = 9;
     private int currentStep = 0;
 
     public long getEntitiesRead() {
@@ -205,6 +207,14 @@ class ImportStatistics {
 
     public void incrementPoiIndexRecRead() {
         poiIndexRecRead.incrementAndGet();
+    }
+
+    public long getPoiIndexEntriesScanned() {
+        return poiIndexEntriesScanned.get();
+    }
+
+    public void incrementPoiIndexEntriesScanned() {
+        poiIndexEntriesScanned.incrementAndGet();
     }
 
     public boolean isPoiIndexRecReadDone() {
@@ -546,6 +556,12 @@ class ImportStatistics {
                                             formatCompactNumber(getBuildingsProcessed()), formatCompactRate(buildingsPerSec)));
                     sb.append(String.format(" │ \033[35mProgress:\033[0m %.2f%%", percentage));
                     sb.append(String.format(" │ \033[37mThreads:\033[0m %d", getActiveThreads()));
+
+                } else if (phase.contains("1.5")) {
+                    long scannedPerSec = phaseSeconds > 0 ? (long) (getPoiIndexEntriesScanned() / phaseSeconds) : 0;
+                    sb.append(String.format("\033[1;36m[%s]\033[0m \033[1mPreparing POI Sharding\033[0m", formatTime(elapsed)));
+                    sb.append(String.format(" │ \033[32mPOI Index Scanned:\033[0m %s \033[33m(%s/s)\033[0m",
+                                            formatCompactNumber(getPoiIndexEntriesScanned()), formatCompactRate(scannedPerSec)));
 
                 } else if (phase.contains("2.1")) {
                     long poisPerSec = phaseSeconds > 0 ? (long) (getPoisProcessed() / phaseSeconds) : 0;

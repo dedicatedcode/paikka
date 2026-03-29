@@ -225,12 +225,11 @@ public class ImportService {
                 stats.setCurrentPhase(5, "1.4: Processing building boundaries");
                 processBuildingBoundariesFromIndex(poiIndexDb, nodeCache, wayIndexDb, buildingGridIndexDb, appendBuildingDb, stats);
 
-                stats.setCurrentPhase(6, "2.1: Processing POIs & Sharding");
                 pass2PoiShardingFromIndex(nodeCache, wayIndexDb, appendDb, boundariesDb, poiIndexDb, gridIndexDb, stats);
 
-                stats.setCurrentPhase(7, "2.2: Compacting POIs");
+                stats.setCurrentPhase(8, "2.2: Compacting POIs");
                 compactShards(appendDb, shardsDb, stats);
-                stats.setCurrentPhase(8, "2.3: Compacting Buildings");
+                stats.setCurrentPhase(9, "2.3: Compacting Buildings");
                 compactBuildingShards(appendBuildingDb, buildingsDb, stats);
                 stats.stop();
                 stats.printPhaseSummary("PASS 2", pass2Start);
@@ -446,11 +445,17 @@ public class ImportService {
             try (ExecutorService executor = createExecutorService(numReaders); ReadOptions ro = new ReadOptions().setReadaheadSize(8 * 1024 * 1024)) {
                 com.github.benmanes.caffeine.cache.Cache<Long, HierarchyCache.CachedBoundary> globalBoundaryCache = Caffeine.newBuilder().maximumSize(1000).recordStats().build();
                 ThreadLocal<HierarchyCache> hierarchyCacheThreadLocal = ThreadLocal.withInitial(() -> new HierarchyCache(boundariesDb, gridIndexDb, s2Helper, globalBoundaryCache));
+
+                stats.setCurrentPhase(6, "1.5: Preparing POI Sharding");
                 long total = 0;
                 try (RocksIterator it = poiIndexDb.newIterator(ro)) {
-                    for (it.seekToFirst(); it.isValid(); it.next()) total++;
+                    for (it.seekToFirst(); it.isValid(); it.next()) {
+                        total++;
+                        stats.incrementPoiIndexEntriesScanned();
+                    }
                 }
 
+                stats.setCurrentPhase(7, "2.1: Processing POIs & Sharding");
                 long step = Math.max(1, total / numReaders);
                 List<byte[]> splitKeys = new ArrayList<>();
                 try (RocksIterator it = poiIndexDb.newIterator(ro)) {
