@@ -111,8 +111,8 @@ class ImportStatistics {
     private final AtomicLong boundaryPhaseEntitiesRead = new AtomicLong(0);
     private final AtomicLong buildingsFound = new AtomicLong(0);
     private final AtomicLong buildingsProcessed = new AtomicLong(0);
-    private AtomicLong addressNodesFound = new AtomicLong(0);
-    private AtomicLong addressNodesWithBuildingType = new AtomicLong(0);
+    private final AtomicLong addressNodesFound = new AtomicLong(0);
+    private final AtomicLong addressNodesWithBuildingType = new AtomicLong(0);
 
     private volatile String currentPhase = "Initializing";
     private volatile boolean running = true;
