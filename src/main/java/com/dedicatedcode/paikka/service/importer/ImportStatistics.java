@@ -653,9 +653,9 @@ class ImportStatistics {
                           formatCompactNumber(getRocksDbWrites()));
 
         System.out.println("\n\033[1;37m📦 Dataset Size:\033[0m " + formatSize(getDatasetBytes()));
-        System.out.println("  • poi_shards:  " + formatSize(getShardsBytes()));
-        System.out.println("  • boundaries:  " + formatSize(getBoundariesBytes()));
-        System.out.println("  • buildings:   " + formatSize(getBuildingsBytes()));
+        System.out.println("  • poi_shards     :  " + formatSize(getShardsBytes()));
+        System.out.println("  • boundaries     :  " + formatSize(getBoundariesBytes()));
+        System.out.println("  • building_shards:  " + formatSize(getBuildingsBytes()));
 
         System.out.println("\n\033[1;37m🧹 Temporary DBs:\033[0m " + formatSize(getTmpTotalBytes()));
         System.out.println("  • grid_index:         " + formatSize(getTmpGridBytes()));
