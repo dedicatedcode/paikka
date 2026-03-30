@@ -1628,8 +1628,8 @@ public class ImportService {
 
                 case "emergency":
                     return switch (val) {
-                        case "fire_hydrant", "defibrillator", "fire_extinguisher",
-                             "siren", "life_ring", "lifeline", "phone", "drinking_water" -> false;
+                        case "fire_hydrant", "fire_service_inlet", "defibrillator", "fire_extinguisher",
+                             "siren", "life_ring", "lifeline", "phone", "drinking_water", "yes" -> false;
                         default -> true;
                     };
 
@@ -1652,6 +1652,8 @@ public class ImportService {
                 case "railway":
                     if ("station".equals(val)) return true;
                     break;
+                case "man_made":
+                    return false;
 
                 default:
                     if (isPoiFastKey(key)) return true;
