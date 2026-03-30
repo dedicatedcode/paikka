@@ -426,12 +426,11 @@ public class ReverseGeocodingService {
     }
 
     private void enhanceWithBuildingInfo(POIResponse response, POIData poi) {
-        // Try to get building info for the POI's OSM ID
-        BuildingService.BuildingInfo buildingInfo = buildingService.getBuildingInfo(poi.id(), poi.lat(), poi.lon());
+        BuildingService.BuildingInfo buildingInfo = buildingService.getBuildingInfo(poi.lat(), poi.lon());
         if (buildingInfo != null) {
             // Update type and subtype with building information
             if (buildingInfo.getType() != null) {
-                response.setType(buildingInfo.getType());
+                response.setType("building");
             }
             // For subtype, we can use building name or code
             if (buildingInfo.getName() != null) {

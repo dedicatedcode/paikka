@@ -17,7 +17,6 @@
 package com.dedicatedcode.paikka.service;
 
 import com.dedicatedcode.paikka.config.PaikkaConfiguration;
-import com.dedicatedcode.paikka.flatbuffers.Boundary;
 import com.dedicatedcode.paikka.flatbuffers.Geometry;
 import org.locationtech.jts.geom.Coordinate;
 import org.locationtech.jts.geom.GeometryFactory;
@@ -107,7 +106,7 @@ public class BuildingService {
      * Get building information for a point (lat, lon) by checking if it is contained in a building.
      * This searches in the given shard and surrounding shards if needed.
      */
-    public BuildingInfo getBuildingInfo(long osmId, double lat, double lon) {
+    public BuildingInfo getBuildingInfo(double lat, double lon) {
         if (buildingsDb == null) {
             logger.debug("Buildings database not initialized");
             return null;
@@ -139,7 +138,7 @@ public class BuildingService {
                                 try {
                                     WKBReader wkbReader = new WKBReader();
                                     org.locationtech.jts.geom.Geometry jtsGeometry = wkbReader.read(wkbData);
-                                    if (jtsGeometry.contains(point)) {
+                                    if (jtsGeometry.intersects(point)) {
                                         return decodeBuildingInfo(building);
                                     }
                                 } catch (Exception e) {
@@ -167,10 +166,10 @@ public class BuildingService {
         try {
             BuildingInfo info = new BuildingInfo();
             info.setOsmId(building.id());
-            info.setLevel(100); // Buildings don't have an admin_level, using a high value.
+            info.setLevel(100);
             info.setName(building.name());
             info.setCode(building.code());
-            info.setType(building.name()); // In buildings, name often contains building type
+            info.setType(building.name());
 
             // Decode geometry if present
             if (building.geometry() != null) {
