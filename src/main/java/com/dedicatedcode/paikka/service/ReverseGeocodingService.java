@@ -50,11 +50,13 @@ public class ReverseGeocodingService {
 
     private final PaikkaConfiguration config;
     private final S2Helper s2Helper;
+    private final BuildingService buildingService;
     private RocksDB shardsDb;
     
-    public ReverseGeocodingService(PaikkaConfiguration config, S2Helper s2Helper) {
+    public ReverseGeocodingService(PaikkaConfiguration config, S2Helper s2Helper, BuildingService buildingService) {
         this.config = config;
         this.s2Helper = s2Helper;
+        this.buildingService = buildingService;
         initializeRocksDB();
     }
     
@@ -176,10 +178,15 @@ public class ReverseGeocodingService {
             // Find the closest POIs up to the limit
             List<POIData> closestPOIs = findClosestPOIs(allPOIs, lat, lon, limit);
             
-            // Convert POIs to response format
+            // Convert POIs to response format and enhance with building info if needed
             List<POIResponse> results = new ArrayList<>();
             for (POIData poi : closestPOIs) {
-                results.add(convertPOIToResponse(poi, lat, lon, lang));
+                POIResponse response = convertPOIToResponse(poi, lat, lon, lang);
+                
+                // Enhance with building information if this is a building or related to a building
+                enhanceWithBuildingInfo(response, poi);
+                
+                results.add(response);
             }
             
             logger.debug("Final result: {} POIs found from {} searched shards", results.size(), searchedShards.size());
@@ -416,6 +423,35 @@ public class ReverseGeocodingService {
         }
         
         return response;
+    }
+
+    private void enhanceWithBuildingInfo(POIResponse response, POIData poi) {
+        BuildingService.BuildingInfo buildingInfo = buildingService.getBuildingInfo(poi.lat(), poi.lon());
+        if (buildingInfo != null) {
+            // Update type and subtype with building information
+            if (buildingInfo.getType() != null) {
+                response.setType("building");
+            }
+            // For subtype, we can use building name or code
+            if (buildingInfo.getName() != null) {
+                response.setSubtype(buildingInfo.getName());
+            } else if (buildingInfo.getCode() != null) {
+                response.setSubtype(buildingInfo.getCode());
+            }
+            
+            // If building has boundary data, set it in the response
+            if (buildingInfo.getBoundaryWkb() != null && buildingInfo.getBoundaryWkb().length > 0) {
+                try {
+                    WKBReader wkbReader = new WKBReader();
+                    Geometry geometry = wkbReader.read(buildingInfo.getBoundaryWkb());
+                    GeoJsonGeometry geoJsonGeometry = convertJtsToGeoJson(geometry);
+                    response.setBoundary(geoJsonGeometry);
+                    logger.debug("Enhanced POI {} with building boundary", poi.id());
+                } catch (Exception e) {
+                    logger.warn("Failed to convert building boundary to GeoJSON for POI {}: {}", poi.id(), e.getMessage());
+                }
+            }
+        }
     }
     
 
