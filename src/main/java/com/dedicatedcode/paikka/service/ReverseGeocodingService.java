@@ -19,7 +19,6 @@ package com.dedicatedcode.paikka.service;
 import com.dedicatedcode.paikka.config.PaikkaConfiguration;
 import com.dedicatedcode.paikka.dto.GeoJsonGeometry;
 import com.dedicatedcode.paikka.dto.POIResponse;
-import com.dedicatedcode.paikka.exception.POINotFoundException;
 import com.dedicatedcode.paikka.flatbuffers.*;
 import org.locationtech.jts.geom.Geometry;
 import org.locationtech.jts.io.WKBReader;
@@ -105,18 +104,7 @@ public class ReverseGeocodingService {
             logger.warn("POI shards database reload completed but database is not available");
         }
     }
-    
-    /**
-     * Find the nearest POI to the given coordinates.
-     */
-    public POIResponse findNearestPOI(double lat, double lon, String lang) {
-        List<POIResponse> results = findNearbyPOIs(lat, lon, lang, 1);
-        if (results.isEmpty()) {
-            throw new POINotFoundException(String.format("No POI found within search radius for coordinates lat=%.6f, lon=%.6f", lat, lon));
-        }
-        return results.getFirst();
-    }
-    
+
     /**
      * Find nearby POIs to the given coordinates.
      * 
@@ -411,7 +399,7 @@ public class ReverseGeocodingService {
                 Geometry geometry = wkbReader.read(poi.boundary());
                 
                 // Create a simple GeoJSON representation
-                GeoJsonGeometry geoJsonGeometry = convertJtsToGeoJson(geometry);
+                GeoJsonGeometry geoJsonGeometry = GeometryHelper.convertJtsToGeoJson(geometry);
                 response.setBoundary(geoJsonGeometry);
                 
                 logger.debug("POI {} has boundary geometry converted to GeoJSON", poi.id());
@@ -444,7 +432,7 @@ public class ReverseGeocodingService {
                 try {
                     WKBReader wkbReader = new WKBReader();
                     Geometry geometry = wkbReader.read(buildingInfo.getBoundaryWkb());
-                    GeoJsonGeometry geoJsonGeometry = convertJtsToGeoJson(geometry);
+                    GeoJsonGeometry geoJsonGeometry = GeometryHelper.convertJtsToGeoJson(geometry);
                     response.setBoundary(geoJsonGeometry);
                     logger.debug("Enhanced POI {} with building boundary", poi.id());
                 } catch (Exception e) {
@@ -467,75 +455,7 @@ public class ReverseGeocodingService {
 
     private record POIWithDistance(POIData poi, double distance) {
     }
-    
-    /**
-     * Convert JTS Geometry to GeoJSON format.
-     * This is a simplified conversion that handles basic geometry types.
-     */
-    private GeoJsonGeometry convertJtsToGeoJson(Geometry geometry) {
-        String geometryType = geometry.getGeometryType();
-        Object coordinates = null;
-        
-        switch (geometryType) {
-            case "Point":
-                coordinates = new double[]{geometry.getCoordinate().x, geometry.getCoordinate().y};
-                break;
-            case "Polygon":
-                // For polygons, we need to extract the exterior ring coordinates
-                // This is a simplified implementation
-                coordinates = extractPolygonCoordinates(geometry);
-                break;
-            case "MultiPolygon":
-                // For multipolygons, extract all polygon coordinates
-                coordinates = extractMultiPolygonCoordinates(geometry);
-                break;
-            default:
-                // For other geometry types, just indicate the type
-                logger.debug("Unsupported geometry type for GeoJSON conversion: {}", geometryType);
-                return new GeoJsonGeometry("Unknown", null);
-        }
-        
-        return new GeoJsonGeometry(geometryType, coordinates);
-    }
-    
-    private Object extractPolygonCoordinates(Geometry polygon) {
-        try {
-            // Get exterior ring coordinates
-            org.locationtech.jts.geom.Coordinate[] coords = polygon.getCoordinates();
-            double[][] ring = new double[coords.length][2];
-            
-            for (int i = 0; i < coords.length; i++) {
-                ring[i][0] = coords[i].x; // longitude
-                ring[i][1] = coords[i].y; // latitude
-            }
-            
-            // GeoJSON polygon format: [[[x,y],[x,y],...]]
-            return new double[][][]{ring};
-        } catch (Exception e) {
-            logger.warn("Failed to extract polygon coordinates: {}", e.getMessage());
-            return null;
-        }
-    }
-    
-    private Object extractMultiPolygonCoordinates(Geometry multiPolygon) {
-        try {
-            List<double[][][]> polygons = new ArrayList<>();
-            
-            for (int i = 0; i < multiPolygon.getNumGeometries(); i++) {
-                Geometry polygon = multiPolygon.getGeometryN(i);
-                Object polyCoords = extractPolygonCoordinates(polygon);
-                if (polyCoords instanceof double[][][]) {
-                    polygons.add((double[][][]) polyCoords);
-                }
-            }
-            
-            return polygons.toArray(new double[0][][][]);
-        } catch (Exception e) {
-            logger.warn("Failed to extract multipolygon coordinates: {}", e.getMessage());
-            return null;
-        }
-    }
-    
+
     /**
      * Build the geometry URL using the configured base URL and current data version.
      */
