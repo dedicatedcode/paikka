@@ -147,7 +147,7 @@ public class BoundaryService {
             WKBReader wkbReader = new WKBReader();
             org.locationtech.jts.geom.Geometry jtsGeometry = wkbReader.read(geometryData);
             
-            return convertJtsToGeoJson(jtsGeometry);
+            return GeometryHelper.convertJtsToGeoJson(jtsGeometry);
             
         } catch (RocksDBException e) {
             logger.error("RocksDB error retrieving boundary for OSM ID {}: {}", osmId, e.getMessage());
@@ -174,69 +174,5 @@ public class BoundaryService {
             (byte) (value >>> 8),
             (byte) value
         };
-    }
-    
-    /**
-     * Convert JTS Geometry to GeoJSON format.
-     * This is a simplified conversion that handles basic geometry types.
-     */
-    private GeoJsonGeometry convertJtsToGeoJson(org.locationtech.jts.geom.Geometry geometry) {
-        String geometryType = geometry.getGeometryType();
-        Object coordinates = null;
-        
-        switch (geometryType) {
-            case "Point":
-                coordinates = new double[]{geometry.getCoordinate().x, geometry.getCoordinate().y};
-                break;
-            case "Polygon":
-                coordinates = extractPolygonCoordinates(geometry);
-                break;
-            case "MultiPolygon":
-                coordinates = extractMultiPolygonCoordinates(geometry);
-                break;
-            default:
-                logger.debug("Unsupported geometry type for GeoJSON conversion: {}", geometryType);
-                return new GeoJsonGeometry("Unknown", null);
-        }
-        
-        return new GeoJsonGeometry(geometryType, coordinates);
-    }
-    
-    private Object extractPolygonCoordinates(org.locationtech.jts.geom.Geometry polygon) {
-        try {
-            // Get exterior ring coordinates
-            org.locationtech.jts.geom.Coordinate[] coords = polygon.getCoordinates();
-            double[][] ring = new double[coords.length][2];
-            
-            for (int i = 0; i < coords.length; i++) {
-                ring[i][0] = coords[i].x; // longitude
-                ring[i][1] = coords[i].y; // latitude
-            }
-            
-            // GeoJSON polygon format: [[[x,y],[x,y],...]]
-            return new double[][][]{ring};
-        } catch (Exception e) {
-            logger.warn("Failed to extract polygon coordinates: {}", e.getMessage());
-            return null;
-        }
-    }
-    
-    private Object extractMultiPolygonCoordinates(org.locationtech.jts.geom.Geometry multiPolygon) {
-        try {
-            List<double[][][]> polygons = new ArrayList<>();
-            
-            for (int i = 0; i < multiPolygon.getNumGeometries(); i++) {
-                org.locationtech.jts.geom.Geometry polygon = multiPolygon.getGeometryN(i);
-                Object polyCoords = extractPolygonCoordinates(polygon);
-                if (polyCoords instanceof double[][][]) {
-                    polygons.add((double[][][]) polyCoords);
-                }
-            }
-            
-            return polygons.toArray(new double[0][][][]);
-        } catch (Exception e) {
-            logger.warn("Failed to extract multipolygon coordinates: {}", e.getMessage());
-            return null;
-        }
     }
 }

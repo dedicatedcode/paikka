@@ -105,7 +105,10 @@ public class GeocodingController {
             "lang", lang,
             "limit", effectiveLimit
         ));
-        
+        Map<String, Object> metadata = metadataService.getMetadata();
+        response.put("metadata", metadata);
+        response.put("dataSources", Map.of("OpenStreetMap", "https://openstreetmap.org/copyright"));
+
         return ResponseEntity.ok()
             .header("X-Result-Count", String.valueOf(results.size()))
             .header("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0") // No caching

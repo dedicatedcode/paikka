@@ -22,6 +22,7 @@ import com.dedicatedcode.paikka.service.MetadataService;
 import com.dedicatedcode.paikka.service.BuildingService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -38,6 +39,7 @@ import java.util.Map;
 @RestController
 @RequestMapping("/admin")
 @ConditionalOnProperty(name = "paikka.import-mode", havingValue = "false", matchIfMissing = true)
+@ConditionalOnExpression("!'${paikka.admin.password}'.trim().isEmpty()")
 public class AdminController {
     
     private static final Logger logger = LoggerFactory.getLogger(AdminController.class);
