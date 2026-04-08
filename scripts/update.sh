@@ -23,10 +23,6 @@ IMPORT_THREADS="${IMPORT_THREADS:-10}"
 # --- Remote Machine Settings ---
 REMOTE_BASE_DIR="/opt/paikka/data"
 
-# --- Geocoder API Settings ---
-GEOCODER_ADMIN_URL="http://localhost:8080/admin/refresh-db"
-GEOCODER_TEST_URL_BASE="http://localhost:8080/v1/reverse"
-
 # Global variables that will be set by parse_args_and_configure or environment
 REMOTE_USER=""
 REMOTE_HOST=""
