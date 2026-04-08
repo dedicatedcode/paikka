@@ -116,6 +116,7 @@ local_create_import_bundle() {
           --memory "$IMPORT_MEMORY" \
           --threads "$IMPORT_THREADS" \
           --data-dir "/import/" \
+          --skip-mem-check \
           "/download/$PBF_FILTERED_FILE"
 }
 
