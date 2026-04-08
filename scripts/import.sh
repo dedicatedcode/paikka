@@ -17,6 +17,7 @@ usage() {
     echo "  --data-dir PATH       Directory to store processed data (default: ./)"
     echo "  --memory SIZE         JVM heap size (default: 16g)"
     echo "  --threads NUM         Maximum number of import threads (default: half of CPU cores)"
+    echo "  -y, --skip-mem-check  Skip memory availability check and warning prompt"
     echo "  -h, --help            Show this help message"
     echo ""
     echo "Examples:"
