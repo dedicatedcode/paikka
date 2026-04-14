@@ -487,16 +487,6 @@ public class ImportService {
                                 rec.kind = kind;
                                 rec.id = id;
 
-                                // Solution: The old workaround is removed. Enrichment is done at query time.
-                                // We no longer try to enrich address nodes during import.
-
-                                // Buildings are processed in a separate phase and not included as point POIs.
-                                if ("building".equals(rec.type)) {
-                                    it.next();
-                                    continue;
-                                }
-
-                                // For way POIs, lat/lon is NaN — resolve from nodeCache/wayIndexDb
                                 byte[] cacheWayNodes = null;
                                 if (Double.isNaN(rec.lat) && kind == 'W') {
                                     cacheWayNodes = resolveWayCenter(rec, nodeCache, wayIndexDb, stats);
