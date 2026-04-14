@@ -17,6 +17,7 @@ usage() {
     echo "  --data-dir PATH       Directory to store processed data (default: ./)"
     echo "  --memory SIZE         JVM heap size (default: 16g)"
     echo "  --threads NUM         Maximum number of import threads (default: half of CPU cores)"
+    echo "  -y, --skip-mem-check  Skip memory availability check and warning prompt"
     echo "  -h, --help            Show this help message"
     echo ""
     echo "Examples:"
@@ -40,6 +41,7 @@ THREADS=""
 PBF_FILE=""
 
 # Parse arguments
+SKIP_MEM_CHECK=false
 while [[ $# -gt 0 ]]; do
     case $1 in
         --jar-file)
@@ -57,6 +59,10 @@ while [[ $# -gt 0 ]]; do
         --threads)
             THREADS="$2"
             shift 2
+            ;;
+        -y|--skip-mem-check)
+            SKIP_MEM_CHECK=true
+            shift
             ;;
         -h|--help)
             usage
@@ -129,7 +135,7 @@ REQUESTED_MEM_GB=$(echo "$MEMORY" | sed 's/[^0-9]//g')
 echo "System memory:   ${AVAILABLE_MEM_GB}GB available"
 echo "Requested heap:  $MEMORY"
 
-if [ "$REQUESTED_MEM_GB" -gt "$AVAILABLE_MEM_GB" ]; then
+if [ "$SKIP_MEM_CHECK" = false ] && [ "$REQUESTED_MEM_GB" -gt "$AVAILABLE_MEM_GB" ]; then
     echo ""
     echo "⚠️  WARNING: Requested heap size ($MEMORY) exceeds available memory (${AVAILABLE_MEM_GB}GB)"
     echo "   This may cause the process to be killed by the OOM killer."
@@ -141,6 +147,8 @@ if [ "$REQUESTED_MEM_GB" -gt "$AVAILABLE_MEM_GB" ]; then
         echo "Import cancelled."
         exit 1
     fi
+elif [ "$SKIP_MEM_CHECK" = true ]; then
+    echo "Skipping memory check (--skip-mem-check flag used)"
 fi
 
 # Build JVM arguments with memory management optimizations
