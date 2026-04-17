@@ -103,7 +103,7 @@ local_pull_docker_image() {
 # LOCAL: Filters the full planet PBF file using the Paikka container.
 ###
 local_filter_pbf() {
-    log "LOCAL: Filtering PBF file (approx. 50 mins)"
+    log "LOCAL: Filtering PBF file"
     sudo docker run --rm -v "$DOWNLOAD_DIR":/data "$DOCKER_IMAGE" prepare "/data/$PBF_INPUT_FILE" "/data/$PBF_FILTERED_FILE"
 }
 
@@ -116,7 +116,6 @@ local_create_import_bundle() {
           --memory "$IMPORT_MEMORY" \
           --threads "$IMPORT_THREADS" \
           --data-dir "/import/" \
-          --skip-mem-check \
           "/download/$PBF_FILTERED_FILE"
 }
 
