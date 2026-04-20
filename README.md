@@ -324,7 +324,7 @@ services:
       - paikka-data:/data
       - paikka-stats:/stats
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/api/v1/health"]
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/api/v1/health"]
       interval: 30s
       timeout: 10s
       retries: 3
