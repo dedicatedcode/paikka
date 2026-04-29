@@ -91,11 +91,11 @@ public class ImportService {
         }
     }
 
-    public void importData(String pbfFilePath, String dataDir) throws Exception {
+    public void importData(List<String> pbfFilePaths, String dataDir) throws Exception {
         long totalStartTime = System.currentTimeMillis();
-        printHeader(pbfFilePath, dataDir);
+        printHeader(pbfFilePaths, dataDir);
 
-        Path pbfFile = Paths.get(pbfFilePath);
+        List<Path> pbfPaths = pbfFilePaths.stream().map(Paths::get).toList();
         Path dataDirectory = Paths.get(dataDir);
         Path tmpDirectory = dataDirectory.resolve("tmp");
         dataDirectory.toFile().mkdirs();
@@ -208,16 +208,22 @@ public class ImportService {
                 stats.printPhaseHeader("PASS 1: Discovery & Indexing");
                 long pass1Start = System.currentTimeMillis();
                 stats.setCurrentPhase(1, "1.1.1: Discovery & Indexing");
-                pass1DiscoveryAndIndexing(pbfFile, wayIndexDb, neededBoundaryWaysDb, neededNodesDb, relIndexDb, poiIndexDb, stats);
+                for (Path pbfFile : pbfPaths) {
+                    pass1DiscoveryAndIndexing(pbfFile, wayIndexDb, neededBoundaryWaysDb, neededNodesDb, relIndexDb, poiIndexDb, stats);
+                }
                 stats.setCurrentPhase(2, "1.1.2: Indexing boundary member ways");
-                indexBoundaryMemberWays(pbfFile, neededBoundaryWaysDb, wayIndexDb, neededNodesDb, stats);
+                for (Path pbfFile : pbfPaths) {
+                    indexBoundaryMemberWays(pbfFile, neededBoundaryWaysDb, wayIndexDb, neededNodesDb, stats);
+                }
                 stats.printPhaseSummary("PASS 1", pass1Start);
 
                 // PASS 2: Nodes Cache, Boundaries, POIs
                 stats.printPhaseHeader("PASS 2: Nodes Cache, Boundaries, POIs");
                 long pass2Start = System.currentTimeMillis();
                 stats.setCurrentPhase(3, "1.2: Caching node coordinates");
-                cacheNeededNodeCoordinates(pbfFile, neededNodesDb, nodeCache, stats);
+                for (Path pbfFile : pbfPaths) {
+                    cacheNeededNodeCoordinates(pbfFile, neededNodesDb, nodeCache, stats);
+                }
 
                 stats.setCurrentPhase(4, "1.3: Processing administrative boundaries");
                 processAdministrativeBoundariesFromIndex(relIndexDb, nodeCache, wayIndexDb, gridIndexDb, boundariesDb, stats);
@@ -260,7 +266,7 @@ public class ImportService {
                 boundariesDb.flush(new FlushOptions().setWaitForFlush(true));
                 stats.printFinalStatistics();
                 stats.printOutcomeAndErrors();
-                writeMetadataFile(pbfFile, dataDirectory);
+                writeMetadataFile(pbfPaths, dataDirectory);
             } catch (Exception e) {
                 stats.stop();
                 stats.printError("IMPORT FAILED: " + e.getMessage());
@@ -277,13 +283,13 @@ public class ImportService {
         }
     }
 
-    private void writeMetadataFile(Path pbfFile, Path dataDirectory) throws IOException {
+    private void writeMetadataFile(List<Path> pbfFiles, Path dataDirectory) throws IOException {
         Path metadataPath = dataDirectory.resolve("paikka_metadata.json");
         Instant now = Instant.now();
         String importTimestamp = DateTimeFormatter.ISO_INSTANT.format(now);
         String dataVersion = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss").withZone(ZoneOffset.UTC).format(now);
         ObjectMapper objectMapper = new ObjectMapper();
-        PaikkaMetadata metadata = new PaikkaMetadata(importTimestamp, dataVersion, pbfFile.getFileName().toString(), S2Helper.GRID_LEVEL, "1.0.0");
+        PaikkaMetadata metadata = new PaikkaMetadata(importTimestamp, dataVersion, pbfFiles.stream().map(path -> path.getFileName().toString()).toList(), S2Helper.GRID_LEVEL, "1.0.0");
 
         objectMapper.writeValue(metadataPath.toFile(), metadata);
         System.out.println("\n\033[1;32mMetadata file written to: " + metadataPath + "\033[0m");
@@ -1894,9 +1900,10 @@ public class ImportService {
         return " ".repeat(Math.max(0, pad)) + text;
     }
 
-    private void printHeader(String pbfFilePath, String dataDir) {
+    private void printHeader(List<String> pbfFilePaths, String dataDir) {
         System.out.println("\n\033[1;34m" + "=".repeat(80) + "\n" + centerText("PAIKKA IMPORT STARTING") + "\n" + "=".repeat(80) + "\033[0m\n");
-        System.out.println("PBF File: " + pbfFilePath);
+        System.out.println("PBF Files (" + pbfFilePaths.size() + "):");
+        pbfFilePaths.forEach(p -> System.out.println("  - " + p));
         System.out.println("Data Dir: " + dataDir);
         System.out.println("Max Import Threads: " + config.getImportConfiguration().getThreads());
         long maxHeapBytes = Runtime.getRuntime().maxMemory();

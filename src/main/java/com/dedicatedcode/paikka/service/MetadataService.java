@@ -110,7 +110,7 @@ public class MetadataService {
         Map<String, Object> metadataMap = new HashMap<>();
         metadataMap.put("importTimestamp", metadata.importTimestamp());
         metadataMap.put("dataVersion", metadata.dataVersion());
-        metadataMap.put("file", metadata.file());
+        metadataMap.put("files", metadata.files());
         metadataMap.put("gridLevel", metadata.gridLevel());
         metadataMap.put("paikkaVersion", metadata.paikkaVersion());
         return Collections.unmodifiableMap(metadataMap);

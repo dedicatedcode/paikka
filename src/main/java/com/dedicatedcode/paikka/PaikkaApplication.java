@@ -24,6 +24,8 @@ import org.springframework.boot.CommandLineRunner;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
+import java.util.*;
+
 @SpringBootApplication
 public class PaikkaApplication implements CommandLineRunner {
     
@@ -70,33 +72,49 @@ public class PaikkaApplication implements CommandLineRunner {
         logger.info("  curl 'http://localhost:8080/api/v1/geometry/12345'");
         logger.info("");
     }
-    
+
     @Override
     public void run(String... args) throws Exception {
-        // Only run import logic if --import flag is present
         boolean isImportMode = false;
-        String pbfFile = null;
+        List<String> pbfFiles = new ArrayList<>();
         String dataDir = "./data";
-        
+        Set<Integer> usedArgIndices = new HashSet<>();
+
+        // Process flags and their values first
         for (int i = 0; i < args.length; i++) {
-            if ("--import".equals(args[i])) {
+            String arg = args[i];
+            if ("--import".equals(arg)) {
                 isImportMode = true;
-            } else if ("--pbf-file".equals(args[i]) && i + 1 < args.length) {
-                pbfFile = args[i + 1];
-            } else if ("--data-dir".equals(args[i]) && i + 1 < args.length) {
-                dataDir = args[i + 1];
+            } else if ("--pbf-file".equals(arg)) {
+                if (i + 1 >= args.length) { logger.error("Missing --pbf-file value"); System.exit(1); }
+                String value = args[ i + 1];
+                usedArgIndices.add(i + 1);
+                // Split comma-separated values, add non-empty trimmed paths
+                Arrays.stream(value.split(",")).map(String::trim).filter(s -> !s.isEmpty()).forEach(pbfFiles::add);
+                i++; // Skip flag value
+            } else if ("--data-dir".equals(arg)) {
+                if (i + 1 >= args.length) { logger.error("Missing --data-dir value"); System.exit(1); }
+                dataDir = args[ i + 1];
+                usedArgIndices.add(i + 1);
+                i++; // Skip flag value
             }
         }
-        
+
+        // Collect trailing positional args (not flags/flag values) as PBF files
+        for (int i = 0; i < args.length; i++) {
+            if (usedArgIndices.contains(i)) continue;
+            String arg = args[i];
+            if (arg.startsWith("--")) continue; // Skip unrecognized flags
+            if (isImportMode) pbfFiles.add(arg.trim());
+        }
+
         if (isImportMode) {
-            if (pbfFile == null) {
-                logger.error("Import mode requires --pbf-file argument");
+            if (pbfFiles.isEmpty()) {
+                logger.error("Import mode requires at least one PBF file (use --pbf-file or trailing positional args)");
                 System.exit(1);
             }
-            
-
             try {
-                importService.importData(pbfFile, dataDir);
+                importService.importData(pbfFiles, dataDir);
                 System.exit(0);
             } catch (Exception e) {
                 logger.error("Import failed", e);
