@@ -18,10 +18,12 @@ package com.dedicatedcode.paikka.service;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 
+import java.util.List;
+
 public record PaikkaMetadata(
         @JsonProperty("importTimestamp") String importTimestamp,
         @JsonProperty("dataVersion") String dataVersion,
-        @JsonProperty("file") String file,
+        @JsonProperty("file") List<String> files,
         @JsonProperty("gridLevel") Integer gridLevel,
         @JsonProperty("paikkaVersion") String paikkaVersion
 ) {

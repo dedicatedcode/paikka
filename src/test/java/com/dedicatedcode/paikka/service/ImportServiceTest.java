@@ -16,9 +16,11 @@
 
 package com.dedicatedcode.paikka.service;
 
-import com.dedicatedcode.paikka.IntegrationTest;
 import com.dedicatedcode.paikka.config.PaikkaConfiguration;
-import com.dedicatedcode.paikka.flatbuffers.*;
+import com.dedicatedcode.paikka.flatbuffers.Address;
+import com.dedicatedcode.paikka.flatbuffers.Name;
+import com.dedicatedcode.paikka.flatbuffers.POI;
+import com.dedicatedcode.paikka.flatbuffers.POIList;
 import com.dedicatedcode.paikka.service.importer.GeometrySimplificationService;
 import com.dedicatedcode.paikka.service.importer.ImportService;
 import org.junit.jupiter.api.AfterEach;
@@ -34,6 +36,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -66,7 +69,7 @@ class ImportServiceTest {
 
         S2Helper s2Helper = new S2Helper();
         ImportService importService = new ImportService(s2Helper, geometrySimplificationService, config);
-        importService.importData(tempImportFile.toString(), tempDataDir.toString());
+        importService.importData(Collections.singletonList(tempImportFile.toString()), tempDataDir.toString());
     }
 
     @AfterEach

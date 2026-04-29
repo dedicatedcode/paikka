@@ -24,6 +24,8 @@ import org.springframework.boot.CommandLineRunner;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
+import java.util.*;
+
 @SpringBootApplication
 public class PaikkaApplication implements CommandLineRunner {
     
@@ -32,7 +34,14 @@ public class PaikkaApplication implements CommandLineRunner {
     @Autowired
     private ImportService importService;
 
-    public static void main(String[] args) {
+    static void main(String[] args) {
+        for (String arg : args) {
+            if ("-h".equals(arg) || "--help".equals(arg)) {
+                printHelp();
+                System.exit(0);
+            }
+        }
+
         SpringApplication app = new SpringApplication(PaikkaApplication.class);
         
         // Check if this is import mode
@@ -43,7 +52,7 @@ public class PaikkaApplication implements CommandLineRunner {
                 break;
             }
         }
-        
+
         if (isImportMode) {
             logger.info("Starting in import mode");
             app.setWebApplicationType(org.springframework.boot.WebApplicationType.NONE);
@@ -55,8 +64,8 @@ public class PaikkaApplication implements CommandLineRunner {
             app.run(args);
         }
     }
-    
-    private  void printApiInfo() {
+
+    private static void printApiInfo() {
         logger.info("PAIKKA is now serving data under the following endpoints:");
         logger.info("  Health Check:     GET  /api/v1/health");
         logger.info("  Reverse Geocoding: GET  /api/v1/reverse?lat=60.1699&lon=24.9384");
@@ -70,33 +79,50 @@ public class PaikkaApplication implements CommandLineRunner {
         logger.info("  curl 'http://localhost:8080/api/v1/geometry/12345'");
         logger.info("");
     }
-    
+
     @Override
     public void run(String... args) throws Exception {
-        // Only run import logic if --import flag is present
         boolean isImportMode = false;
-        String pbfFile = null;
+        List<String> pbfFiles = new ArrayList<>();
         String dataDir = "./data";
-        
+        Set<Integer> usedArgIndices = new HashSet<>();
+
+        // Process flags and their values first
         for (int i = 0; i < args.length; i++) {
-            if ("--import".equals(args[i])) {
+            String arg = args[i];
+            if ("--import".equals(arg)) {
                 isImportMode = true;
-            } else if ("--pbf-file".equals(args[i]) && i + 1 < args.length) {
-                pbfFile = args[i + 1];
-            } else if ("--data-dir".equals(args[i]) && i + 1 < args.length) {
-                dataDir = args[i + 1];
+            } else if ("--pbf-file".equals(arg)) {
+                if (i + 1 >= args.length) { logger.error("Missing --pbf-file value"); System.exit(1); }
+                String value = args[ i + 1];
+                usedArgIndices.add(i + 1);
+                // Split comma-separated values, add non-empty trimmed paths
+                Arrays.stream(value.split(",")).map(String::trim).filter(s -> !s.isEmpty()).forEach(pbfFiles::add);
+                i++; // Skip flag value
+            } else if ("--data-dir".equals(arg)) {
+                if (i + 1 >= args.length) { logger.error("Missing --data-dir value"); System.exit(1); }
+                dataDir = args[ i + 1];
+                usedArgIndices.add(i + 1);
+                i++; // Skip flag value
             }
         }
-        
+
+        // Collect trailing positional args (not flags/flag values) as PBF files
+        for (int i = 0; i < args.length; i++) {
+            if (usedArgIndices.contains(i)) continue;
+            String arg = args[i];
+            if (arg.startsWith("--")) continue; // Skip unrecognized flags
+            if (isImportMode) pbfFiles.add(arg.trim());
+        }
+
         if (isImportMode) {
-            if (pbfFile == null) {
-                logger.error("Import mode requires --pbf-file argument");
+            if (pbfFiles.isEmpty()) {
+                logger.error("Import mode requires at least one PBF file");
+                printImportUsage();
                 System.exit(1);
             }
-            
-
             try {
-                importService.importData(pbfFile, dataDir);
+                importService.importData(pbfFiles, dataDir);
                 System.exit(0);
             } catch (Exception e) {
                 logger.error("Import failed", e);
@@ -105,5 +131,57 @@ public class PaikkaApplication implements CommandLineRunner {
         } else {
             printApiInfo();
         }
+    }
+
+    private static void printHelp() {
+        System.out.println("\n=== PAIKKA Help ===");
+        System.out.println("\nUsage: java -jar paikka.jar  ");
+
+        System.out.println("\nGlobal Options:");
+        System.out.println("  -h, --help                Show this help message and exit");
+
+        System.out.println("\nApplication Modes:");
+        System.out.println("  1. API Server Mode (default, no --import flag):");
+        System.out.println("     Starts the REST API server for reverse geocoding and geometry queries.");
+        System.out.println("     Available endpoints after startup:");
+        System.out.println("       • Health Check:     GET  /api/v1/health");
+        System.out.println("       • Reverse Geocoding: GET  /api/v1/reverse?lat=<lat>&lon=<lon>[&lang=<lang>][&limit=<limit>]");
+        System.out.println("       • Geometry:         GET  /api/v1/geometry/<poiId>");
+        System.out.println("     Sample API requests:");
+        System.out.println("       curl 'http://localhost:8080/api/v1/health'");
+        System.out.println("       curl 'http://localhost:8080/api/v1/reverse?lat=60.1699&lon=24.9384'");
+
+        System.out.println("\n  2. Import Mode (requires --import flag):");
+        System.out.println("     Imports OpenStreetMap PBF files into the Paikka datastore.");
+        System.out.println("     All specified PBF files are combined into a single final datastore.");
+
+        System.out.println("\nImport Mode Options:");
+        System.out.println("  --import                  Enable import mode (required for data import)");
+        System.out.println("  --pbf-file <path>         Specify PBF file(s). Supports multiple formats:");
+        System.out.println("                             • Comma-separated list: --pbf-file \"file1.pbf,file2.pbf\"");
+        System.out.println("                             • Repeated flags: --pbf-file file1.pbf --pbf-file file2.pbf");
+        System.out.println("  --data-dir <path>         Path to data directory (default: ./data)");
+        System.out.println("  Positional arguments (after all flags) are treated as PBF files in import mode");
+
+        System.out.println("\nImport Examples:");
+        System.out.println("  # Single PBF file");
+        System.out.println("  java -jar paikka.jar --import --pbf-file /data/osm.pbf");
+        System.out.println("  # Multiple PBFs (comma-separated)");
+        System.out.println("  java -jar paikka.jar --import --pbf-file \"/data/osm1.pbf,/data/osm2.pbf\" --data-dir ./data");
+        System.out.println("  # Multiple PBFs (repeated --pbf-file flags)");
+        System.out.println("  java -jar paikka.jar --import --pbf-file /data/osm1.pbf --pbf-file /data/osm2.pbf");
+        System.out.println("  # Multiple PBFs (trailing positional arguments)");
+        System.out.println("  java -jar paikka.jar --import /data/osm1.pbf /data/osm2.pbf");
+    }
+
+    private static void printImportUsage() {
+        System.out.println("\n=== PAIKKA Import Mode Usage ===");
+        System.out.println("\nNo PBF files specified. Use one of the following methods to specify PBF files:");
+        System.out.println("  1. --pbf-file flag (comma-separated values or repeated flags):");
+        System.out.println("     --pbf-file /data/osm1.pbf,/data/osm2.pbf");
+        System.out.println("     --pbf-file /data/osm1.pbf --pbf-file /data/osm2.pbf");
+        System.out.println("  2. Trailing positional arguments after all flags:");
+        System.out.println("     java -jar paikka.jar --import /data/osm1.pbf /data/osm2.pbf");
+        System.out.println("\nFor full help, run with -h or --help");
     }
 }
