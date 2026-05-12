@@ -20,10 +20,10 @@ usage() {
     echo "  -h, --help            Show this help message"
     echo ""
     echo "Examples:"
-    echo "  $0 planet-latest.osm.pbf"
-    echo "  $0 --jar-file /app/app.jar --data-dir /opt/paikka/data europe-latest.osm.pbf"
-    echo "  $0 --memory 32g --threads 8 germany-latest.osm.pbf"
-    echo "  $0 --data-dir ./data --memory 16g germany-latest.osm.pbf"
+    echo "   $0 planet-latest.osm.pbf"
+    echo "   $0 --jar-file /app/app.jar --data-dir /opt/paikka/data europe-latest.osm.pbf"
+    echo "   $0 --memory 32g --threads 8 germany-latest.osm.pbf austria-latest.osm.pbf"
+    echo "   $0 --data-dir ./data --memory 16g oceania-latest.osm.pbf"
     echo ""
     echo "Requirements:"
     echo "  - Java 25 or higher"
@@ -37,7 +37,7 @@ JAR_FILE=""
 DATA_DIR="./"
 MEMORY="16g"
 THREADS=""
-PBF_FILE=""
+PBF_FILES=()
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -67,30 +67,26 @@ while [[ $# -gt 0 ]]; do
             usage
             ;;
         *)
-            if [ -z "$PBF_FILE" ]; then
-                PBF_FILE="$1"
-            else
-                echo "Error: Multiple PBF files specified: '$PBF_FILE' and '$1'"
-                echo ""
-                usage
-            fi
+            PBF_FILES+=("$1")
             shift
             ;;
     esac
 done
 
-# Check if PBF file argument is provided
-if [ -z "$PBF_FILE" ]; then
-    echo "Error: PBF file argument required"
+# Check if any PBF file argument is provided
+if [ ${#PBF_FILES} -eq 0 ]; then
+    echo "Error: At least one PBF file argument required"
     echo ""
     usage
 fi
 
-# Check if PBF file exists
-if [ ! -f "$PBF_FILE" ]; then
-    echo "Error: PBF file '$PBF_FILE' does not exist"
-    exit 1
-fi
+# Verify each PBF file exists
+for f in ${PBF_FILES[@}; do
+    if [ ! -f "$f" ]; then
+        echo "Error: PBF file '$f' does not exist"
+        exit 1
+    fi
+done
 
 # Find PAIKKA jar file if not provided
 if [ -z "$JAR_FILE" ]; then
@@ -110,7 +106,7 @@ if [ ! -f "$JAR_FILE" ]; then
 fi
 
 echo "Starting PAIKKA import..."
-echo "PBF file:    $PBF_FILE"
+echo "PBF files:   ${PBF_FILES[*]}"
 echo "Data dir:    $DATA_DIR"
 echo "Memory:      $MEMORY"
 echo "JAR file:    $JAR_FILE"
@@ -122,9 +118,6 @@ echo ""
 # Check available system memory
 AVAILABLE_MEM_KB=$(grep MemAvailable /proc/meminfo | awk '{print $2}')
 AVAILABLE_MEM_GB=$((AVAILABLE_MEM_KB / 1024 / 1024))
-
-# Extract numeric value from MEMORY parameter
-REQUESTED_MEM_GB=$(echo "$MEMORY" | sed 's/[^0-9]//g')
 
 echo "System memory:   ${AVAILABLE_MEM_GB}GB available"
 echo "Requested heap:  $MEMORY"
@@ -159,8 +152,8 @@ fi
 java $JVM_ARGS \
   -jar "$JAR_FILE" \
   --import \
-  --pbf-file "$PBF_FILE" \
-  --data-dir "$DATA_DIR"
+  --data-dir "$DATA_DIR" \
+  "${PBF_FILES[@]}"
 
 EXIT_CODE=$?
 

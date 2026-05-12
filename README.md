@@ -269,11 +269,14 @@ docker run -d \
 ```bash
 # Filter and import a country extract
 ./scripts/filter_osm.sh germany-latest.osm.pbf germany-filtered.osm.pbf
-./scripts/import.sh germany-filtered.osm.pbf  --data-dir ./data --memory 16g
+./scripts/import.sh --data-dir ./data --memory 16g germany-filtered.osm.pbf 
 
 # Import planet data with custom settings
 ./scripts/filter_osm.sh planet-latest.osm.pbf planet-filtered.osm.pbf
-./scripts/import.sh planet-filtered.osm.pbf --data-dir /opt/paikka/data --memory 32g --threads 8
+./scripts/import.sh --data-dir /opt/paikka/data --memory 32g --threads 8 planet-filtered.osm.pbf
+ 
+# Import multiple files at once
+./scripts/import.sh --data-dir /opt/paikka/data --memory 32g --threads 8 germany-filtered.osm.pbf switzerland-filtered.osm.pbf 
 ```
 
 The scripts handle all the technical details including memory management, JVM optimization, and cleanup.
