@@ -81,7 +81,7 @@ if [ ${#PBF_FILES} -eq 0 ]; then
 fi
 
 # Verify each PBF file exists
-for f in ${PBF_FILES[@}; do
+for f in ${PBF_FILES[@]}; do
     if [ ! -f "$f" ]; then
         echo "Error: PBF file '$f' does not exist"
         exit 1
@@ -128,10 +128,6 @@ JVM_ARGS="$JVM_ARGS -XX:+UseG1GC"
 JVM_ARGS="$JVM_ARGS -XX:MaxGCPauseMillis=200"
 JVM_ARGS="$JVM_ARGS -XX:+UnlockExperimentalVMOptions"
 JVM_ARGS="$JVM_ARGS -XX:+UseTransparentHugePages"
-JVM_ARGS="$JVM_ARGS -XX:+ExitOnOutOfMemoryError"
-JVM_ARGS="$JVM_ARGS -XX:MaxDirectMemorySize=4G"
-JVM_ARGS="$JVM_ARGS -XX:MaxMetaspaceSize=512M"
-JVM_ARGS="$JVM_ARGS -Xss512k"
 JVM_ARGS="$JVM_ARGS --add-exports=java.base/jdk.internal.ref=ALL-UNNAMED"
 JVM_ARGS="$JVM_ARGS --add-exports=java.base/sun.nio.ch=ALL-UNNAMED"
 JVM_ARGS="$JVM_ARGS --add-exports=jdk.unsupported/sun.misc=ALL-UNNAMED"
