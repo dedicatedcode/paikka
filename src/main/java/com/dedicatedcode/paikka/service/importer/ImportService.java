@@ -916,6 +916,7 @@ public class ImportService {
                                         PoiIndexRec recInner = recsToProcess.get(i);
                                         try {
                                             org.locationtech.jts.geom.Geometry geometry = buildGeometryFromWay(wayIdInner, nodeCache, wayIndexDb, stats);
+
                                             if (geometry == null) continue;
                                             if (!geometry.isValid()) {
                                                 try {
@@ -925,7 +926,10 @@ public class ImportService {
                                                 }
                                             }
                                             if (geometry == null || geometry.isEmpty() || !geometry.isValid()) continue;
-                                            results.add(new BuildingData(wayIdInner, recInner.subtype, null, geometry));
+                                            byte[] wkb = new WKBWriter().write(geometry);
+                                            Coordinate center = geometry.getEnvelopeInternal().centre();
+                                            long shardId = s2Helper.getShardId(center.getY(), center.getX());
+                                            results.add(new BuildingData(wayIdInner, recInner.subtype, null, wkb, shardId));
                                         } catch (Exception e) {
                                             stats.recordError(ImportStatistics.Stage.PROCESSING_BUILDINGS, Kind.GEOMETRY, wayIdInner, "build-building-geometry-batch", e);
                                         }
@@ -947,9 +951,10 @@ public class ImportService {
                                     List<BuildingData> batchResults = f.get();
                                     Map<Long, List<BuildingData>> currentActiveBuffer = shardBufferRef.get();
                                     for (BuildingData r : batchResults) {
-                                        Coordinate center = r.geometry().getEnvelopeInternal().centre();
-                                        long shardId = s2Helper.getShardId(center.getY(), center.getX());
-                                        currentActiveBuffer.computeIfAbsent(shardId, k -> new CopyOnWriteArrayList<>()).add(r);
+                                        List<BuildingData> shardList = currentActiveBuffer.computeIfAbsent(r.shardId, k -> new ArrayList<>());
+                                        synchronized (shardList) {
+                                            shardList.add(r);
+                                        }
                                         stats.incrementBuildingsProcessed();
                                     }
                                 } catch (Exception e) {
@@ -984,7 +989,10 @@ public class ImportService {
                                     }
                                 }
                                 if (geometry == null || geometry.isEmpty() || !geometry.isValid()) continue;
-                                results.add(new BuildingData(wayIdInner, recInner.subtype, null, geometry));
+                                byte[] wkb = new WKBWriter().write(geometry);
+                                Coordinate center = geometry.getEnvelopeInternal().centre();
+                                long shardId = s2Helper.getShardId(center.getY(), center.getX());
+                                results.add(new BuildingData(wayIdInner, recInner.subtype, null, wkb, shardId));
                             } catch (Exception e) {
                                 stats.recordError(ImportStatistics.Stage.PROCESSING_BUILDINGS, Kind.GEOMETRY, wayIdInner, "build-building-geometry-batch", e);
                             }
@@ -1005,9 +1013,10 @@ public class ImportService {
                     List<BuildingData> batchResults = f.get();
                     Map<Long, List<BuildingData>> currentActiveBuffer = shardBufferRef.get();
                     for (BuildingData r : batchResults) {
-                        Coordinate center = r.geometry().getEnvelopeInternal().centre();
-                        long shardId = s2Helper.getShardId(center.getY(), center.getX());
-                        currentActiveBuffer.computeIfAbsent(shardId, k -> new CopyOnWriteArrayList<>()).add(r);
+                        List<BuildingData> shardList = currentActiveBuffer.computeIfAbsent(r.shardId, k -> new ArrayList<>());
+                        synchronized (shardList) {
+                            shardList.add(r);
+                        }
                         stats.incrementBuildingsProcessed();
                     }
                 } catch (Exception e) {
@@ -1048,21 +1057,6 @@ public class ImportService {
         for (int i = 0; i < entity.getNumberOfTags(); i++) {
             if (entity.getTag(i).getKey().startsWith("addr:")) {
                 return true;
-            }
-        }
-        return false;
-    }
-
-    private boolean isBuildingWay(OsmWay way) {
-        for (int i = 0; i < way.getNumberOfTags(); i++) {
-            OsmTag tag = way.getTag(i);
-            if ("building".equals(tag.getKey())) {
-                String val = tag.getValue();
-                return switch (val) {
-                    case "yes", "commercial", "retail", "industrial",
-                         "office", "apartments", "residential" -> true;
-                    default -> false;
-                };
             }
         }
         return false;
@@ -1308,7 +1302,7 @@ public class ImportService {
 
         int geometryOff = 0;
         if (building.geometry() != null) {
-            byte[] wkb = new WKBWriter().write(building.geometry());
+            byte[] wkb = building.geometry();
             int geometryDataOff = Geometry.createDataVector(builder, wkb);
             geometryOff = Geometry.createGeometry(builder, geometryDataOff);
         }
@@ -2022,7 +2016,7 @@ public class ImportService {
     private record BoundaryResultLite(long osmId, int level, String name, String code, org.locationtech.jts.geom.Geometry geometry) {
     }
 
-    private record BuildingData(long id, String name, String code, org.locationtech.jts.geom.Geometry geometry) {
+    private record BuildingData(long id, String name, String code, byte[] geometry, long shardId) {
     }
 
     private Long safeEntityId(EntityContainer container) {
