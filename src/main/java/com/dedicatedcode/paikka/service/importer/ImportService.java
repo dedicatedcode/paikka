@@ -36,6 +36,7 @@ import org.locationtech.jts.algorithm.construct.MaximumInscribedCircle;
 import org.locationtech.jts.geom.*;
 import org.locationtech.jts.io.WKBWriter;
 import org.rocksdb.*;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
@@ -65,6 +66,7 @@ public class ImportService {
     private final S2Helper s2Helper;
     private final GeometrySimplificationService geometrySimplificationService;
     private final PaikkaConfiguration config;
+    private final String version;
 
     private final Map<String, String> tagCache = new ConcurrentHashMap<>(1000);
 
@@ -73,10 +75,11 @@ public class ImportService {
     private final AtomicLong sequence = new AtomicLong(0);
     private final AtomicLong buildingSequence = new AtomicLong(0);
 
-    public ImportService(S2Helper s2Helper, GeometrySimplificationService geometrySimplificationService, PaikkaConfiguration config) {
+    public ImportService(S2Helper s2Helper, GeometrySimplificationService geometrySimplificationService, PaikkaConfiguration config, @Value("${paikka.version:1.0.0}") String version) {
         this.s2Helper = s2Helper;
         this.geometrySimplificationService = geometrySimplificationService;
         this.config = config;
+        this.version = version;
         this.fileReadWindowSize = calculateFileReadWindowSize();
     }
 
@@ -289,7 +292,7 @@ public class ImportService {
         String importTimestamp = DateTimeFormatter.ISO_INSTANT.format(now);
         String dataVersion = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss").withZone(ZoneOffset.UTC).format(now);
         ObjectMapper objectMapper = new ObjectMapper();
-        PaikkaMetadata metadata = new PaikkaMetadata(importTimestamp, dataVersion, pbfFiles.stream().map(path -> path.getFileName().toString()).toList(), S2Helper.GRID_LEVEL, "1.0.0");
+        PaikkaMetadata metadata = new PaikkaMetadata(importTimestamp, dataVersion, pbfFiles.stream().map(path -> path.getFileName().toString()).toList(), S2Helper.GRID_LEVEL, version);
 
         objectMapper.writeValue(metadataPath.toFile(), metadata);
         System.out.println("\n\033[1;32mMetadata file written to: " + metadataPath + "\033[0m");
