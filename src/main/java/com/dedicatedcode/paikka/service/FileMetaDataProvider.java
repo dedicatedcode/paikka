@@ -29,17 +29,15 @@ import java.nio.file.Paths;
 public class FileMetaDataProvider implements MetaDataProvider {
     private static final String METADATA_FILE_NAME = "paikka_metadata.json";
 
-    private final PaikkaConfiguration configuration;
     private final Path metadataPath;
 
     public FileMetaDataProvider(PaikkaConfiguration configuration) {
-        this.configuration = configuration;
         this.metadataPath = Paths.get(configuration.getDataDir(), METADATA_FILE_NAME);
     }
 
     @Override
     public boolean exists() {
-        return false;
+        return metadataPath.toFile().exists();
     }
 
     @Override
