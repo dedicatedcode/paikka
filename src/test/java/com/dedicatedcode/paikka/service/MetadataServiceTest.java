@@ -31,7 +31,7 @@ class MetadataServiceTest {
     @SuppressWarnings("unchecked")
     @Test
     void shouldLoadMetadata() {
-        MetadataService candidata = new MetadataService(new MetaDataProvider() {
+        MetadataService candidate = new MetadataService(new MetaDataProvider() {
             @Override
             public boolean exists() {
                 return true;
@@ -42,9 +42,9 @@ class MetadataServiceTest {
                 return getClass().getResourceAsStream("/metadata.json");
             }
         }, new ObjectMapper());
-        candidata.reload();
+        candidate.reload();
 
-        Map<String, Object> loaded = candidata.getMetadata();
+        Map<String, Object> loaded = candidate.getMetadata();
         assertNotNull(loaded);
         assertEquals("2026-05-17T07:47:51.028675223Z", loaded.get("importTimestamp"));
         assertEquals("20260517-074751", loaded.get("dataVersion"));
