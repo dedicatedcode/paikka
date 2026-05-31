@@ -119,7 +119,7 @@ local_filter_pbf() {
 ###
 local_create_import_bundle() {
     log "LOCAL: Creating import bundle with $IMPORT_MEMORY memory and $IMPORT_THREADS threads"
-        sudo docker run --rm -ti -v "$DOWNLOAD_DIR":/download -v "$IMPORT_DATA_DIR":/import "$DOCKER_IMAGE" import \
+        sudo docker run --rm -v "$DOWNLOAD_DIR":/download -v "$IMPORT_DATA_DIR":/import "$DOCKER_IMAGE" import \
           --memory "$IMPORT_MEMORY" \
           --threads "$IMPORT_THREADS" \
           --data-dir "/import/" \
