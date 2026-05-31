@@ -55,7 +55,7 @@ parse_args_and_configure() {
     IMPORT_DATA_DIR="${5:-$IMPORT_DATA_DIR}"
     IMPORT_MEMORY="${6:-$IMPORT_MEMORY}"
     IMPORT_THREADS="${7:-$IMPORT_THREADS}"
-
+    PBF_INPUT_PATH="${8:-}"
     if [ -z "$REMOTE_USER" ] || [ -z "$REMOTE_HOST" ] || [ -z "$GEOCODER_API_TOKEN" ]; then
         echo "Usage: $0 <REMOTE_USER> <REMOTE_HOST> <API_TOKEN> [DOWNLOAD_DIR] [IMPORT_DATA_DIR] [MEMORY] [THREADS]"
         echo "  DOWNLOAD_DIR: Where to download PBF files (default: current directory)"
@@ -65,6 +65,7 @@ parse_args_and_configure() {
         echo "Error: Missing required configuration."
         exit 1
     fi
+    if [ -n "$PBF_INPUT_PATH" ] && [ ! -f "$PBF_INPUT_PATH" ]; then echo "Error: PBF file not found"; exit 1; fi
     echo "Configuration loaded for ${REMOTE_USER}@${REMOTE_HOST}"
     echo "  Download directory: $DOWNLOAD_DIR"
     echo "  Import data directory: $IMPORT_DATA_DIR"
@@ -104,7 +105,13 @@ local_pull_docker_image() {
 ###
 local_filter_pbf() {
     log "LOCAL: Filtering PBF file"
-    sudo docker run --rm -v "$DOWNLOAD_DIR":/data "$DOCKER_IMAGE" prepare "/data/$PBF_INPUT_FILE" "/data/$PBF_FILTERED_FILE"
+  if [ -n "$PBF_INPUT_PATH" ]; then
+      INPUT_DIR="$(dirname "$PBF_INPUT_PATH")"
+      INPUT_FILE="$(basename "$PBF_INPUT_PATH")"
+      sudo docker run --rm -v "$INPUT_DIR":/input -v "$DOWNLOAD_DIR":/data "$DOCKER_IMAGE" prepare "/input/$INPUT_FILE" "/data/$PBF_FILTERED_FILE"
+  else
+      sudo docker run --rm -v "$DOWNLOAD_DIR":/data "$DOCKER_IMAGE" prepare "/data/$PBF_INPUT_FILE" "/data/$PBF_FILTERED_FILE"
+  fi
 }
 
 ###
@@ -287,7 +294,11 @@ main() {
     # Run all steps in sequence
     parse_args_and_configure "$@"
     local_prepare_directories
-    local_download_planet_file
+    if [ -z "$PBF_INPUT_PATH" ]; then
+      local_download_planet_file
+    else
+      log "LOCAL: Using provided PBF file – skipping download"
+    fi
     local_pull_docker_image
     local_filter_pbf
     local_create_import_bundle
