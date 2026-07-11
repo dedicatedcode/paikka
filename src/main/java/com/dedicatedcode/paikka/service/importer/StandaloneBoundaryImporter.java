@@ -53,10 +53,12 @@ public class StandaloneBoundaryImporter {
 
     private final GeometrySimplificationService geometrySimplificationService;
     private final H3Core h3;
+    private final BoundaryImportStatistics stats;
 
     public StandaloneBoundaryImporter(GeometrySimplificationService geometrySimplificationService) throws Exception {
         this.geometrySimplificationService = geometrySimplificationService;
         this.h3 = H3Core.newInstance(); // Uber H3-Java 4.x
+        this.stats = new BoundaryImportStatistics();
     }
 
     // ============================ PUBLIC API ============================
@@ -98,6 +100,8 @@ public class StandaloneBoundaryImporter {
                 .setWriteBufferSize(256 * 1024 * 1024);
         WriteOptions wo = new WriteOptions().setDisableWAL(true);
 
+        stats.startProgressReporter();
+
         try (
                 RocksDB nodeCache = RocksDB.open(cacheOpts, nodeCachePath.toString());
                 RocksDB wayCache = RocksDB.open(cacheOpts, wayCachePath.toString());
@@ -106,6 +110,7 @@ public class StandaloneBoundaryImporter {
                 RocksDB regionGeom = RocksDB.open(finalOpts, regionGeomPath.toString())
         ) {
             for (String pbfPath : pbfPaths) {
+                stats.setCurrentPhase(1, "1.1: Caching Nodes & Ways");
                 // ---------- SINGLE PASS ----------
                 PbfIterator iterator = new PbfIterator(Files.newInputStream(Paths.get(pbfPath)), false);
 
@@ -123,6 +128,7 @@ public class StandaloneBoundaryImporter {
                                 .putDouble(n.getLatitude())
                                 .putDouble(n.getLongitude());
                         nodeBatch.put(longToBytes(n.getId()), bb.array());
+                        stats.incrementNodesCached();
                         if (phaseCounter.incrementAndGet() % 100_000 == 0) {
                             nodeCache.write(wo, nodeBatch);
                             nodeBatch.clear();
@@ -133,6 +139,7 @@ public class StandaloneBoundaryImporter {
                         long[] ids = new long[w.getNumberOfNodes()];
                         for (int i = 0; i < w.getNumberOfNodes(); i++) ids[i] = w.getNodeId(i);
                         wayBatch.put(longToBytes(w.getId()), longArrayToBytes(ids));
+                        stats.incrementWaysCached();
                         if (phaseCounter.incrementAndGet() % 50_000 == 0) {
                             wayCache.write(wo, wayBatch);
                             wayBatch.clear();
@@ -147,6 +154,7 @@ public class StandaloneBoundaryImporter {
                 nodeBatch.close();
                 wayBatch.close();
 
+                stats.setCurrentPhase(2, "2.1: Processing Relations & H3");
                 // Re-open iterator for Phase 3 (or use two iterators; here we reuse file)
 
                 // Phase 3: Process Relations (separate iterator pass is fine since PBF is local)
@@ -160,6 +168,7 @@ public class StandaloneBoundaryImporter {
                             OsmRelation r = (OsmRelation) c.getEntity();
                             if (isAdministrativeBoundary(r)) {
                                 relations.add(buildRelationStub(r));
+                                stats.incrementRelationsFound();
                             }
                         }
                     }
@@ -181,6 +190,9 @@ public class StandaloneBoundaryImporter {
                         // ---- H3 Polyfill ----
                         List<Long> cells = polygonToCellsH3(simplified);
                         if (cells.isEmpty()) continue;
+
+                        stats.incrementRelationsProcessed();
+                        stats.addH3CellsGenerated(cells.size());
 
                         // h3_to_osm : append OSM_ID to each cell (dedup)
                         for (long cell : cells) {
@@ -215,6 +227,11 @@ public class StandaloneBoundaryImporter {
             regionGeom.compactRange();
         }
 
+        stats.stop();
+        stats.setTotalTime(System.currentTimeMillis() - stats.getStartTime());
+        stats.printFinalStatistics();
+        stats.printOutcomeAndErrors();
+
         // Cleanup tmp
         cleanup(tmp);
         System.out.println("[StandaloneBoundaryImporter] Import complete. Temporary caches removed.");
@@ -239,12 +256,14 @@ public class StandaloneBoundaryImporter {
                 for (List<Coordinate> inner : innerRings) {
                     try {
                         holes.add(GEOMETRY_FACTORY.createLinearRing(inner.toArray(new Coordinate[0])));
-                    } catch (Exception ignored) {
+                    } catch (Exception e) {
+                        stats.recordError(BoundaryImportStatistics.Stage.PROCESSING_RELATIONS, BoundaryImportStatistics.Kind.GEOMETRY, stub.osmId, "createLinearRing-inner", e);
                     }
                 }
                 Polygon p = GEOMETRY_FACTORY.createPolygon(shell, holes.toArray(new LinearRing[0]));
                 if (p.isValid()) polygons.add(p);
-            } catch (Exception ignored) {
+            } catch (Exception e) {
+                stats.recordError(BoundaryImportStatistics.Stage.PROCESSING_RELATIONS, BoundaryImportStatistics.Kind.GEOMETRY, stub.osmId, "buildMultiPolygon", e);
             }
         }
         if (polygons.isEmpty()) return null;
@@ -260,7 +279,9 @@ public class StandaloneBoundaryImporter {
                 long[] nodeIds = bytesToLongArray(seq);
                 List<Coordinate> coords = resolveCoordinates(nodeIds, nodeCache);
                 if (coords != null && coords.size() >= 2) wayCoords.put(wid, coords);
-            } catch (RocksDBException e) { /* skip */ }
+            } catch (RocksDBException e) {
+                stats.recordError(BoundaryImportStatistics.Stage.CACHING_NODES_WAYS, BoundaryImportStatistics.Kind.STORE, wid, "stitchRings", e);
+            }
         }
         List<List<Coordinate>> rings = new ArrayList<>();
         Set<Long> used = new HashSet<>();
@@ -314,6 +335,7 @@ public class StandaloneBoundaryImporter {
             }
             return coords;
         } catch (RocksDBException e) {
+            stats.recordError(BoundaryImportStatistics.Stage.CACHING_NODES_WAYS, BoundaryImportStatistics.Kind.STORE, null, "resolveCoordinates", e);
             return null;
         }
     }
@@ -339,7 +361,7 @@ public class StandaloneBoundaryImporter {
                 List<Long> partCells = h3.polygonToCells(outer, holes, H3_RESOLUTION);
                 cells.addAll(partCells);
             } catch (Exception e) {
-                // skip invalid loop
+                stats.recordError(BoundaryImportStatistics.Stage.PROCESSING_RELATIONS, BoundaryImportStatistics.Kind.GEOMETRY, null, "polygonToCellsH3", e);
             }
         }
         return cells;
