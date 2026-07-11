@@ -16,6 +16,7 @@
 
 package com.dedicatedcode.paikka.service.importer;
 
+import com.dedicatedcode.paikka.config.PaikkaConfiguration;
 import com.uber.h3core.H3Core;
 import com.uber.h3core.util.LatLng;
 import de.topobyte.osm4j.core.model.iface.*;
@@ -33,6 +34,10 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.*;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -52,11 +57,13 @@ public class StandaloneBoundaryImporter {
     private static final double BUFFER_DISTANCE = 0.0001; // ~11m at equator, ensures border cells
 
     private final GeometrySimplificationService geometrySimplificationService;
+    private final PaikkaConfiguration paikkaConfiguration;
     private final H3Core h3;
     private final BoundaryImportStatistics stats;
 
-    public StandaloneBoundaryImporter(GeometrySimplificationService geometrySimplificationService) throws Exception {
+    public StandaloneBoundaryImporter(GeometrySimplificationService geometrySimplificationService, PaikkaConfiguration paikkaConfiguration) throws Exception {
         this.geometrySimplificationService = geometrySimplificationService;
+        this.paikkaConfiguration = paikkaConfiguration;
         this.h3 = H3Core.newInstance(); // Uber H3-Java 4.x
         this.stats = new BoundaryImportStatistics();
     }
@@ -174,40 +181,56 @@ public class StandaloneBoundaryImporter {
                     }
 
                     // Process each relation: stitch geometry, H3 polyfill, write outputs
+                    int threads = paikkaConfiguration.getImportConfiguration().getThreads();
+                    ExecutorService executor = Executors.newFixedThreadPool(threads);
+                    List<Future<ProcessedRelation>> futures = new ArrayList<>();
+
+                    for (RelationStub stub : relations) {
+                        futures.add(executor.submit(() -> {
+                            Geometry geom = buildMultiPolygon(stub, nodeCache, wayCache);
+                            if (geom == null || geom.isEmpty() || !geom.isValid()) return null;
+
+                            // Buffer to include border-touching cells
+                            Geometry buffered = geom.buffer(BUFFER_DISTANCE);
+                            Geometry simplified = geometrySimplificationService.simplifyByAdminLevel(buffered, stub.adminLevel);
+                            if (simplified == null || simplified.isEmpty()) simplified = buffered;
+
+                            // ---- H3 Polyfill ----
+                            List<Long> cells = polygonToCellsH3(simplified);
+                            if (cells.isEmpty()) return null;
+
+                            return new ProcessedRelation(stub.osmId, cells, simplified);
+                        }));
+                    }
+
+                    executor.shutdown();
+                    executor.awaitTermination(Long.MAX_VALUE, TimeUnit.NANOSECONDS);
+
                     WriteBatch h3Batch = new WriteBatch();
                     WriteBatch metaBatch = new WriteBatch();
                     WriteBatch geomBatch = new WriteBatch();
 
-                    for (RelationStub stub : relations) {
-                        Geometry geom = buildMultiPolygon(stub, nodeCache, wayCache);
-                        if (geom == null || geom.isEmpty() || !geom.isValid()) continue;
-
-                        // Buffer to include border-touching cells
-                        Geometry buffered = geom.buffer(BUFFER_DISTANCE);
-                        Geometry simplified = geometrySimplificationService.simplifyByAdminLevel(buffered, stub.adminLevel);
-                        if (simplified == null || simplified.isEmpty()) simplified = buffered;
-
-                        // ---- H3 Polyfill ----
-                        List<Long> cells = polygonToCellsH3(simplified);
-                        if (cells.isEmpty()) continue;
+                    for (Future<ProcessedRelation> future : futures) {
+                        ProcessedRelation pr = future.get();
+                        if (pr == null) continue;
 
                         stats.incrementRelationsProcessed();
-                        stats.addH3CellsGenerated(cells.size());
+                        stats.addH3CellsGenerated(pr.cells().size());
 
                         // h3_to_osm : append OSM_ID to each cell (dedup)
-                        for (long cell : cells) {
+                        for (long cell : pr.cells()) {
                             byte[] key = longToBytes(cell);
                             byte[] existing = h3ToOsm.get(key);
-                            byte[] updated = appendOsmIdToArray(existing, stub.osmId);
+                            byte[] updated = appendOsmIdToArray(existing, pr.osmId());
                             h3Batch.put(key, updated);
                         }
 
                         // region_metadata : OSM_ID -> cell count (int)
-                        metaBatch.put(longToBytes(stub.osmId), intToBytes(cells.size()));
+                        metaBatch.put(longToBytes(pr.osmId()), intToBytes(pr.cells().size()));
 
                         // region_geometry : OSM_ID -> simplified WKB
-                        byte[] wkb = new WKBWriter().write(simplified);
-                        geomBatch.put(longToBytes(stub.osmId), wkb);
+                        byte[] wkb = new WKBWriter().write(pr.simplified());
+                        geomBatch.put(longToBytes(pr.osmId()), wkb);
                     }
 
                     h3ToOsm.write(wo, h3Batch);
@@ -459,6 +482,9 @@ public class StandaloneBoundaryImporter {
     }
 
     private record RelationStub(long osmId, int adminLevel, List<Long> outerWays, List<Long> innerWays) {
+    }
+
+    private record ProcessedRelation(long osmId, List<Long> cells, Geometry simplified) {
     }
 
     private void cleanup(Path p) {
