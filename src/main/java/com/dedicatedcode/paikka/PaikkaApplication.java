@@ -50,14 +50,17 @@ public class PaikkaApplication implements CommandLineRunner {
         
         // Check if this is import mode
         boolean isImportMode = false;
+        boolean isBoundaryImportMode = false;
         for (String arg : args) {
             if ("--import".equals(arg)) {
                 isImportMode = true;
-                break;
+            }
+            if ("--boundary-import".equals(arg)) {
+                isBoundaryImportMode = true;
             }
         }
 
-        if (isImportMode) {
+        if (isImportMode || isBoundaryImportMode) {
             logger.info("Starting in import mode");
             app.setWebApplicationType(org.springframework.boot.WebApplicationType.NONE);
             System.setProperty("paikka.import-mode", "true");
@@ -87,6 +90,7 @@ public class PaikkaApplication implements CommandLineRunner {
     @Override
     public void run(String... args) throws Exception {
         boolean isImportMode = false;
+        boolean isBoundaryImportMode = false;
         List<String> pbfFiles = new ArrayList<>();
         String dataDir = "./data";
         Set<Integer> usedArgIndices = new HashSet<>();
@@ -96,6 +100,8 @@ public class PaikkaApplication implements CommandLineRunner {
             String arg = args[i];
             if ("--import".equals(arg)) {
                 isImportMode = true;
+            } else if ("--boundary-import".equals(arg)) {
+                isBoundaryImportMode = true;
             } else if ("--pbf-file".equals(arg)) {
                 if (i + 1 >= args.length) { logger.error("Missing --pbf-file value"); System.exit(1); }
                 String value = args[ i + 1];
@@ -116,7 +122,7 @@ public class PaikkaApplication implements CommandLineRunner {
             if (usedArgIndices.contains(i)) continue;
             String arg = args[i];
             if (arg.startsWith("--")) continue; // Skip unrecognized flags
-            if (isImportMode) pbfFiles.add(arg.trim());
+            if (isImportMode || isBoundaryImportMode) pbfFiles.add(arg.trim());
         }
 
         if (isImportMode) {
@@ -130,6 +136,21 @@ public class PaikkaApplication implements CommandLineRunner {
                 System.exit(0);
             } catch (Exception e) {
                 logger.error("Import failed", e);
+                System.exit(1);
+            }
+        } else if (isBoundaryImportMode) {
+            if (pbfFiles.isEmpty()) {
+                logger.error("Boundary import mode requires at least one PBF file");
+                printImportUsage();
+                System.exit(1);
+            }
+            try {
+                for (String pbfFile : pbfFiles) {
+                    standaloneBoundaryImporter.importBoundaries(pbfFile, dataDir);
+                }
+                System.exit(0);
+            } catch (Exception e) {
+                logger.error("Boundary import failed", e);
                 System.exit(1);
             }
         } else {
@@ -159,23 +180,30 @@ public class PaikkaApplication implements CommandLineRunner {
         System.out.println("     Imports OpenStreetMap PBF files into the Paikka datastore.");
         System.out.println("     All specified PBF files are combined into a single final datastore.");
 
+        System.out.println("\n  3. Boundary Import Mode (requires --boundary-import flag):");
+        System.out.println("     Imports administrative boundaries from OpenStreetMap PBF files into the Paikka datastore.");
+        System.out.println("     All specified PBF files are processed.");
+
         System.out.println("\nImport Mode Options:");
-        System.out.println("  --import                  Enable import mode (required for data import)");
+        System.out.println("  --import                  Enable standard import mode (required for data import)");
+        System.out.println("  --boundary-import         Enable boundary import mode");
         System.out.println("  --pbf-file <path>         Specify PBF file(s). Supports multiple formats:");
         System.out.println("                             • Comma-separated list: --pbf-file \"file1.pbf,file2.pbf\"");
         System.out.println("                             • Repeated flags: --pbf-file file1.pbf --pbf-file file2.pbf");
         System.out.println("  --data-dir <path>         Path to data directory (default: ./data)");
-        System.out.println("  Positional arguments (after all flags) are treated as PBF files in import mode");
+        System.out.println("  Positional arguments (after all flags) are treated as PBF files in import modes");
 
         System.out.println("\nImport Examples:");
-        System.out.println("  # Single PBF file");
+        System.out.println("  # Single PBF file (Standard Import)");
         System.out.println("  java -jar paikka.jar --import --pbf-file /data/osm.pbf");
-        System.out.println("  # Multiple PBFs (comma-separated)");
+        System.out.println("  # Multiple PBFs (comma-separated) (Standard Import)");
         System.out.println("  java -jar paikka.jar --import --pbf-file \"/data/osm1.pbf,/data/osm2.pbf\" --data-dir ./data");
-        System.out.println("  # Multiple PBFs (repeated --pbf-file flags)");
+        System.out.println("  # Multiple PBFs (repeated --pbf-file flags) (Standard Import)");
         System.out.println("  java -jar paikka.jar --import --pbf-file /data/osm1.pbf --pbf-file /data/osm2.pbf");
-        System.out.println("  # Multiple PBFs (trailing positional arguments)");
+        System.out.println("  # Multiple PBFs (trailing positional arguments) (Standard Import)");
         System.out.println("  java -jar paikka.jar --import /data/osm1.pbf /data/osm2.pbf");
+        System.out.println("  # Boundary Import");
+        System.out.println("  java -jar paikka.jar --boundary-import --pbf-file /data/boundaries.pbf --data-dir ./data");
     }
 
     private static void printImportUsage() {
