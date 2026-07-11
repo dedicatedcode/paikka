@@ -34,6 +34,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.*;
+import java.util.concurrent.ExecutorCompletionService;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -83,11 +84,18 @@ public class StandaloneBoundaryImporter {
         Path regionMetaPath = out.resolve("region_metadata");
         Path regionGeomPath = out.resolve("region_geometry");
 
+        Path tmpH3ToOsmPath = tmp.resolve("tmp_h3_to_osm");
+        Path tmpRegionMetaPath = tmp.resolve("tmp_region_metadata");
+        Path tmpRegionGeomPath = tmp.resolve("tmp_region_geometry");
+
         cleanup(nodeCachePath);
         cleanup(wayCachePath);
         cleanup(h3ToOsmPath);
         cleanup(regionMetaPath);
         cleanup(regionGeomPath);
+        cleanup(tmpH3ToOsmPath);
+        cleanup(tmpRegionMetaPath);
+        cleanup(tmpRegionGeomPath);
 
         // Shared RocksDB options (inline with ImportService style)
         BlockBasedTableConfig tableCfg = new BlockBasedTableConfig()
@@ -105,16 +113,19 @@ public class StandaloneBoundaryImporter {
                 .setTableFormatConfig(tableCfg)
                 .setCompressionType(CompressionType.ZSTD_COMPRESSION)
                 .setWriteBufferSize(256 * 1024 * 1024);
-        WriteOptions wo = new WriteOptions().setDisableWAL(true);
 
         stats.startProgressReporter();
 
         try (
+                WriteOptions wo = new WriteOptions().setDisableWAL(true);
                 RocksDB nodeCache = RocksDB.open(cacheOpts, nodeCachePath.toString());
                 RocksDB wayCache = RocksDB.open(cacheOpts, wayCachePath.toString());
                 RocksDB h3ToOsm = RocksDB.open(finalOpts, h3ToOsmPath.toString());
                 RocksDB regionMeta = RocksDB.open(finalOpts, regionMetaPath.toString());
-                RocksDB regionGeom = RocksDB.open(finalOpts, regionGeomPath.toString())
+                RocksDB regionGeom = RocksDB.open(finalOpts, regionGeomPath.toString());
+                RocksDB tmpH3ToOsm = RocksDB.open(cacheOpts, tmpH3ToOsmPath.toString());
+                RocksDB tmpRegionMeta = RocksDB.open(cacheOpts, tmpRegionMetaPath.toString());
+                RocksDB tmpRegionGeom = RocksDB.open(cacheOpts, tmpRegionGeomPath.toString())
         ) {
             for (String pbfPath : pbfPaths) {
                 stats.setCurrentPhase(1, "1.1: Caching Nodes & Ways");
@@ -183,10 +194,11 @@ public class StandaloneBoundaryImporter {
                     // Process each relation: stitch geometry, H3 polyfill, write outputs
                     int threads = paikkaConfiguration.getImportConfiguration().getThreads();
                     ExecutorService executor = Executors.newFixedThreadPool(threads);
-                    List<Future<ProcessedRelation>> futures = new ArrayList<>();
+                    ExecutorCompletionService<ProcessedRelation> ecs = new ExecutorCompletionService<>(executor);
 
+                    int submitted = 0;
                     for (RelationStub stub : relations) {
-                        futures.add(executor.submit(() -> {
+                        ecs.submit(() -> {
                             Geometry geom = buildMultiPolygon(stub, nodeCache, wayCache);
                             if (geom == null || geom.isEmpty() || !geom.isValid()) return null;
 
@@ -200,49 +212,42 @@ public class StandaloneBoundaryImporter {
                             if (cells.isEmpty()) return null;
 
                             return new ProcessedRelation(stub.osmId, cells, simplified);
-                        }));
+                        });
+                        submitted++;
                     }
 
-                    executor.shutdown();
-                    executor.awaitTermination(Long.MAX_VALUE, TimeUnit.NANOSECONDS);
-
-                    WriteBatch h3Batch = new WriteBatch();
-                    WriteBatch metaBatch = new WriteBatch();
-                    WriteBatch geomBatch = new WriteBatch();
-
-                    for (Future<ProcessedRelation> future : futures) {
+                    for (int i = 0; i < submitted; i++) {
+                        Future<ProcessedRelation> future = ecs.take();
                         ProcessedRelation pr = future.get();
                         if (pr == null) continue;
 
                         stats.incrementRelationsProcessed();
                         stats.addH3CellsGenerated(pr.cells().size());
 
-                        // h3_to_osm : append OSM_ID to each cell (dedup)
+                        // Write to temporary databases
                         for (long cell : pr.cells()) {
                             byte[] key = longToBytes(cell);
-                            byte[] existing = h3ToOsm.get(key);
+                            byte[] existing = tmpH3ToOsm.get(key);
                             byte[] updated = appendOsmIdToArray(existing, pr.osmId());
-                            h3Batch.put(key, updated);
+                            tmpH3ToOsm.put(wo, key, updated);
                         }
 
-                        // region_metadata : OSM_ID -> cell count (int)
-                        metaBatch.put(longToBytes(pr.osmId()), intToBytes(pr.cells().size()));
+                        tmpRegionMeta.put(wo, longToBytes(pr.osmId()), intToBytes(pr.cells().size()));
 
-                        // region_geometry : OSM_ID -> simplified WKB
                         byte[] wkb = new WKBWriter().write(pr.simplified());
-                        geomBatch.put(longToBytes(pr.osmId()), wkb);
+                        tmpRegionGeom.put(wo, longToBytes(pr.osmId()), wkb);
                     }
 
-                    h3ToOsm.write(wo, h3Batch);
-                    regionMeta.write(wo, metaBatch);
-                    regionGeom.write(wo, geomBatch);
-                    h3Batch.close();
-                    metaBatch.close();
-                    geomBatch.close();
-                    wo.close();
+                    executor.shutdown();
+                    executor.awaitTermination(Long.MAX_VALUE, TimeUnit.NANOSECONDS);
                 }
-
             }
+
+            stats.setCurrentPhase(3, "3.1: Compacting Final Databases");
+            // Final Step: Copy from temporary DBs to final DBs in sorted order
+            copyDb(tmpRegionMeta, regionMeta);
+            copyDb(tmpRegionGeom, regionGeom);
+            copyH3Db(tmpH3ToOsm, h3ToOsm);
 
             // Compact finals
             h3ToOsm.compactRange();
@@ -258,6 +263,44 @@ public class StandaloneBoundaryImporter {
         // Cleanup tmp
         cleanup(tmp);
         System.out.println("[StandaloneBoundaryImporter] Import complete. Temporary caches removed.");
+    }
+
+    private void copyDb(RocksDB source, RocksDB target) throws RocksDBException {
+        try (RocksIterator it = source.newIterator(); WriteOptions wo = new WriteOptions().setDisableWAL(true)) {
+            it.seekToFirst();
+            while (it.isValid()) {
+                target.put(wo, it.key(), it.value());
+                it.next();
+            }
+        }
+    }
+
+    private void copyH3Db(RocksDB source, RocksDB target) throws RocksDBException {
+        try (RocksIterator it = source.newIterator(); WriteOptions wo = new WriteOptions().setDisableWAL(true)) {
+            it.seekToFirst();
+            while (it.isValid()) {
+                byte[] key = it.key();
+                byte[] newVal = it.value();
+                byte[] existing = target.get(key);
+                if (existing == null) {
+                    target.put(wo, key, newVal);
+                } else {
+                    byte[] merged = mergeOsmIdArrays(existing, newVal);
+                    target.put(wo, key, merged);
+                }
+                it.next();
+            }
+        }
+    }
+
+    private byte[] mergeOsmIdArrays(byte[] existing, byte[] newVal) {
+        ByteBuffer bb = ByteBuffer.wrap(newVal).order(ByteOrder.BIG_ENDIAN);
+        byte[] current = existing;
+        while (bb.hasRemaining()) {
+            long osmId = bb.getLong();
+            current = appendOsmIdToArray(current, osmId);
+        }
+        return current;
     }
 
     // ============================ GEOMETRY STITCHING ============================
