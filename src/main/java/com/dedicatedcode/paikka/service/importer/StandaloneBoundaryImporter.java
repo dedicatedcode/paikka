@@ -61,7 +61,7 @@ public class StandaloneBoundaryImporter {
 
     // ============================ PUBLIC API ============================
 
-    public void importBoundaries(String pbfPath, String outputDir) throws Exception {
+    public void importBoundaries(List<String> pbfPaths, String outputDir) throws Exception {
         RocksDB.loadLibrary();
         Path out = Paths.get(outputDir);
         Path tmp = out.resolve("tmp");
@@ -105,105 +105,108 @@ public class StandaloneBoundaryImporter {
                 RocksDB regionMeta = RocksDB.open(finalOpts, regionMetaPath.toString());
                 RocksDB regionGeom = RocksDB.open(finalOpts, regionGeomPath.toString())
         ) {
-            // ---------- SINGLE PASS ----------
-            PbfIterator iterator = new PbfIterator(Files.newInputStream(Paths.get(pbfPath)), false);
+            for (String pbfPath : pbfPaths) {
+                // ---------- SINGLE PASS ----------
+                PbfIterator iterator = new PbfIterator(Files.newInputStream(Paths.get(pbfPath)), false);
 
-            // Phase 1 & 2: Stream nodes and ways (cached)
-            WriteBatch nodeBatch = new WriteBatch();
-            WriteBatch wayBatch = new WriteBatch();
-            AtomicLong phaseCounter = new AtomicLong();
+                // Phase 1 & 2: Stream nodes and ways (cached)
+                WriteBatch nodeBatch = new WriteBatch();
+                WriteBatch wayBatch = new WriteBatch();
+                AtomicLong phaseCounter = new AtomicLong();
 
-            while (iterator.hasNext()) {
-                EntityContainer c = iterator.next();
-                if (c.getType() == EntityType.Node) {
-                    // PHASE 1: Cache node coordinates (lat, lon) as 16-byte double pair
-                    OsmNode n = (OsmNode) c.getEntity();
-                    ByteBuffer bb = ByteBuffer.allocate(16)
-                            .putDouble(n.getLatitude())
-                            .putDouble(n.getLongitude());
-                    nodeBatch.put(longToBytes(n.getId()), bb.array());
-                    if (phaseCounter.incrementAndGet() % 100_000 == 0) {
-                        nodeCache.write(wo, nodeBatch);
-                        nodeBatch.clear();
+                while (iterator.hasNext()) {
+                    EntityContainer c = iterator.next();
+                    if (c.getType() == EntityType.Node) {
+                        // PHASE 1: Cache node coordinates (lat, lon) as 16-byte double pair
+                        OsmNode n = (OsmNode) c.getEntity();
+                        ByteBuffer bb = ByteBuffer.allocate(16)
+                                .putDouble(n.getLatitude())
+                                .putDouble(n.getLongitude());
+                        nodeBatch.put(longToBytes(n.getId()), bb.array());
+                        if (phaseCounter.incrementAndGet() % 100_000 == 0) {
+                            nodeCache.write(wo, nodeBatch);
+                            nodeBatch.clear();
+                        }
+                    } else if (c.getType() == EntityType.Way) {
+                        // PHASE 2: Cache way node-id sequences (long[] as raw bytes)
+                        OsmWay w = (OsmWay) c.getEntity();
+                        long[] ids = new long[w.getNumberOfNodes()];
+                        for (int i = 0; i < w.getNumberOfNodes(); i++) ids[i] = w.getNodeId(i);
+                        wayBatch.put(longToBytes(w.getId()), longArrayToBytes(ids));
+                        if (phaseCounter.incrementAndGet() % 50_000 == 0) {
+                            wayCache.write(wo, wayBatch);
+                            wayBatch.clear();
+                        }
+                    } else if (c.getType() == EntityType.Relation) {
+                        // PHASE 3: Relations (ways already fully cached above)
+                        break; // Relations come after ways in ordered PBF; switch mode
                     }
-                } else if (c.getType() == EntityType.Way) {
-                    // PHASE 2: Cache way node-id sequences (long[] as raw bytes)
-                    OsmWay w = (OsmWay) c.getEntity();
-                    long[] ids = new long[w.getNumberOfNodes()];
-                    for (int i = 0; i < w.getNumberOfNodes(); i++) ids[i] = w.getNodeId(i);
-                    wayBatch.put(longToBytes(w.getId()), longArrayToBytes(ids));
-                    if (phaseCounter.incrementAndGet() % 50_000 == 0) {
-                        wayCache.write(wo, wayBatch);
-                        wayBatch.clear();
-                    }
-                } else if (c.getType() == EntityType.Relation) {
-                    // PHASE 3: Relations (ways already fully cached above)
-                    break; // Relations come after ways in ordered PBF; switch mode
                 }
-            }
-            nodeCache.write(wo, nodeBatch);
-            wayCache.write(wo, wayBatch);
-            nodeBatch.close();
-            wayBatch.close();
+                nodeCache.write(wo, nodeBatch);
+                wayCache.write(wo, wayBatch);
+                nodeBatch.close();
+                wayBatch.close();
 
-            // Re-open iterator for Phase 3 (or use two iterators; here we reuse file)
+                // Re-open iterator for Phase 3 (or use two iterators; here we reuse file)
 
-            // Phase 3: Process Relations (separate iterator pass is fine since PBF is local)
-            try (InputStream is = Files.newInputStream(Paths.get(pbfPath))) {
-                PbfIterator relIter = new PbfIterator(is, false);
+                // Phase 3: Process Relations (separate iterator pass is fine since PBF is local)
+                try (InputStream is = Files.newInputStream(Paths.get(pbfPath))) {
+                    PbfIterator relIter = new PbfIterator(is, false);
 
-                List<RelationStub> relations = new ArrayList<>();
-                while (relIter.hasNext()) {
-                    EntityContainer c = relIter.next();
-                    if (c.getType() == EntityType.Relation) {
-                        OsmRelation r = (OsmRelation) c.getEntity();
-                        if (isAdministrativeBoundary(r)) {
-                            relations.add(buildRelationStub(r));
+                    List<RelationStub> relations = new ArrayList<>();
+                    while (relIter.hasNext()) {
+                        EntityContainer c = relIter.next();
+                        if (c.getType() == EntityType.Relation) {
+                            OsmRelation r = (OsmRelation) c.getEntity();
+                            if (isAdministrativeBoundary(r)) {
+                                relations.add(buildRelationStub(r));
+                            }
                         }
                     }
-                }
 
-                // Process each relation: stitch geometry, H3 polyfill, write outputs
-                WriteBatch h3Batch = new WriteBatch();
-                WriteBatch metaBatch = new WriteBatch();
-                WriteBatch geomBatch = new WriteBatch();
+                    // Process each relation: stitch geometry, H3 polyfill, write outputs
+                    WriteBatch h3Batch = new WriteBatch();
+                    WriteBatch metaBatch = new WriteBatch();
+                    WriteBatch geomBatch = new WriteBatch();
 
-                for (RelationStub stub : relations) {
-                    Geometry geom = buildMultiPolygon(stub, nodeCache, wayCache);
-                    if (geom == null || geom.isEmpty() || !geom.isValid()) continue;
+                    for (RelationStub stub : relations) {
+                        Geometry geom = buildMultiPolygon(stub, nodeCache, wayCache);
+                        if (geom == null || geom.isEmpty() || !geom.isValid()) continue;
 
-                    // Buffer to include border-touching cells
-                    Geometry buffered = geom.buffer(BUFFER_DISTANCE);
-                    Geometry simplified = geometrySimplificationService.simplifyByAdminLevel(buffered, stub.adminLevel);
-                    if (simplified == null || simplified.isEmpty()) simplified = buffered;
+                        // Buffer to include border-touching cells
+                        Geometry buffered = geom.buffer(BUFFER_DISTANCE);
+                        Geometry simplified = geometrySimplificationService.simplifyByAdminLevel(buffered, stub.adminLevel);
+                        if (simplified == null || simplified.isEmpty()) simplified = buffered;
 
-                    // ---- H3 Polyfill ----
-                    List<Long> cells = polygonToCellsH3(simplified);
-                    if (cells.isEmpty()) continue;
+                        // ---- H3 Polyfill ----
+                        List<Long> cells = polygonToCellsH3(simplified);
+                        if (cells.isEmpty()) continue;
 
-                    // h3_to_osm : append OSM_ID to each cell (dedup)
-                    for (long cell : cells) {
-                        byte[] key = longToBytes(cell);
-                        byte[] existing = h3ToOsm.get(key);
-                        byte[] updated = appendOsmIdToArray(existing, stub.osmId);
-                        h3Batch.put(key, updated);
+                        // h3_to_osm : append OSM_ID to each cell (dedup)
+                        for (long cell : cells) {
+                            byte[] key = longToBytes(cell);
+                            byte[] existing = h3ToOsm.get(key);
+                            byte[] updated = appendOsmIdToArray(existing, stub.osmId);
+                            h3Batch.put(key, updated);
+                        }
+
+                        // region_metadata : OSM_ID -> cell count (int)
+                        metaBatch.put(longToBytes(stub.osmId), intToBytes(cells.size()));
+
+                        // region_geometry : OSM_ID -> simplified WKB
+                        byte[] wkb = new WKBWriter().write(simplified);
+                        geomBatch.put(longToBytes(stub.osmId), wkb);
                     }
 
-                    // region_metadata : OSM_ID -> cell count (int)
-                    metaBatch.put(longToBytes(stub.osmId), intToBytes(cells.size()));
-
-                    // region_geometry : OSM_ID -> simplified WKB
-                    byte[] wkb = new WKBWriter().write(simplified);
-                    geomBatch.put(longToBytes(stub.osmId), wkb);
+                    h3ToOsm.write(wo, h3Batch);
+                    regionMeta.write(wo, metaBatch);
+                    regionGeom.write(wo, geomBatch);
+                    h3Batch.close();
+                    metaBatch.close();
+                    geomBatch.close();
+                    wo.close();
                 }
 
-                h3ToOsm.write(wo, h3Batch);
-                regionMeta.write(wo, metaBatch);
-                regionGeom.write(wo, geomBatch);
-                h3Batch.close();
-                metaBatch.close();
-                geomBatch.close();
-                wo.close();
             }
 
             // Compact finals

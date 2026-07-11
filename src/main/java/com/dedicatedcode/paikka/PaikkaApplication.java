@@ -145,9 +145,7 @@ public class PaikkaApplication implements CommandLineRunner {
                 System.exit(1);
             }
             try {
-                for (String pbfFile : pbfFiles) {
-                    standaloneBoundaryImporter.importBoundaries(pbfFile, dataDir);
-                }
+                standaloneBoundaryImporter.importBoundaries(pbfFiles, dataDir);
                 System.exit(0);
             } catch (Exception e) {
                 logger.error("Boundary import failed", e);
