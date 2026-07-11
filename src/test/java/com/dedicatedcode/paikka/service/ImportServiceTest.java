@@ -65,7 +65,7 @@ class ImportServiceTest {
         PaikkaConfiguration.ImportConfiguration importConfiguration = new PaikkaConfiguration.ImportConfiguration();
         importConfiguration.setThreads(2);
         config.setImportConfiguration(importConfiguration);
-        GeometrySimplificationService geometrySimplificationService = new GeometrySimplificationService();
+        GeometrySimplificationService geometrySimplificationService = new GeometrySimplificationService(config);
 
         S2Helper s2Helper = new S2Helper();
         ImportService importService = new ImportService(s2Helper, geometrySimplificationService, config, "1.0.0");

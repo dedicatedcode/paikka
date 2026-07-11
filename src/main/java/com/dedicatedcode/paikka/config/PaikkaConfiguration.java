@@ -32,6 +32,8 @@ public class PaikkaConfiguration {
     private ImportConfiguration importConfiguration;
     @Name("query")
     private QueryConfiguration queryConfiguration;
+    @Name("simplification")
+    private SimplificationConfiguration simplificationConfiguration;
 
     public ImportConfiguration getImportConfiguration() {
         return importConfiguration;
@@ -65,6 +67,14 @@ public class PaikkaConfiguration {
         this.statsDbPath = statsDbPath;
     }
 
+    public SimplificationConfiguration getSimplificationConfiguration() {
+        return simplificationConfiguration;
+    }
+
+    public void setSimplificationConfiguration(SimplificationConfiguration simplificationConfiguration) {
+        this.simplificationConfiguration = simplificationConfiguration;
+    }
+
     public static class ImportConfiguration {
 
         private int threads = Math.max(1, Runtime.getRuntime().availableProcessors() / 2);
@@ -86,6 +96,54 @@ public class PaikkaConfiguration {
             this.chunkSize = chunkSize;
         }
 
+    }
+
+    public static class SimplificationConfiguration {
+        private double continentTolerance;
+        private double countryTolerance;
+        private double stateTolerance;
+        private double poiTolerance;
+        private double defaultTolerance;
+
+        public double getContinentTolerance() {
+            return continentTolerance;
+        }
+
+        public void setContinentTolerance(double continentTolerance) {
+            this.continentTolerance = continentTolerance;
+        }
+
+        public double getCountryTolerance() {
+            return countryTolerance;
+        }
+
+        public void setCountryTolerance(double countryTolerance) {
+            this.countryTolerance = countryTolerance;
+        }
+
+        public double getStateTolerance() {
+            return stateTolerance;
+        }
+
+        public void setStateTolerance(double stateTolerance) {
+            this.stateTolerance = stateTolerance;
+        }
+
+        public double getPoiTolerance() {
+            return poiTolerance;
+        }
+
+        public void setPoiTolerance(double poiTolerance) {
+            this.poiTolerance = poiTolerance;
+        }
+
+        public double getDefaultTolerance() {
+            return defaultTolerance;
+        }
+
+        public void setDefaultTolerance(double defaultTolerance) {
+            this.defaultTolerance = defaultTolerance;
+        }
     }
 
     public static class QueryConfiguration {

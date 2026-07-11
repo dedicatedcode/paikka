@@ -118,7 +118,6 @@ public class StandaloneBoundaryImporter {
         stats.startProgressReporter();
 
         try (
-                WriteOptions wo = new WriteOptions().setDisableWAL(true);
                 RocksDB nodeCache = RocksDB.open(cacheOpts, nodeCachePath.toString());
                 RocksDB wayCache = RocksDB.open(cacheOpts, wayCachePath.toString());
                 RocksDB h3ToOsm = RocksDB.open(finalOpts, h3ToOsmPath.toString());
@@ -130,48 +129,51 @@ public class StandaloneBoundaryImporter {
         ) {
             for (String pbfPath : pbfPaths) {
                 stats.setCurrentPhase(1, "1.1: Caching Nodes & Ways");
-                // ---------- SINGLE PASS ----------
-                PbfIterator iterator = new PbfIterator(Files.newInputStream(Paths.get(pbfPath)), false);
+                try (WriteOptions wo = new WriteOptions().setDisableWAL(true)) {
 
-                // Phase 1 & 2: Stream nodes and ways (cached)
-                WriteBatch nodeBatch = new WriteBatch();
-                WriteBatch wayBatch = new WriteBatch();
-                AtomicLong phaseCounter = new AtomicLong();
+                    // ---------- SINGLE PASS ----------
+                    PbfIterator iterator = new PbfIterator(Files.newInputStream(Paths.get(pbfPath)), false);
 
-                while (iterator.hasNext()) {
-                    EntityContainer c = iterator.next();
-                    if (c.getType() == EntityType.Node) {
-                        // PHASE 1: Cache node coordinates (lat, lon) as 16-byte double pair
-                        OsmNode n = (OsmNode) c.getEntity();
-                        ByteBuffer bb = ByteBuffer.allocate(16)
-                                .putDouble(n.getLatitude())
-                                .putDouble(n.getLongitude());
-                        nodeBatch.put(longToBytes(n.getId()), bb.array());
-                        stats.incrementNodesCached();
-                        if (phaseCounter.incrementAndGet() % 100_000 == 0) {
-                            nodeCache.write(wo, nodeBatch);
-                            nodeBatch.clear();
+                    // Phase 1 & 2: Stream nodes and ways (cached)
+                    WriteBatch nodeBatch = new WriteBatch();
+                    WriteBatch wayBatch = new WriteBatch();
+                    AtomicLong phaseCounter = new AtomicLong();
+
+                    while (iterator.hasNext()) {
+                        EntityContainer c = iterator.next();
+                        if (c.getType() == EntityType.Node) {
+                            // PHASE 1: Cache node coordinates (lat, lon) as 16-byte double pair
+                            OsmNode n = (OsmNode) c.getEntity();
+                            ByteBuffer bb = ByteBuffer.allocate(16)
+                                    .putDouble(n.getLatitude())
+                                    .putDouble(n.getLongitude());
+                            nodeBatch.put(longToBytes(n.getId()), bb.array());
+                            stats.incrementNodesCached();
+                            if (phaseCounter.incrementAndGet() % 100_000 == 0) {
+                                nodeCache.write(wo, nodeBatch);
+                                nodeBatch.clear();
+                            }
+                        } else if (c.getType() == EntityType.Way) {
+                            // PHASE 2: Cache way node-id sequences (long[] as raw bytes)
+                            OsmWay w = (OsmWay) c.getEntity();
+                            long[] ids = new long[w.getNumberOfNodes()];
+                            for (int i = 0; i < w.getNumberOfNodes(); i++) ids[i] = w.getNodeId(i);
+                            wayBatch.put(longToBytes(w.getId()), longArrayToBytes(ids));
+                            stats.incrementWaysCached();
+                            if (phaseCounter.incrementAndGet() % 50_000 == 0) {
+                                wayCache.write(wo, wayBatch);
+                                wayBatch.clear();
+                            }
+                        } else if (c.getType() == EntityType.Relation) {
+                            // PHASE 3: Relations (ways already fully cached above)
+                            break; // Relations come after ways in ordered PBF; switch mode
                         }
-                    } else if (c.getType() == EntityType.Way) {
-                        // PHASE 2: Cache way node-id sequences (long[] as raw bytes)
-                        OsmWay w = (OsmWay) c.getEntity();
-                        long[] ids = new long[w.getNumberOfNodes()];
-                        for (int i = 0; i < w.getNumberOfNodes(); i++) ids[i] = w.getNodeId(i);
-                        wayBatch.put(longToBytes(w.getId()), longArrayToBytes(ids));
-                        stats.incrementWaysCached();
-                        if (phaseCounter.incrementAndGet() % 50_000 == 0) {
-                            wayCache.write(wo, wayBatch);
-                            wayBatch.clear();
-                        }
-                    } else if (c.getType() == EntityType.Relation) {
-                        // PHASE 3: Relations (ways already fully cached above)
-                        break; // Relations come after ways in ordered PBF; switch mode
                     }
+                    nodeCache.write(wo, nodeBatch);
+                    wayCache.write(wo, wayBatch);
+                    nodeBatch.close();
+                    wayBatch.close();
                 }
-                nodeCache.write(wo, nodeBatch);
-                wayCache.write(wo, wayBatch);
-                nodeBatch.close();
-                wayBatch.close();
 
                 stats.setCurrentPhase(2, "2.1: Processing Relations & H3");
                 // Re-open iterator for Phase 3 (or use two iterators; here we reuse file)
@@ -225,7 +227,7 @@ public class StandaloneBoundaryImporter {
                     List<Future<?>> futures = new ArrayList<>();
                     for (int i = 0; i < threads; i++) {
                         futures.add(executor.submit(() -> {
-                            try {
+                            try (WriteOptions wo = new WriteOptions().setDisableWAL(true)) {
                                 while (true) {
                                     List<RelationStub> batch = queue.take();
                                     if (batch == POISON_PILL) break;
