@@ -34,10 +34,11 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.*;
-import java.util.concurrent.ExecutorCompletionService;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -97,7 +98,7 @@ public class StandaloneBoundaryImporter {
         cleanup(tmpRegionMetaPath);
         cleanup(tmpRegionGeomPath);
 
-        // Shared RocksDB options (inline with ImportService style)
+        // Shared Rocksoptions (inline with ImportService style)
         BlockBasedTableConfig tableCfg = new BlockBasedTableConfig()
                 .setBlockSize(64 * 1024)
                 .setFilterPolicy(new BloomFilter(10, false));
@@ -179,67 +180,105 @@ public class StandaloneBoundaryImporter {
                 try (InputStream is = Files.newInputStream(Paths.get(pbfPath))) {
                     PbfIterator relIter = new PbfIterator(is, false);
 
-                    List<RelationStub> relations = new ArrayList<>();
-                    while (relIter.hasNext()) {
-                        EntityContainer c = relIter.next();
-                        if (c.getType() == EntityType.Relation) {
-                            OsmRelation r = (OsmRelation) c.getEntity();
-                            if (isAdministrativeBoundary(r)) {
-                                relations.add(buildRelationStub(r));
-                                stats.incrementRelationsFound();
-                            }
-                        }
-                    }
-
-                    // Process each relation: stitch geometry, H3 polyfill, write outputs
                     int threads = paikkaConfiguration.getImportConfiguration().getThreads();
                     ExecutorService executor = Executors.newFixedThreadPool(threads);
-                    ExecutorCompletionService<ProcessedRelation> ecs = new ExecutorCompletionService<>(executor);
+                    BlockingQueue<List<RelationStub>> queue = new LinkedBlockingQueue<>(100);
+                    List<RelationStub> POISON_PILL = List.of();
 
-                    int submitted = 0;
-                    for (RelationStub stub : relations) {
-                        ecs.submit(() -> {
-                            Geometry geom = buildMultiPolygon(stub, nodeCache, wayCache);
-                            if (geom == null || geom.isEmpty() || !geom.isValid()) return null;
-
-                            // Buffer to include border-touching cells
-                            Geometry buffered = geom.buffer(BUFFER_DISTANCE);
-                            Geometry simplified = geometrySimplificationService.simplifyByAdminLevel(buffered, stub.adminLevel);
-                            if (simplified == null || simplified.isEmpty()) simplified = buffered;
-
-                            // ---- H3 Polyfill ----
-                            List<Long> cells = polygonToCellsH3(simplified);
-                            if (cells.isEmpty()) return null;
-
-                            return new ProcessedRelation(stub.osmId, cells, simplified);
-                        });
-                        submitted++;
-                    }
-
-                    for (int i = 0; i < submitted; i++) {
-                        Future<ProcessedRelation> future = ecs.take();
-                        ProcessedRelation pr = future.get();
-                        if (pr == null) continue;
-
-                        stats.incrementRelationsProcessed();
-                        stats.addH3CellsGenerated(pr.cells().size());
-
-                        // Write to temporary databases
-                        for (long cell : pr.cells()) {
-                            byte[] key = longToBytes(cell);
-                            byte[] existing = tmpH3ToOsm.get(key);
-                            byte[] updated = appendOsmIdToArray(existing, pr.osmId());
-                            tmpH3ToOsm.put(wo, key, updated);
+                    // Producer thread
+                    Thread producer = new Thread(() -> {
+                        try {
+                            List<RelationStub> batch = new ArrayList<>(100);
+                            while (relIter.hasNext()) {
+                                EntityContainer c = relIter.next();
+                                if (c.getType() == EntityType.Relation) {
+                                    OsmRelation r = (OsmRelation) c.getEntity();
+                                    if (isAdministrativeBoundary(r)) {
+                                        stats.incrementRelationsFound();
+                                        batch.add(buildRelationStub(r));
+                                        if (batch.size() >= 100) {
+                                            queue.put(batch);
+                                            batch = new ArrayList<>(100);
+                                        }
+                                    }
+                                }
+                            }
+                            if (!batch.isEmpty()) {
+                                queue.put(batch);
+                            }
+                        } catch (Exception e) {
+                            stats.recordError(BoundaryImportStatistics.Stage.PROCESSING_RELATIONS, BoundaryImportStatistics.Kind.READ, null, "producer-thread", e);
+                        } finally {
+                            for (int i = 0; i < threads; i++) {
+                                try {
+                                    queue.put(POISON_PILL);
+                                } catch (InterruptedException e) {
+                                    Thread.currentThread().interrupt();
+                                }
+                            }
                         }
+                    });
 
-                        tmpRegionMeta.put(wo, longToBytes(pr.osmId()), intToBytes(pr.cells().size()));
+                    producer.start();
 
-                        byte[] wkb = new WKBWriter().write(pr.simplified());
-                        tmpRegionGeom.put(wo, longToBytes(pr.osmId()), wkb);
+                    // Consumer threads
+                    List<Future<?>> futures = new ArrayList<>();
+                    for (int i = 0; i < threads; i++) {
+                        futures.add(executor.submit(() -> {
+                            try {
+                                while (true) {
+                                    List<RelationStub> batch = queue.take();
+                                    if (batch == POISON_PILL) break;
+
+                                    for (RelationStub stub : batch) {
+                                        try {
+                                            Geometry geom = buildMultiPolygon(stub, nodeCache, wayCache);
+                                            if (geom == null || geom.isEmpty() || !geom.isValid()) continue;
+
+                                            // Buffer to include border-touching cells
+                                            Geometry buffered = geom.buffer(BUFFER_DISTANCE);
+                                            Geometry simplified = geometrySimplificationService.simplifyByAdminLevel(buffered, stub.adminLevel());
+                                            if (simplified == null || simplified.isEmpty()) simplified = buffered;
+
+                                            // ---- H3 Polyfill ----
+                                            List<Long> cells = polygonToCellsH3(simplified);
+                                            if (cells.isEmpty()) continue;
+
+                                            stats.incrementRelationsProcessed();
+                                            stats.addH3CellsGenerated(cells.size());
+
+                                            // Write to temporary databases
+                                            for (long cell : cells) {
+                                                byte[] key = longToBytes(cell);
+                                                synchronized (tmpH3ToOsm) {
+                                                    byte[] existing = tmpH3ToOsm.get(key);
+                                                    byte[] updated = appendOsmIdToArray(existing, stub.osmId());
+                                                    tmpH3ToOsm.put(wo, key, updated);
+                                                }
+                                            }
+
+                                            tmpRegionMeta.put(wo, longToBytes(stub.osmId()), intToBytes(cells.size()));
+
+                                            byte[] wkb = new WKBWriter().write(simplified);
+                                            tmpRegionGeom.put(wo, longToBytes(stub.osmId()), wkb);
+                                        } catch (Exception e) {
+                                            stats.recordError(BoundaryImportStatistics.Stage.PROCESSING_RELATIONS, BoundaryImportStatistics.Kind.GEOMETRY, stub.osmId(), "process-relation", e);
+                                        }
+                                    }
+                                }
+                            } catch (InterruptedException e) {
+                                Thread.currentThread().interrupt();
+                            }
+                        }));
                     }
 
+                    // Wait for consumers to finish
+                    for (Future<?> f : futures) {
+                        f.get();
+                    }
                     executor.shutdown();
                     executor.awaitTermination(Long.MAX_VALUE, TimeUnit.NANOSECONDS);
+                    producer.join();
                 }
             }
 
@@ -310,8 +349,8 @@ public class StandaloneBoundaryImporter {
      * Rings are stitched by coordinate continuation (same logic as ImportService.buildConnectedRings).
      */
     private Geometry buildMultiPolygon(RelationStub stub, RocksDB nodeCache, RocksDB wayCache) {
-        List<List<Coordinate>> outerRings = stitchRings(stub.outerWays, nodeCache, wayCache);
-        List<List<Coordinate>> innerRings = stitchRings(stub.innerWays, nodeCache, wayCache);
+        List<List<Coordinate>> outerRings = stitchRings(stub.outerWays(), nodeCache, wayCache);
+        List<List<Coordinate>> innerRings = stitchRings(stub.innerWays(), nodeCache, wayCache);
         if (outerRings.isEmpty()) return null;
 
         List<Polygon> polygons = new ArrayList<>();
@@ -323,13 +362,13 @@ public class StandaloneBoundaryImporter {
                     try {
                         holes.add(GEOMETRY_FACTORY.createLinearRing(inner.toArray(new Coordinate[0])));
                     } catch (Exception e) {
-                        stats.recordError(BoundaryImportStatistics.Stage.PROCESSING_RELATIONS, BoundaryImportStatistics.Kind.GEOMETRY, stub.osmId, "createLinearRing-inner", e);
+                        stats.recordError(BoundaryImportStatistics.Stage.PROCESSING_RELATIONS, BoundaryImportStatistics.Kind.GEOMETRY, stub.osmId(), "createLinearRing-inner", e);
                     }
                 }
                 Polygon p = GEOMETRY_FACTORY.createPolygon(shell, holes.toArray(new LinearRing[0]));
                 if (p.isValid()) polygons.add(p);
             } catch (Exception e) {
-                stats.recordError(BoundaryImportStatistics.Stage.PROCESSING_RELATIONS, BoundaryImportStatistics.Kind.GEOMETRY, stub.osmId, "buildMultiPolygon", e);
+                stats.recordError(BoundaryImportStatistics.Stage.PROCESSING_RELATIONS, BoundaryImportStatistics.Kind.GEOMETRY, stub.osmId(), "buildMultiPolygon", e);
             }
         }
         if (polygons.isEmpty()) return null;
@@ -525,9 +564,6 @@ public class StandaloneBoundaryImporter {
     }
 
     private record RelationStub(long osmId, int adminLevel, List<Long> outerWays, List<Long> innerWays) {
-    }
-
-    private record ProcessedRelation(long osmId, List<Long> cells, Geometry simplified) {
     }
 
     private void cleanup(Path p) {
