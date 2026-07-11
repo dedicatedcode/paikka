@@ -45,7 +45,13 @@
             <artifactId>s2-geometry</artifactId>
             <version>2.0.0</version>
         </dependency>
-        
+
+        <dependency>
+            <groupId>com.uber</groupId>
+            <artifactId>h3</artifactId>
+            <version>4.4.0</version>
+        </dependency>
+
         <!-- RocksDB -->
         <dependency>
             <groupId>org.rocksdb</groupId>

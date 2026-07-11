@@ -17,6 +17,7 @@
 package com.dedicatedcode.paikka;
 
 import com.dedicatedcode.paikka.service.importer.ImportService;
+import com.dedicatedcode.paikka.service.importer.StandaloneBoundaryImporter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -33,6 +34,9 @@ public class PaikkaApplication implements CommandLineRunner {
     
     @Autowired
     private ImportService importService;
+
+    @Autowired
+    private StandaloneBoundaryImporter standaloneBoundaryImporter;
 
     static void main(String[] args) {
         for (String arg : args) {
