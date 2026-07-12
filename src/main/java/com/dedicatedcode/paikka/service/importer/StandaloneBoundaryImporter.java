@@ -162,8 +162,11 @@ public class StandaloneBoundaryImporter {
                                 wayBatch.clear();
                             }
                         } else if (c.getType() == EntityType.Relation) {
-                            // PHASE 3: Relations (ways already fully cached above)
-                            break; // Relations come after ways in ordered PBF; switch mode
+                            // PHASE 3: Count administrative boundaries for accurate progress tracking
+                            OsmRelation r = (OsmRelation) c.getEntity();
+                            if (isAdministrativeBoundary(r)) {
+                                stats.incrementRelationsFound();
+                            }
                         }
                     }
                     nodeCache.write(wo, nodeBatch);
@@ -193,7 +196,6 @@ public class StandaloneBoundaryImporter {
                                 if (c.getType() == EntityType.Relation) {
                                     OsmRelation r = (OsmRelation) c.getEntity();
                                     if (isAdministrativeBoundary(r)) {
-                                        stats.incrementRelationsFound();
                                         batch.add(buildRelationStub(r));
                                         if (batch.size() >= 100) {
                                             queue.put(batch);
