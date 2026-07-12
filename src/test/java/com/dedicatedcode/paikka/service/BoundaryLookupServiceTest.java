@@ -65,4 +65,52 @@ class BoundaryLookupServiceTest {
 
         assertEquals(3, cells.size(), "Should return exactly 3 cells for the different resolutions");
     }
+
+    @Test
+    void shouldGetCellsWithBoundaries() {
+        double lat = 53.86422;
+        double lng = 10.69120;
+
+        List<BoundaryLookupService.CellWithBoundaries> cellsWithBoundaries = boundaryLookupService.getCellsWithBoundaries(lat, lng);
+
+        assertFalse(cellsWithBoundaries.isEmpty(), "Should return cells with boundaries for Luebeck coordinates");
+        
+        // Should have cells for different resolutions (4, 6, 9)
+        Set<Integer> resolutions = cellsWithBoundaries.stream()
+                .map(BoundaryLookupService.CellWithBoundaries::resolution)
+                .collect(java.util.stream.Collectors.toSet());
+        assertTrue(resolutions.contains(4), "Should include resolution 4 (countries/continents)");
+        assertTrue(resolutions.contains(6), "Should include resolution 6 (states/regions)");
+        assertTrue(resolutions.contains(9), "Should include resolution 9 (districts/cities)");
+
+        // Each cell should have associated OSM IDs
+        for (BoundaryLookupService.CellWithBoundaries cell : cellsWithBoundaries) {
+            assertFalse(cell.osmIds().isEmpty(), "Each cell should have associated OSM boundary IDs");
+            assertTrue(cell.cellId() > 0, "Cell ID should be positive");
+        }
+
+        // Should contain expected OSM IDs across all cells
+        Set<Long> allOsmIds = cellsWithBoundaries.stream()
+                .flatMap(cell -> cell.osmIds().stream())
+                .collect(java.util.stream.Collectors.toSet());
+        
+        assertTrue(allOsmIds.contains(367855L), "Should contain Innenstadt (OSM ID 367855)");
+        assertTrue(allOsmIds.contains(27027L), "Should contain Lübeck (OSM ID 27027)");
+        assertTrue(allOsmIds.contains(51529L), "Should contain Schleswig-Holstein (OSM ID 51529)");
+        assertTrue(allOsmIds.contains(51477L), "Should contain Germany (OSM ID 51477)");
+    }
+
+    @Test
+    void shouldGetCellsWithBoundariesForEmptyArea() {
+        // Use coordinates in the middle of the ocean where no boundaries should exist
+        double lat = 0.0;
+        double lng = 0.0;
+
+        List<BoundaryLookupService.CellWithBoundaries> cellsWithBoundaries = boundaryLookupService.getCellsWithBoundaries(lat, lng);
+
+        // Should return empty list or cells with no OSM IDs
+        assertTrue(cellsWithBoundaries.isEmpty() || 
+                   cellsWithBoundaries.stream().allMatch(cell -> cell.osmIds().isEmpty()),
+                   "Should return no cells with boundaries for ocean coordinates");
+    }
 }
