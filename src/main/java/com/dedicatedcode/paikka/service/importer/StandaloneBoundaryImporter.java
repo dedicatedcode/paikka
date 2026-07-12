@@ -492,7 +492,7 @@ public class StandaloneBoundaryImporter {
             }
             try {
                 List<Long> batch = new ArrayList<>(10_000);
-                h3.polygonToCellsStream(outer, holes, resolution).forEach(cell -> {
+                h3.polygonToCells(outer, holes, resolution).forEach(cell -> {
                     batch.add(cell);
                     if (batch.size() >= 10_000) {
                         try {
