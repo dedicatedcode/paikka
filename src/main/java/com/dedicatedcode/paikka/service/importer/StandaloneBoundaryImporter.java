@@ -53,7 +53,6 @@ public class StandaloneBoundaryImporter {
     private static final Logger logger = LoggerFactory.getLogger(StandaloneBoundaryImporter.class);
 
     private static final GeometryFactory GEOMETRY_FACTORY = new GeometryFactory();
-    private static final int H3_RESOLUTION = 9;
     private static final double BUFFER_DISTANCE = 0.0001; // ~11m at equator, ensures border cells
 
     private final GeometrySimplificationService geometrySimplificationService;
@@ -260,11 +259,14 @@ public class StandaloneBoundaryImporter {
                                             if (stub.adminLevel() <= 3) {
                                                 logger.info("Simplified Geometry: {} points for OSM ID: {}", simplified.getNumPoints(), stub.osmId());
                                             }
+                                            
+                                            int resolution = getResolutionForAdminLevel(stub.adminLevel());
+                                            
                                             // ---- H3 Polyfill ----
                                             AtomicLong cellCount = new AtomicLong(0);
                                             long startTime = System.currentTimeMillis();
-                                            processCellsH3Stream(simplified, stub.osmId(), wo, tmpH3ToOsm, cellCount);
-                                            if (stub.adminLevel() <= 3) logger.info("H3 Polyfill took {}ms for OSM ID: {}", System.currentTimeMillis() - startTime, stub.osmId());
+                                            processCellsH3Stream(simplified, stub.osmId(), wo, tmpH3ToOsm, cellCount, resolution);
+                                            if (stub.adminLevel() <= 3) logger.info("H3 Polyfill (Res {}) took {}ms for OSM ID: {}", resolution, System.currentTimeMillis() - startTime, stub.osmId());
                                             if (cellCount.get() == 0) continue;
 
                                             stats.incrementRelationsProcessed();
@@ -464,10 +466,21 @@ public class StandaloneBoundaryImporter {
     // ============================ H3 POLYFILL ============================
 
     /**
-     * Converts a JTS Geometry to H3 cells at resolution 9.
-     * Uses h3.polygonToCells with LatLng vertices. Multipolygons are expanded.
+     * Determines the H3 resolution based on the administrative level.
+     * Lower admin levels (countries) use lower resolutions to save space.
+     * Higher admin levels (cities) use higher resolutions for accuracy.
      */
-    private void processCellsH3Stream(Geometry geom, long osmId, WriteOptions wo, RocksDB tmpH3ToOsm, AtomicLong cellCount) {
+    private int getResolutionForAdminLevel(int adminLevel) {
+        if (adminLevel <= 2) return 4; // Continents/Countries
+        if (adminLevel <= 6) return 6; // States/Regions
+        return 9; // Districts/Cities
+    }
+
+    /**
+     * Converts a JTS Geometry to H3 cells at the specified resolution.
+     * Uses h3.polygonToCellsStream with LatLng vertices. Multipolygons are expanded.
+     */
+    private void processCellsH3Stream(Geometry geom, long osmId, WriteOptions wo, RocksDB tmpH3ToOsm, AtomicLong cellCount, int resolution) {
         int num = geom.getNumGeometries();
         for (int i = 0; i < num; i++) {
             Geometry part = geom.getGeometryN(i);
@@ -479,7 +492,7 @@ public class StandaloneBoundaryImporter {
             }
             try {
                 List<Long> batch = new ArrayList<>(10_000);
-                h3.polygonToCells(outer, holes, H3_RESOLUTION).forEach(cell -> {
+                h3.polygonToCellsStream(outer, holes, resolution).forEach(cell -> {
                     batch.add(cell);
                     if (batch.size() >= 10_000) {
                         try {
