@@ -155,8 +155,34 @@ public class BoundaryLookupService {
     }
 
     /**
+     * Returns H3 cells for a point along with their associated OSM boundary IDs.
+     * Useful for Reitti to track which boundaries are associated with each visited cell.
+     */
+    public List<CellWithBoundaries> getCellsWithBoundaries(double lat, double lng) {
+        List<CellWithBoundaries> result = new ArrayList<>();
+        
+        int[] resolutions = {4, 6, 9};
+        
+        for (int resolution : resolutions) {
+            long cellId = h3.latLngToCell(lat, lng, resolution);
+            Set<Long> osmIds = getOsmIdsForCell(cellId);
+            if (!osmIds.isEmpty()) {
+                result.add(new CellWithBoundaries(cellId, resolution, osmIds));
+            }
+        }
+        
+        return result;
+    }
+
+    /**
      * Represents a boundary containing the queried point.
      * Reitti can use the totalCells to calculate the percentage visited.
      */
     public record BoundaryInfo(long osmId, int totalCells) {}
+    
+    /**
+     * Represents an H3 cell with its associated boundary OSM IDs.
+     * Useful for tracking which boundaries are affected when a cell is visited.
+     */
+    public record CellWithBoundaries(long cellId, int resolution, Set<Long> osmIds) {}
 }
