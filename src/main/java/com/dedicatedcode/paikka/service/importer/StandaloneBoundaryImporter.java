@@ -226,6 +226,8 @@ public class StandaloneBoundaryImporter {
                     List<Future<?>> futures = new ArrayList<>();
                     for (int i = 0; i < threads; i++) {
                         futures.add(executor.submit(() -> {
+                            // Thread-local batch for H3 updates to reduce contention
+                            Map<Long, Set<Long>> threadLocalH3Batch = new HashMap<>();
                             try (WriteOptions wo = new WriteOptions().setDisableWAL(true)) {
                                 while (true) {
                                     List<RelationStub> batch = queue.take();
@@ -251,13 +253,14 @@ public class StandaloneBoundaryImporter {
                                                     continue;
                                                 }
                                             }
-                                            // Buffer to include border-touching cells
-                                            Geometry buffered = geom.buffer(BUFFER_DISTANCE);
-                                            Geometry simplified = geometrySimplificationService.simplifyByAdminLevel(buffered, stub.adminLevel());
+                                            // Simplify first to reduce H3 cell count, then buffer
+                                            Geometry simplified = geometrySimplificationService.simplifyByAdminLevel(geom, stub.adminLevel());
                                             if (simplified == null || simplified.isEmpty()) {
-                                                logger.warn("Simplified Geometry is invalid for OSM ID: {}", stub.osmId());
-                                                simplified = buffered;
+                                                logger.warn("Simplified Geometry is invalid for OSM ID: {}, using original", stub.osmId());
+                                                simplified = geom;
                                             }
+                                            // Buffer to include border-touching cells
+                                            Geometry buffered = simplified.buffer(BUFFER_DISTANCE);
                                             if (stub.adminLevel() <= 3) {
                                                 logger.debug("Simplified Geometry: {} points for OSM ID: {}", simplified.getNumPoints(), stub.osmId());
                                             }
@@ -267,7 +270,7 @@ public class StandaloneBoundaryImporter {
                                             // ---- H3 Polyfill ----
                                             AtomicLong cellCount = new AtomicLong(0);
                                             long startTime = System.currentTimeMillis();
-                                            processCellsH3Stream(simplified, stub.osmId(), wo, tmpH3ToOsm, cellCount, resolution);
+                                            processCellsH3StreamThreadLocal(buffered, stub.osmId(), threadLocalH3Batch, cellCount, resolution);
                                             if (stub.adminLevel() <= 3) {
                                                 logger.debug("H3 Polyfill (Res {}) took {}ms for OSM ID: {}", resolution, System.currentTimeMillis() - startTime, stub.osmId());
                                             }
@@ -291,6 +294,9 @@ public class StandaloneBoundaryImporter {
                                             stats.recordError(BoundaryImportStatistics.Stage.PROCESSING_RELATIONS, BoundaryImportStatistics.Kind.GEOMETRY, stub.osmId(), "process-relation", e);
                                         }
                                     }
+                                    
+                                    // Flush thread-local H3 batch at end of batch processing
+                                    flushThreadLocalH3Batch(threadLocalH3Batch, wo, tmpH3ToOsm);
                                 }
                             } catch (InterruptedException e) {
                                 Thread.currentThread().interrupt();
@@ -486,8 +492,9 @@ public class StandaloneBoundaryImporter {
     /**
      * Converts a JTS Geometry to H3 cells at the specified resolution.
      * Uses h3.polygonToCellsStream with LatLng vertices. Multipolygons are expanded.
+     * Thread-local version that accumulates updates in memory to reduce database contention.
      */
-    private void processCellsH3Stream(Geometry geom, long osmId, WriteOptions wo, RocksDB tmpH3ToOsm, AtomicLong cellCount, int resolution) {
+    private void processCellsH3StreamThreadLocal(Geometry geom, long osmId, Map<Long, Set<Long>> threadLocalBatch, AtomicLong cellCount, int resolution) {
         int num = geom.getNumGeometries();
         for (int i = 0; i < num; i++) {
             Geometry part = geom.getGeometryN(i);
@@ -498,25 +505,49 @@ public class StandaloneBoundaryImporter {
                 holes.add(toLatLng(poly.getInteriorRingN(h).getCoordinates()));
             }
             try {
-                List<Long> batch = new ArrayList<>(10_000);
                 h3.polygonToCells(outer, holes, resolution).forEach(cell -> {
-                    batch.add(cell);
-                    if (batch.size() >= 10_000) {
-                        try {
-                            processH3Batch(batch, osmId, wo, tmpH3ToOsm, cellCount);
-                        } catch (RocksDBException e) {
-                            throw new RuntimeException(e);
-                        }
-                        batch.clear();
-                    }
+                    threadLocalBatch.computeIfAbsent(cell, k -> new HashSet<>()).add(osmId);
+                    cellCount.incrementAndGet();
                 });
-                if (!batch.isEmpty()) {
-                    processH3Batch(batch, osmId, wo, tmpH3ToOsm, cellCount);
-                }
             } catch (Exception e) {
-                stats.recordError(BoundaryImportStatistics.Stage.PROCESSING_RELATIONS, BoundaryImportStatistics.Kind.GEOMETRY, osmId, "processCellsH3Stream", e);
+                stats.recordError(BoundaryImportStatistics.Stage.PROCESSING_RELATIONS, BoundaryImportStatistics.Kind.GEOMETRY, osmId, "processCellsH3StreamThreadLocal", e);
             }
         }
+    }
+
+    /**
+     * Flushes the thread-local H3 batch to RocksDB.
+     * This reduces contention by batching multiple updates per thread.
+     */
+    private void flushThreadLocalH3Batch(Map<Long, Set<Long>> threadLocalBatch, WriteOptions wo, RocksDB tmpH3ToOsm) throws RocksDBException {
+        if (threadLocalBatch.isEmpty()) return;
+        
+        List<byte[]> keys = new ArrayList<>();
+        for (Long cellId : threadLocalBatch.keySet()) {
+            keys.add(longToBytes(cellId));
+        }
+        
+        // Synchronize only for the batch flush, not individual operations
+        synchronized (tmpH3ToOsm) {
+            List<byte[]> existingValues = tmpH3ToOsm.multiGetAsList(keys);
+            try (WriteBatch writeBatch = new WriteBatch()) {
+                int i = 0;
+                for (Map.Entry<Long, Set<Long>> entry : threadLocalBatch.entrySet()) {
+                    byte[] key = keys.get(i);
+                    byte[] existing = existingValues.get(i);
+                    
+                    byte[] updated = existing;
+                    for (Long osmId : entry.getValue()) {
+                        updated = appendOsmIdToArray(updated, osmId);
+                    }
+                    writeBatch.put(key, updated);
+                    i++;
+                }
+                tmpH3ToOsm.write(wo, writeBatch);
+            }
+        }
+        
+        threadLocalBatch.clear();
     }
 
     private void processH3Batch(List<Long> cells, long osmId, WriteOptions wo, RocksDB tmpH3ToOsm, AtomicLong cellCount) throws RocksDBException {
