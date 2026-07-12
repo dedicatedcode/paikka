@@ -37,7 +37,7 @@ public class BoundaryLookupService {
         Path h3ToOsmPath = dataDir.resolve("h3_to_osm");
         Path regionMetaPath = dataDir.resolve("region_metadata");
 
-        Options options = new Options().setReadOnly(true);
+        Options options = new Options();
         
         logger.info("Opening RocksDB databases for boundary lookup...");
         this.h3ToOsmDb = RocksDB.open(options, h3ToOsmPath.toString());
@@ -50,14 +50,13 @@ public class BoundaryLookupService {
      * Returns a list of boundaries (OSM ID and total cell count) that contain this point.
      */
     public List<BoundaryInfo> lookup(double lat, double lng) {
-        Set<Long> osmIds = new HashSet<>();
 
         // The importer uses different resolutions based on admin level.
         // We must query all three to get the full hierarchy (City, State, Country).
         
         // Resolution 9 (Districts/Cities - Admin Level >= 7)
         long cellRes9 = h3.latLngToCell(lat, lng, 9);
-        osmIds.addAll(getOsmIdsForCell(cellRes9));
+        Set<Long> osmIds = new HashSet<>(getOsmIdsForCell(cellRes9));
 
         // Resolution 6 (States/Regions - Admin Level 3-6)
         long cellRes6 = h3.latLngToCell(lat, lng, 6);
