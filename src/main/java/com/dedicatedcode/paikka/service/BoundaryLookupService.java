@@ -49,16 +49,19 @@ public class BoundaryLookupService {
     /**
      * Looks up the administrative boundaries for a given coordinate.
      * Returns a list of boundaries (OSM ID and total cell count) that contain this point.
+     * Uses the same resolution logic as StandaloneBoundaryImporter.
      */
     public List<BoundaryInfo> lookup(double lat, double lng) {
-        long cellRes9 = h3.latLngToCell(lat, lng, 9);
-        Set<Long> osmIds = new HashSet<>(getOsmIdsForCell(cellRes9));
-
-        long cellRes6 = h3.latLngToCell(lat, lng, 6);
-        osmIds.addAll(getOsmIdsForCell(cellRes6));
-
-        long cellRes4 = h3.latLngToCell(lat, lng, 4);
-        osmIds.addAll(getOsmIdsForCell(cellRes4));
+        Set<Long> osmIds = new HashSet<>();
+        
+        // Query all resolutions used by the importer (4, 6, 9)
+        // This covers all admin levels: 4 for countries/continents, 6 for states/regions, 9 for districts/cities
+        int[] resolutions = {4, 6, 9};
+        
+        for (int resolution : resolutions) {
+            long cellId = h3.latLngToCell(lat, lng, resolution);
+            osmIds.addAll(getOsmIdsForCell(cellId));
+        }
 
         List<BoundaryInfo> results = new ArrayList<>();
         for (Long osmId : osmIds) {
@@ -70,13 +73,19 @@ public class BoundaryLookupService {
     }
 
     /**
-     * Fetches the H3 cells for a specific lat,lon in all needed resolutions.
+     * Fetches the H3 cells for a specific lat,lon in all resolutions used by the importer.
+     * Uses the same resolution logic as StandaloneBoundaryImporter.
      */
     public Set<Long> getCellsForPoint(double lat, double lng) {
         Set<Long> cells = new HashSet<>();
-        cells.add(h3.latLngToCell(lat, lng, 9));
-        cells.add(h3.latLngToCell(lat, lng, 6));
-        cells.add(h3.latLngToCell(lat, lng, 4));
+        
+        // Use the same resolutions as the importer (4, 6, 9)
+        int[] resolutions = {4, 6, 9};
+        
+        for (int resolution : resolutions) {
+            cells.add(h3.latLngToCell(lat, lng, resolution));
+        }
+        
         return cells;
     }
 
