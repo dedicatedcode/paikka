@@ -26,22 +26,23 @@ public class BoundaryLookupService {
     private final H3Core h3;
     private final RocksDB h3ToOsmDb;
     private final RocksDB regionMetadataDb;
+    private final RocksDB osmToH3Db;
 
     public BoundaryLookupService(PaikkaConfiguration paikkaConfiguration) throws Exception {
         this.h3 = H3Core.newInstance();
         RocksDB.loadLibrary();
 
-        // Assuming the databases are stored in a 'boundaries' folder within the data directory.
-        // Adjust this path if your importer outputs to a different location.
         Path dataDir = Paths.get(paikkaConfiguration.getDataDir());
         Path h3ToOsmPath = dataDir.resolve("h3_to_osm");
         Path regionMetaPath = dataDir.resolve("region_metadata");
+        Path osmToH3Path = dataDir.resolve("osm_to_h3");
 
         Options options = new Options();
-        
+
         logger.info("Opening RocksDB databases for boundary lookup...");
         this.h3ToOsmDb = RocksDB.open(options, h3ToOsmPath.toString());
         this.regionMetadataDb = RocksDB.open(options, regionMetaPath.toString());
+        this.osmToH3Db = RocksDB.open(options, osmToH3Path.toString());
         logger.info("RocksDB databases opened successfully.");
     }
 
@@ -50,19 +51,12 @@ public class BoundaryLookupService {
      * Returns a list of boundaries (OSM ID and total cell count) that contain this point.
      */
     public List<BoundaryInfo> lookup(double lat, double lng) {
-
-        // The importer uses different resolutions based on admin level.
-        // We must query all three to get the full hierarchy (City, State, Country).
-        
-        // Resolution 9 (Districts/Cities - Admin Level >= 7)
         long cellRes9 = h3.latLngToCell(lat, lng, 9);
         Set<Long> osmIds = new HashSet<>(getOsmIdsForCell(cellRes9));
 
-        // Resolution 6 (States/Regions - Admin Level 3-6)
         long cellRes6 = h3.latLngToCell(lat, lng, 6);
         osmIds.addAll(getOsmIdsForCell(cellRes6));
 
-        // Resolution 4 (Countries/Continents - Admin Level <= 2)
         long cellRes4 = h3.latLngToCell(lat, lng, 4);
         osmIds.addAll(getOsmIdsForCell(cellRes4));
 
@@ -73,6 +67,37 @@ public class BoundaryLookupService {
         }
 
         return results;
+    }
+
+    /**
+     * Fetches the H3 cells for a specific lat,lon in all needed resolutions.
+     */
+    public Set<Long> getCellsForPoint(double lat, double lng) {
+        Set<Long> cells = new HashSet<>();
+        cells.add(h3.latLngToCell(lat, lng, 9));
+        cells.add(h3.latLngToCell(lat, lng, 6));
+        cells.add(h3.latLngToCell(lat, lng, 4));
+        return cells;
+    }
+
+    /**
+     * Fetches all H3 cells belonging to a specific boundary (OSM ID).
+     * This can be used to compare visited cells against the total cells of a boundary.
+     */
+    public Set<Long> getCellsForBoundary(long osmId) {
+        Set<Long> cells = new HashSet<>();
+        try {
+            byte[] val = osmToH3Db.get(longToBytes(osmId));
+            if (val != null) {
+                ByteBuffer bb = ByteBuffer.wrap(val).order(ByteOrder.BIG_ENDIAN);
+                while (bb.hasRemaining()) {
+                    cells.add(bb.getLong());
+                }
+            }
+        } catch (RocksDBException e) {
+            logger.error("Failed to lookup cells for OSM ID {} in osm_to_h3", osmId, e);
+        }
+        return cells;
     }
 
     private Set<Long> getOsmIdsForCell(long cellId) {
@@ -114,6 +139,9 @@ public class BoundaryLookupService {
         }
         if (this.regionMetadataDb != null) {
             this.regionMetadataDb.close();
+        }
+        if (this.osmToH3Db != null) {
+            this.osmToH3Db.close();
         }
     }
 
