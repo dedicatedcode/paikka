@@ -233,7 +233,7 @@ public class StandaloneBoundaryImporter {
 
                                     for (RelationStub stub : batch) {
                                         if (stub.adminLevel() <= 3) {
-                                            logger.info("Processing relation OSM ID: {} [Admin Level: {}]", stub.osmId(), stub.adminLevel());
+                                            logger.debug("Processing relation OSM ID: {} [Admin Level: {}]", stub.osmId(), stub.adminLevel());
                                         }
                                         try {
                                             Geometry geom = buildMultiPolygon(stub, nodeCache, wayCache);
@@ -244,7 +244,7 @@ public class StandaloneBoundaryImporter {
 
                                             // Repair invalid geometries using buffer(0)
                                             if (!geom.isValid()) {
-                                                logger.warn("Relation OSM ID: {} [Admin Level: {}] Geometry is invalid, attempting repair", stub.osmId(), stub.adminLevel());
+                                                logger.debug("Relation OSM ID: {} [Admin Level: {}] Geometry is invalid, attempting repair", stub.osmId(), stub.adminLevel());
                                                 geom = geom.buffer(0);
                                                 if (geom == null || geom.isEmpty() || !geom.isValid()) {
                                                     logger.error("Relation OSM ID: {} [Admin Level: {}] Geometry repair failed", stub.osmId(), stub.adminLevel());
@@ -259,7 +259,7 @@ public class StandaloneBoundaryImporter {
                                                 simplified = buffered;
                                             }
                                             if (stub.adminLevel() <= 3) {
-                                                logger.info("Simplified Geometry: {} points for OSM ID: {}", simplified.getNumPoints(), stub.osmId());
+                                                logger.debug("Simplified Geometry: {} points for OSM ID: {}", simplified.getNumPoints(), stub.osmId());
                                             }
                                             
                                             int resolution = getResolutionForAdminLevel(stub.adminLevel());
@@ -268,7 +268,9 @@ public class StandaloneBoundaryImporter {
                                             AtomicLong cellCount = new AtomicLong(0);
                                             long startTime = System.currentTimeMillis();
                                             processCellsH3Stream(simplified, stub.osmId(), wo, tmpH3ToOsm, cellCount, resolution);
-                                            if (stub.adminLevel() <= 3) logger.info("H3 Polyfill (Res {}) took {}ms for OSM ID: {}", resolution, System.currentTimeMillis() - startTime, stub.osmId());
+                                            if (stub.adminLevel() <= 3) {
+                                                logger.debug("H3 Polyfill (Res {}) took {}ms for OSM ID: {}", resolution, System.currentTimeMillis() - startTime, stub.osmId());
+                                            }
                                             if (cellCount.get() == 0) continue;
 
                                             stats.incrementRelationsProcessed();
@@ -276,11 +278,15 @@ public class StandaloneBoundaryImporter {
 
                                             startTime = System.currentTimeMillis();
                                             tmpRegionMeta.put(wo, longToBytes(stub.osmId()), intToBytes((int) cellCount.get()));
-                                            if (stub.adminLevel() <= 3) logger.info("H3 Cells written to tmpRegionMeta in {}ms for OSM ID: {}", System.currentTimeMillis() - startTime, stub.osmId());
+                                            if (stub.adminLevel() <= 3) {
+                                                logger.debug("H3 Cells written to tmpRegionMeta in {}ms for OSM ID: {}", System.currentTimeMillis() - startTime, stub.osmId());
+                                            }
                                             startTime = System.currentTimeMillis();
                                             byte[] wkb = new WKBWriter().write(simplified);
                                             tmpRegionGeom.put(wo, longToBytes(stub.osmId()), wkb);
-                                            if (stub.adminLevel() <= 3) logger.info("WKB written to tmpRegionGeom in {}ms for OSM ID: {}", System.currentTimeMillis() - startTime, stub.osmId());
+                                            if (stub.adminLevel() <= 3) {
+                                                logger.debug("WKB written to tmpRegionGeom in {}ms for OSM ID: {}", System.currentTimeMillis() - startTime, stub.osmId());
+                                            }
                                         } catch (Exception e) {
                                             stats.recordError(BoundaryImportStatistics.Stage.PROCESSING_RELATIONS, BoundaryImportStatistics.Kind.GEOMETRY, stub.osmId(), "process-relation", e);
                                         }
@@ -321,7 +327,6 @@ public class StandaloneBoundaryImporter {
 
         // Cleanup tmp
         cleanup(tmp);
-        System.out.println("[StandaloneBoundaryImporter] Import complete. Temporary caches removed.");
     }
 
     private void copyDb(RocksDB source, RocksDB target) throws RocksDBException {
