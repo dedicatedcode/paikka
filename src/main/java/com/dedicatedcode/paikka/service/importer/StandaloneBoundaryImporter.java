@@ -24,6 +24,8 @@ import de.topobyte.osm4j.pbf.seq.PbfIterator;
 import org.locationtech.jts.geom.*;
 import org.locationtech.jts.io.WKBWriter;
 import org.rocksdb.*;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
@@ -34,12 +36,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.*;
-import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
-import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -47,12 +44,13 @@ import java.util.concurrent.atomic.AtomicLong;
  * <p>
  * Reads a pre-filtered boundaries_only.pbf (Nodes -> Ways -> Relations ordered)
  * and produces three RocksDB databases for offline mobile lookup:
- * - h3_to_osm       : H3_CELL_ID (uint64) -> List[OSM_ID] (raw byte array)
- * - region_metadata : OSM_ID -> total cell count (int)
- * - region_geometry : OSM_ID -> simplified WKB (bytes)
+ * - h3_to_osm: H3_CELL_ID (uint64) -> List[OSM_ID] (raw byte array)
+ * - region_metadata: OSM_ID -> total cell count (int)
+ * - region_geometry: OSM_ID -> simplified WKB (bytes)
  */
 @Service
 public class StandaloneBoundaryImporter {
+    private static final Logger logger = LoggerFactory.getLogger(StandaloneBoundaryImporter.class);
 
     private static final GeometryFactory GEOMETRY_FACTORY = new GeometryFactory();
     private static final int H3_RESOLUTION = 9;
@@ -233,36 +231,52 @@ public class StandaloneBoundaryImporter {
                                     if (batch == POISON_PILL) break;
 
                                     for (RelationStub stub : batch) {
+                                        if (stub.adminLevel() <= 3) {
+                                            logger.info("Processing relation OSM ID: {} [Admin Level: {}]", stub.osmId(), stub.adminLevel());
+                                        }
                                         try {
                                             Geometry geom = buildMultiPolygon(stub, nodeCache, wayCache);
-                                            if (geom == null || geom.isEmpty() || !geom.isValid()) continue;
+                                            if (geom == null || geom.isEmpty()) {
+                                                logger.warn("Relation OSM ID: {} [Admin Level: {}] Geometry is null or empty", stub.osmId(), stub.adminLevel());
+                                                continue;
+                                            }
 
+                                            // Repair invalid geometries using buffer(0)
+                                            if (!geom.isValid()) {
+                                                logger.warn("Relation OSM ID: {} [Admin Level: {}] Geometry is invalid, attempting repair", stub.osmId(), stub.adminLevel());
+                                                geom = geom.buffer(0);
+                                                if (geom == null || geom.isEmpty() || !geom.isValid()) {
+                                                    logger.error("Relation OSM ID: {} [Admin Level: {}] Geometry repair failed", stub.osmId(), stub.adminLevel());
+                                                    continue;
+                                                }
+                                            }
                                             // Buffer to include border-touching cells
                                             Geometry buffered = geom.buffer(BUFFER_DISTANCE);
                                             Geometry simplified = geometrySimplificationService.simplifyByAdminLevel(buffered, stub.adminLevel());
-                                            if (simplified == null || simplified.isEmpty()) simplified = buffered;
-
+                                            if (simplified == null || simplified.isEmpty()) {
+                                                logger.warn("Simplified Geometry is invalid for OSM ID: {}", stub.osmId());
+                                                simplified = buffered;
+                                            }
+                                            if (stub.adminLevel() <= 3) {
+                                                logger.info("Simplified Geometry: {} points for OSM ID: {}", simplified.getNumPoints(), stub.osmId());
+                                            }
                                             // ---- H3 Polyfill ----
-                                            List<Long> cells = polygonToCellsH3(simplified);
-                                            if (cells.isEmpty()) continue;
+                                            AtomicLong cellCount = new AtomicLong(0);
+                                            long startTime = System.currentTimeMillis();
+                                            processCellsH3Stream(simplified, stub.osmId(), wo, tmpH3ToOsm, cellCount);
+                                            if (stub.adminLevel() <= 3) logger.info("H3 Polyfill took {}ms for OSM ID: {}", System.currentTimeMillis() - startTime, stub.osmId());
+                                            if (cellCount.get() == 0) continue;
 
                                             stats.incrementRelationsProcessed();
-                                            stats.addH3CellsGenerated(cells.size());
+                                            stats.addH3CellsGenerated((int) cellCount.get());
 
-                                            // Write to temporary databases
-                                            for (long cell : cells) {
-                                                byte[] key = longToBytes(cell);
-                                                synchronized (tmpH3ToOsm) {
-                                                    byte[] existing = tmpH3ToOsm.get(key);
-                                                    byte[] updated = appendOsmIdToArray(existing, stub.osmId());
-                                                    tmpH3ToOsm.put(wo, key, updated);
-                                                }
-                                            }
-
-                                            tmpRegionMeta.put(wo, longToBytes(stub.osmId()), intToBytes(cells.size()));
-
+                                            startTime = System.currentTimeMillis();
+                                            tmpRegionMeta.put(wo, longToBytes(stub.osmId()), intToBytes((int) cellCount.get()));
+                                            if (stub.adminLevel() <= 3) logger.info("H3 Cells written to tmpRegionMeta in {}ms for OSM ID: {}", System.currentTimeMillis() - startTime, stub.osmId());
+                                            startTime = System.currentTimeMillis();
                                             byte[] wkb = new WKBWriter().write(simplified);
                                             tmpRegionGeom.put(wo, longToBytes(stub.osmId()), wkb);
+                                            if (stub.adminLevel() <= 3) logger.info("WKB written to tmpRegionGeom in {}ms for OSM ID: {}", System.currentTimeMillis() - startTime, stub.osmId());
                                         } catch (Exception e) {
                                             stats.recordError(BoundaryImportStatistics.Stage.PROCESSING_RELATIONS, BoundaryImportStatistics.Kind.GEOMETRY, stub.osmId(), "process-relation", e);
                                         }
@@ -453,8 +467,7 @@ public class StandaloneBoundaryImporter {
      * Converts a JTS Geometry to H3 cells at resolution 9.
      * Uses h3.polygonToCells with LatLng vertices. Multipolygons are expanded.
      */
-    private List<Long> polygonToCellsH3(Geometry geom) {
-        List<Long> cells = new ArrayList<>();
+    private void processCellsH3Stream(Geometry geom, long osmId, WriteOptions wo, RocksDB tmpH3ToOsm, AtomicLong cellCount) {
         int num = geom.getNumGeometries();
         for (int i = 0; i < num; i++) {
             Geometry part = geom.getGeometryN(i);
@@ -465,15 +478,48 @@ public class StandaloneBoundaryImporter {
                 holes.add(toLatLng(poly.getInteriorRingN(h).getCoordinates()));
             }
             try {
-                List<Long> partCells = h3.polygonToCells(outer, holes, H3_RESOLUTION);
-                cells.addAll(partCells);
+                List<Long> batch = new ArrayList<>(10_000);
+                h3.polygonToCells(outer, holes, H3_RESOLUTION).forEach(cell -> {
+                    batch.add(cell);
+                    if (batch.size() >= 10_000) {
+                        try {
+                            processH3Batch(batch, osmId, wo, tmpH3ToOsm, cellCount);
+                        } catch (RocksDBException e) {
+                            throw new RuntimeException(e);
+                        }
+                        batch.clear();
+                    }
+                });
+                if (!batch.isEmpty()) {
+                    processH3Batch(batch, osmId, wo, tmpH3ToOsm, cellCount);
+                }
             } catch (Exception e) {
-                stats.recordError(BoundaryImportStatistics.Stage.PROCESSING_RELATIONS, BoundaryImportStatistics.Kind.GEOMETRY, null, "polygonToCellsH3", e);
+                stats.recordError(BoundaryImportStatistics.Stage.PROCESSING_RELATIONS, BoundaryImportStatistics.Kind.GEOMETRY, osmId, "processCellsH3Stream", e);
             }
         }
-        return cells;
     }
 
+    private void processH3Batch(List<Long> cells, long osmId, WriteOptions wo, RocksDB tmpH3ToOsm, AtomicLong cellCount) throws RocksDBException {
+        List<byte[]> keys = new ArrayList<>(cells.size());
+        for (long cell : cells) {
+            keys.add(longToBytes(cell));
+        }
+
+        // Synchronize to prevent race conditions when multiple threads update the same H3 cell
+        synchronized (tmpH3ToOsm) {
+            List<byte[]> existingValues = tmpH3ToOsm.multiGetAsList(keys);
+            try (WriteBatch writeBatch = new WriteBatch()) {
+                for (int i = 0; i < cells.size(); i++) {
+                    cellCount.incrementAndGet();
+                    byte[] key = keys.get(i);
+                    byte[] existing = existingValues.get(i);
+                    byte[] updated = appendOsmIdToArray(existing, osmId);
+                    writeBatch.put(key, updated);
+                }
+                tmpH3ToOsm.write(wo, writeBatch);
+            }
+        }
+    }
     private List<LatLng> toLatLng(Coordinate[] coords) {
         List<LatLng> list = new ArrayList<>(coords.length);
         for (Coordinate c : coords) {
