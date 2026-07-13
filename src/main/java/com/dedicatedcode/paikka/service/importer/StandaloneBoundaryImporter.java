@@ -300,6 +300,8 @@ public class StandaloneBoundaryImporter {
                                 }
                             } catch (InterruptedException e) {
                                 Thread.currentThread().interrupt();
+                            } catch (RocksDBException e) {
+                                throw new RuntimeException(e);
                             }
                         }));
                     }
@@ -403,7 +405,7 @@ public class StandaloneBoundaryImporter {
             }
         }
         if (polygons.isEmpty()) return null;
-        return polygons.size() == 1 ? polygons.get(0) : GEOMETRY_FACTORY.createMultiPolygon(polygons.toArray(new Polygon[0]));
+        return polygons.size() == 1 ? polygons.getFirst() : GEOMETRY_FACTORY.createMultiPolygon(polygons.toArray(new Polygon[0]));
     }
 
     private List<List<Coordinate>> stitchRings(List<Long> wayIds, RocksDB nodeCache, RocksDB wayCache) {
@@ -429,16 +431,16 @@ public class StandaloneBoundaryImporter {
             boolean extended;
             do {
                 extended = false;
-                Coordinate end = ring.get(ring.size() - 1);
+                Coordinate end = ring.getLast();
                 for (Map.Entry<Long, List<Coordinate>> e : wayCoords.entrySet()) {
                     if (used.contains(e.getKey())) continue;
                     List<Coordinate> w = e.getValue();
-                    if (end.equals2D(w.get(0))) {
+                    if (end.equals2D(w.getFirst())) {
                         ring.addAll(w.subList(1, w.size()));
                         used.add(e.getKey());
                         extended = true;
                         break;
-                    } else if (end.equals2D(w.get(w.size() - 1))) {
+                    } else if (end.equals2D(w.getLast())) {
                         List<Coordinate> rev = new ArrayList<>(w);
                         Collections.reverse(rev);
                         ring.addAll(rev.subList(1, rev.size()));
@@ -448,8 +450,8 @@ public class StandaloneBoundaryImporter {
                     }
                 }
             } while (extended);
-            if (ring.size() >= 3 && !ring.get(0).equals2D(ring.get(ring.size() - 1)))
-                ring.add(new Coordinate(ring.get(0)));
+            if (ring.size() >= 3 && !ring.getFirst().equals2D(ring.getLast()))
+                ring.add(new Coordinate(ring.getFirst()));
             if (ring.size() >= 4) rings.add(ring);
         }
         return rings;
@@ -534,9 +536,8 @@ public class StandaloneBoundaryImporter {
                 int i = 0;
                 for (Map.Entry<Long, Set<Long>> entry : threadLocalBatch.entrySet()) {
                     byte[] key = keys.get(i);
-                    byte[] existing = existingValues.get(i);
-                    
-                    byte[] updated = existing;
+
+                    byte[] updated = existingValues.get(i);
                     for (Long osmId : entry.getValue()) {
                         updated = appendOsmIdToArray(updated, osmId);
                     }
@@ -583,10 +584,6 @@ public class StandaloneBoundaryImporter {
 
     private byte[] longToBytes(long v) {
         return ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN).putLong(v).array();
-    }
-
-    private long bytesToLong(byte[] b) {
-        return ByteBuffer.wrap(b).order(ByteOrder.BIG_ENDIAN).getLong();
     }
 
     private byte[] longArrayToBytes(long[] arr) {
