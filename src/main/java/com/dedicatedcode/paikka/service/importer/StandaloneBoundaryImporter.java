@@ -110,7 +110,17 @@ public class StandaloneBoundaryImporter {
                 .setCreateIfMissing(true)
                 .setTableFormatConfig(tableCfg)
                 .setCompressionType(CompressionType.ZSTD_COMPRESSION)
-                .setWriteBufferSize(256 * 1024 * 1024);
+                .setWriteBufferSize(256 * 1024 * 1024)
+                .setBottommostCompressionType(CompressionType.ZSTD_COMPRESSION)
+                .setCompressionPerLevel(List.of(
+                    CompressionType.NO_COMPRESSION,
+                    CompressionType.NO_COMPRESSION,
+                    CompressionType.LZ4_COMPRESSION,
+                    CompressionType.LZ4_COMPRESSION,
+                    CompressionType.ZSTD_COMPRESSION,
+                    CompressionType.ZSTD_COMPRESSION,
+                    CompressionType.ZSTD_COMPRESSION
+                ));
 
         stats.startProgressReporter();
 
@@ -226,8 +236,6 @@ public class StandaloneBoundaryImporter {
                     List<Future<?>> futures = new ArrayList<>();
                     for (int i = 0; i < threads; i++) {
                         futures.add(executor.submit(() -> {
-                            // Thread-local batch for H3 updates to reduce contention
-                            Map<Long, Set<Long>> threadLocalH3Batch = new HashMap<>();
                             try (WriteOptions wo = new WriteOptions().setDisableWAL(true)) {
                                 while (true) {
                                     List<RelationStub> batch = queue.take();
@@ -270,7 +278,7 @@ public class StandaloneBoundaryImporter {
                                             // ---- H3 Polyfill ----
                                             AtomicLong cellCount = new AtomicLong(0);
                                             long startTime = System.currentTimeMillis();
-                                            processCellsH3StreamThreadLocal(buffered, stub.osmId(), threadLocalH3Batch, cellCount, resolution);
+                                            processCellsH3Stream(buffered, stub.osmId(), wo, tmpH3ToOsm, cellCount, resolution);
                                             if (stub.adminLevel() <= 3) {
                                                 logger.debug("H3 Polyfill (Res {}) took {}ms for OSM ID: {}", resolution, System.currentTimeMillis() - startTime, stub.osmId());
                                             }
@@ -294,9 +302,6 @@ public class StandaloneBoundaryImporter {
                                             stats.recordError(BoundaryImportStatistics.Stage.PROCESSING_RELATIONS, BoundaryImportStatistics.Kind.GEOMETRY, stub.osmId(), "process-relation", e);
                                         }
                                     }
-                                    
-                                    // Flush thread-local H3 batch at end of batch processing
-                                    flushThreadLocalH3Batch(threadLocalH3Batch, wo, tmpH3ToOsm);
                                 }
                             } catch (InterruptedException e) {
                                 Thread.currentThread().interrupt();
