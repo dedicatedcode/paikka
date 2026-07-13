@@ -499,9 +499,8 @@ public class StandaloneBoundaryImporter {
     /**
      * Converts a JTS Geometry to H3 cells at the specified resolution.
      * Uses h3.polygonToCellsStream with LatLng vertices. Multipolygons are expanded.
-     * Thread-local version that accumulates updates in memory to reduce database contention.
      */
-    private void processCellsH3StreamThreadLocal(Geometry geom, long osmId, Map<Long, Set<Long>> threadLocalBatch, AtomicLong cellCount, int resolution) {
+    private void processCellsH3Stream(Geometry geom, long osmId, WriteOptions wo, RocksDB tmpH3ToOsm, AtomicLong cellCount, int resolution) {
         int num = geom.getNumGeometries();
         for (int i = 0; i < num; i++) {
             Geometry part = geom.getGeometryN(i);
@@ -512,48 +511,25 @@ public class StandaloneBoundaryImporter {
                 holes.add(toLatLng(poly.getInteriorRingN(h).getCoordinates()));
             }
             try {
+                List<Long> batch = new ArrayList<>(5_000); // Reduced batch size to prevent OOM
                 h3.polygonToCells(outer, holes, resolution).forEach(cell -> {
-                    threadLocalBatch.computeIfAbsent(cell, k -> new HashSet<>()).add(osmId);
-                    cellCount.incrementAndGet();
-                });
-            } catch (Exception e) {
-                stats.recordError(BoundaryImportStatistics.Stage.PROCESSING_RELATIONS, BoundaryImportStatistics.Kind.GEOMETRY, osmId, "processCellsH3StreamThreadLocal", e);
-            }
-        }
-    }
-
-    /**
-     * Flushes the thread-local H3 batch to RocksDB.
-     * This reduces contention by batching multiple updates per thread.
-     */
-    private void flushThreadLocalH3Batch(Map<Long, Set<Long>> threadLocalBatch, WriteOptions wo, RocksDB tmpH3ToOsm) throws RocksDBException {
-        if (threadLocalBatch.isEmpty()) return;
-        
-        List<byte[]> keys = new ArrayList<>();
-        for (Long cellId : threadLocalBatch.keySet()) {
-            keys.add(longToBytes(cellId));
-        }
-        
-        // Synchronize only for the batch flush, not individual operations
-        synchronized (tmpH3ToOsm) {
-            List<byte[]> existingValues = tmpH3ToOsm.multiGetAsList(keys);
-            try (WriteBatch writeBatch = new WriteBatch()) {
-                int i = 0;
-                for (Map.Entry<Long, Set<Long>> entry : threadLocalBatch.entrySet()) {
-                    byte[] key = keys.get(i);
-
-                    byte[] updated = existingValues.get(i);
-                    for (Long osmId : entry.getValue()) {
-                        updated = appendOsmIdToArray(updated, osmId);
+                    batch.add(cell);
+                    if (batch.size() >= 5_000) {
+                        try {
+                            processH3Batch(batch, osmId, wo, tmpH3ToOsm, cellCount);
+                        } catch (RocksDBException e) {
+                            throw new RuntimeException(e);
+                        }
+                        batch.clear();
                     }
-                    writeBatch.put(key, updated);
-                    i++;
+                });
+                if (!batch.isEmpty()) {
+                    processH3Batch(batch, osmId, wo, tmpH3ToOsm, cellCount);
                 }
-                tmpH3ToOsm.write(wo, writeBatch);
+            } catch (Exception e) {
+                stats.recordError(BoundaryImportStatistics.Stage.PROCESSING_RELATIONS, BoundaryImportStatistics.Kind.GEOMETRY, osmId, "processCellsH3Stream", e);
             }
         }
-        
-        threadLocalBatch.clear();
     }
 
     private void processH3Batch(List<Long> cells, long osmId, WriteOptions wo, RocksDB tmpH3ToOsm, AtomicLong cellCount) throws RocksDBException {
