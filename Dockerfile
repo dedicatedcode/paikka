@@ -30,9 +30,11 @@ COPY scripts/* $APP_HOME/
 
 RUN ln -s $APP_HOME/filter_osm.sh /usr/bin/prepare
 RUN ln -s $APP_HOME/import.sh /usr/bin/import
+RUN ln -s $APP_HOME/import-boundaries.sh /usr/bin/import-boundaries
 
 RUN chmod +x /usr/bin/prepare
 RUN chmod +x /usr/bin/import
+RUN chmod +x /usr/bin/import-boundaries
 
 # Create a script to start the application with configurable UID/GID
 RUN cat <<'EOF' > /entrypoint.sh
@@ -62,6 +64,10 @@ elif [ "$1" = "import" ]; then
     echo "Running script: $1"
     shift
     exec runuser -u paikka -- import --jar-file "$APP_HOME/app.jar" "$@"
+elif [ "$1" = "import-boundaries" ]; then
+    echo "Running script: $1"
+    shift
+    exec runuser -u paikka -- import-boundaries --jar-file "$APP_HOME/app.jar" "$@"
 fi
 
 # Default: Execute the Java application
