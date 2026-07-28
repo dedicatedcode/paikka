@@ -16,6 +16,7 @@
 
 package com.dedicatedcode.paikka.service.importer;
 
+import com.dedicatedcode.paikka.config.PaikkaConfiguration;
 import org.locationtech.jts.geom.Geometry;
 import org.locationtech.jts.simplify.DouglasPeuckerSimplifier;
 import org.springframework.stereotype.Service;
@@ -26,13 +27,20 @@ import org.springframework.stereotype.Service;
  */
 @Service
 public class GeometrySimplificationService {
-    
-    // Tolerance guidelines from implementation blueprint
-    private static final double COUNTRY_TOLERANCE = 0.00045; // 50 meters for country borders
-    private static final double STATE_TOLERANCE = 0.00009;   // 10 meters for state/city
-    private static final double POI_TOLERANCE = 0.000018;      // 2 meters for POI boundaries
-    private static final double DEFAULT_TOLERANCE = 0.000045;  // 5 meters default
-    
+
+    private final double continentTolerance;
+    private final double countryTolerance;
+    private final double stateTolerance;
+    private final double poiTolerance;
+    private final double defaultTolerance;
+
+    public GeometrySimplificationService(PaikkaConfiguration paikkaConfiguration) {
+        this.continentTolerance = paikkaConfiguration.getSimplificationConfiguration().getContinentTolerance();
+        this.countryTolerance = paikkaConfiguration.getSimplificationConfiguration().getCountryTolerance();
+        this.stateTolerance = paikkaConfiguration.getSimplificationConfiguration().getStateTolerance();
+        this.poiTolerance = paikkaConfiguration.getSimplificationConfiguration().getPoiTolerance();
+        this.defaultTolerance = paikkaConfiguration.getSimplificationConfiguration().getDefaultTolerance();
+    }
     /**
      * Simplify geometry using Douglas-Peucker algorithm with default tolerance.
      * 
@@ -40,7 +48,7 @@ public class GeometrySimplificationService {
      * @return Simplified geometry
      */
     public Geometry simplify(Geometry geometry) {
-        return simplify(geometry, DEFAULT_TOLERANCE);
+        return simplify(geometry, defaultTolerance);
     }
     
     /**
@@ -82,11 +90,12 @@ public class GeometrySimplificationService {
         if (geometry == null) {
             return null;
         }
-        
+
         double tolerance = switch (adminLevel) {
-            case 2 -> COUNTRY_TOLERANCE;  // Country
-            case 4, 6 -> STATE_TOLERANCE; // State/Region
-            default -> DEFAULT_TOLERANCE;
+            case 1 -> continentTolerance; // Continent / Supranational
+            case 2 -> countryTolerance;   // Country
+            case 4, 6 -> stateTolerance;  // State/Region
+            default -> defaultTolerance;
         };
         
         return simplify(geometry, tolerance);
@@ -99,7 +108,7 @@ public class GeometrySimplificationService {
      * @return Simplified geometry with POI-appropriate tolerance
      */
     public Geometry simplifyPoiBoundary(Geometry geometry) {
-        return simplify(geometry, POI_TOLERANCE);
+        return simplify(geometry, poiTolerance);
     }
     
     /**

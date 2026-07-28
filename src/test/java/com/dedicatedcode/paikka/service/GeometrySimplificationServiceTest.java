@@ -17,12 +17,14 @@
 package com.dedicatedcode.paikka.service;
 
 import com.dedicatedcode.paikka.IntegrationTest;
+import com.dedicatedcode.paikka.config.PaikkaConfiguration;
 import com.dedicatedcode.paikka.service.importer.GeometrySimplificationService;
 import org.junit.jupiter.api.Test;
 import org.locationtech.jts.geom.Coordinate;
 import org.locationtech.jts.geom.Geometry;
 import org.locationtech.jts.geom.GeometryFactory;
 import org.locationtech.jts.geom.LinearRing;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.junit.jupiter.SpringJUnitConfig;
 
@@ -30,8 +32,10 @@ import static org.junit.jupiter.api.Assertions.*;
 
 @IntegrationTest
 class GeometrySimplificationServiceTest {
-    
-    private final GeometrySimplificationService service = new GeometrySimplificationService();
+
+    @Autowired
+    private GeometrySimplificationService service;
+
     private final GeometryFactory geometryFactory = new GeometryFactory();
     
     @Test
