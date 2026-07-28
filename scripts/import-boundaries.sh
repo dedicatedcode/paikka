@@ -172,27 +172,7 @@ if [ $EXIT_CODE -eq 0 ]; then
     echo ""
     echo "✓ Import completed successfully"
     echo "✓ Data directory: $DATA_DIR"
-    
-    # Clean up temporary files to save disk space
-    echo ""
-    echo "🧹 Cleaning up temporary files..."
-    
-    # Remove node_cache
-    TEMP_DIR="$DATA_DIR/node_cache"
-    if [ -d "$TEMP_DIR" ]; then
-        echo "  Removing temporary directory: $TEMP_DIR"
-        rm -rf "$TEMP_DIR"
-        echo "  ✓ Node cache cleaned up"
-    fi
 
-    # Remove grid_index
-    GRID_DIR="$DATA_DIR/grid_index"
-    if [ -d "$GRID_DIR" ]; then
-        echo "  Removing temporary directory: $GRID_DIR"
-        rm -rf "$GRID_DIR"
-        echo "  ✓ Grid index cleaned up"
-    fi
-    
 else
     echo ""
     echo "✗ Import failed"

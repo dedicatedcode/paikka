@@ -48,7 +48,7 @@ set -o pipefail
 PLANET_URL="https://planet.osm.org/pbf/planet-latest.osm.pbf"
 LOCAL_WORK_DIR="$(pwd)"
 PBF_INPUT_FILE="planet-latest.osm.pbf"
-PBF_FILTERED_FILE="planet-filtered.pbf"
+PBF_FILTERED_FILE="planet-boundaries-filtered.pbf"
 DOCKER_IMAGE="dedicatedcode/paikka:latest"
 
 # --- Local Paths ---
@@ -358,7 +358,7 @@ main() {
     parse_args_and_configure "$@"
     local_prepare_directories
     local_download_planet_file
-    local_pull_docker_image
+#    local_pull_docker_image
     local_filter_pbf
     local_import_h3
     local_cleanup_pbf

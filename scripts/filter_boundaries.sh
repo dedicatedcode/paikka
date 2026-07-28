@@ -7,7 +7,7 @@
 usage() {
     echo "Usage: $0 <input_file> <output_file>"
     echo ""
-    echo "Filters an OSM PBF file to keep only boundaries relevant for RAITTI:"
+    echo "Filters an OSM PBF file to keep only boundaries relevant for REITTI:"
     echo "  - Points of Interest (amenity, shop, tourism, leisure, etc.)"
     echo "  - Administrative boundaries"
     echo ""

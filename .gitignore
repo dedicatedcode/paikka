@@ -38,4 +38,4 @@ build/
 /data/
 /.idea/
 /data-boundaries/
-/scripts/.env
+/.env

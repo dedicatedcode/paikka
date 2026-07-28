@@ -29,10 +29,12 @@ COPY --chown=paikka:paikka target/*.jar $APP_HOME/app.jar
 COPY scripts/* $APP_HOME/
 
 RUN ln -s $APP_HOME/filter_osm.sh /usr/bin/prepare
+RUN ln -s $APP_HOME/filter_boundaries.sh /usr/bin/prepare-boundaries
 RUN ln -s $APP_HOME/import.sh /usr/bin/import
 RUN ln -s $APP_HOME/import-boundaries.sh /usr/bin/import-boundaries
 
 RUN chmod +x /usr/bin/prepare
+RUN chmod +x /usr/bin/prepare-boundaries
 RUN chmod +x /usr/bin/import
 RUN chmod +x /usr/bin/import-boundaries
 
@@ -56,7 +58,7 @@ chown -R paikka:paikka $STATS_DIR
 cd $DATA_DIR
 
 # Check if the first argument is a known script
-if [ "$1" = "prepare" ]; then
+if [ "$1" = "prepare" ] || [ "$1" = "prepare-boundaries" ]; then
     echo "Running script: $1"
     shift
     exec runuser -u paikka -- prepare "$@"
