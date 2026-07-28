@@ -81,6 +81,7 @@ public class StandaloneBoundaryImporter {
         Path h3ToOsmPath = out.resolve("h3_to_osm");
         Path regionMetaPath = out.resolve("region_metadata");
         Path regionGeomPath = out.resolve("region_geometry");
+        Path nameSql = out.resolve("osm_names.tsv");
 
         Path tmpH3ToOsmPath = tmp.resolve("tmp_h3_to_osm");
         Path tmpRegionMetaPath = tmp.resolve("tmp_region_metadata");
@@ -132,7 +133,8 @@ public class StandaloneBoundaryImporter {
                 RocksDB regionGeom = RocksDB.open(finalOpts, regionGeomPath.toString());
                 RocksDB tmpH3ToOsm = RocksDB.open(cacheOpts, tmpH3ToOsmPath.toString());
                 RocksDB tmpRegionMeta = RocksDB.open(cacheOpts, tmpRegionMetaPath.toString());
-                RocksDB tmpRegionGeom = RocksDB.open(cacheOpts, tmpRegionGeomPath.toString())
+                RocksDB tmpRegionGeom = RocksDB.open(cacheOpts, tmpRegionGeomPath.toString());
+                OsmNameStreamer nameStreamer = new OsmNameStreamer(nameSql.toString())
         ) {
             for (String pbfPath : pbfPaths) {
                 stats.setCurrentPhase(1, "1.1: Caching Nodes & Ways");
@@ -205,6 +207,11 @@ public class StandaloneBoundaryImporter {
                                 EntityContainer c = relIter.next();
                                 if (c.getType() == EntityType.Relation) {
                                     OsmRelation r = (OsmRelation) c.getEntity();
+                                    try {
+                                        nameStreamer.processEntity(r, "R");
+                                    } catch (IOException e) {
+                                        logger.warn("Failed to stream name for relation ID: {}", r.getId(), e);
+                                    }
                                     if (isAdministrativeBoundary(r)) {
                                         batch.add(buildRelationStub(r));
                                         if (batch.size() >= 100) {
@@ -248,7 +255,6 @@ public class StandaloneBoundaryImporter {
                                         try {
                                             Geometry geom = buildMultiPolygon(stub, nodeCache, wayCache);
                                             if (geom == null || geom.isEmpty()) {
-                                                logger.warn("Relation OSM ID: {} [Admin Level: {}] Geometry is null or empty", stub.osmId(), stub.adminLevel());
                                                 continue;
                                             }
 
@@ -264,7 +270,6 @@ public class StandaloneBoundaryImporter {
                                             // Simplify first to reduce H3 cell count, then buffer
                                             Geometry simplified = geometrySimplificationService.simplifyByAdminLevel(geom, stub.adminLevel());
                                             if (simplified == null || simplified.isEmpty()) {
-                                                logger.warn("Simplified Geometry is invalid for OSM ID: {}, using original", stub.osmId());
                                                 simplified = geom;
                                             }
                                             // Buffer to include border-touching cells
@@ -305,8 +310,6 @@ public class StandaloneBoundaryImporter {
                                 }
                             } catch (InterruptedException e) {
                                 Thread.currentThread().interrupt();
-                            } catch (RocksDBException e) {
-                                throw new RuntimeException(e);
                             }
                         }));
                     }
@@ -492,7 +495,7 @@ public class StandaloneBoundaryImporter {
      */
     private int getResolutionForAdminLevel(int adminLevel) {
         if (adminLevel <= 2) return 4; // Continents/Countries
-        if (adminLevel <= 6) return 6; // States/Regions
+        if (adminLevel <= 5) return 6; // States/Regions
         return 9; // Districts/Cities
     }
 

@@ -65,6 +65,13 @@ class ImportServiceTest {
         PaikkaConfiguration.ImportConfiguration importConfiguration = new PaikkaConfiguration.ImportConfiguration();
         importConfiguration.setThreads(2);
         config.setImportConfiguration(importConfiguration);
+        PaikkaConfiguration.SimplificationConfiguration simplificationConfiguration = new PaikkaConfiguration.SimplificationConfiguration();
+        simplificationConfiguration.setContinentTolerance(0.005);
+        simplificationConfiguration.setCountryTolerance(0.00045);
+        simplificationConfiguration.setStateTolerance(0.00009);
+        simplificationConfiguration.setPoiTolerance(0.000018);
+        simplificationConfiguration.setDefaultTolerance(0.000045);
+        config.setSimplificationConfiguration(simplificationConfiguration);
         GeometrySimplificationService geometrySimplificationService = new GeometrySimplificationService(config);
 
         S2Helper s2Helper = new S2Helper();
