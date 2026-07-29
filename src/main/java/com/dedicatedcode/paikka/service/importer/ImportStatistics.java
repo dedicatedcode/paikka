@@ -318,6 +318,9 @@ class ImportStatistics {
     public void setCompactionEntriesTotal(long v) {
         this.compactionEntriesTotal.set(v);
     }
+    public void resetCompactionProgress() {
+        this.compactionEntriesProcessed.set(0);
+    }
 
     public void incrementCompactionEntriesProcessed(long size) {
         this.compactionEntriesProcessed.addAndGet(size);

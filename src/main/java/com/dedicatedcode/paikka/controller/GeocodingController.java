@@ -135,7 +135,7 @@ public class GeocodingController {
         Map<String, Object> response = new HashMap<>();
         response.put("status", "ok");
         response.put("service", "paikka");
-        response.put("metadata", metadataService.getMetadata()); // Include metadata
+        response.put("metadata", metadataService.getMetadata());
         return ResponseEntity.ok()
             .header("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0") // No caching
             .body(response);
