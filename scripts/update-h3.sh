@@ -27,7 +27,6 @@
 # Options:
 #   --env-file PATH       Path to .env file (default: ./scripts/.env)
 #   --data-dir PATH       Directory for import data (default: ./data)
-#   --jar-file PATH       Path to PAIKKA jar (auto-detected if not provided)
 #   --memory SIZE         JVM heap size (default: 16g)
 #   --threads NUM         Import threads (default: 10)
 #   --pbf-file PATH       Use local PBF file instead of downloading
@@ -58,7 +57,6 @@ DATA_DIR="${DATA_DIR:-$LOCAL_WORK_DIR}"
 # --- Import Settings ---
 IMPORT_MEMORY="${IMPORT_MEMORY:-16g}"
 IMPORT_THREADS="${IMPORT_THREADS:-10}"
-JAR_FILE="${JAR_FILE:-}"
 
 # --- Bundle Settings ---
 VERSION="${VERSION:-$(date +%Y-%m-%d)-v1}"
@@ -123,10 +121,6 @@ parse_args_and_configure() {
                 DATA_DIR="$2"
                 shift 2
                 ;;
-            --jar-file)
-                JAR_FILE="$2"
-                shift 2
-                ;;
             --memory)
                 IMPORT_MEMORY="$2"
                 shift 2
@@ -157,7 +151,6 @@ parse_args_and_configure() {
                 echo "Options:"
                 echo "  --env-file PATH       Path to .env file (default: ./scripts/.env)"
                 echo "  --data-dir PATH       Directory for import data (default: ./data)"
-                echo "  --jar-file PATH       Path to PAIKKA jar (auto-detected if not provided)"
                 echo "  --memory SIZE         JVM heap size (default: 16g)"
                 echo "  --threads NUM         Import threads (default: 10)"
                 echo "  --pbf-file PATH       Use local PBF file instead of downloading"
@@ -190,17 +183,6 @@ parse_args_and_configure() {
         exit 1
     fi
 
-    # Auto-detect JAR file if not provided
-    if [ -z "$JAR_FILE" ]; then
-        JAR_FILE=$(find target -name "paikka-*.jar" -not -name "*-sources.jar" 2>/dev/null | head -1)
-    fi
-
-    # Validate JAR file
-    if [ -n "$JAR_FILE" ] && [ ! -f "$JAR_FILE" ]; then
-        echo "Error: JAR file not found: $JAR_FILE"
-        exit 1
-    fi
-
     # Display configuration
     echo "=========================================="
     echo "H3 Bundle Pipeline Configuration"
@@ -208,7 +190,6 @@ parse_args_and_configure() {
     echo "  Data directory:    $DATA_DIR"
     echo "  Import memory:     $IMPORT_MEMORY"
     echo "  Import threads:    $IMPORT_THREADS"
-    echo "  JAR file:          ${JAR_FILE:-auto-detect}"
     echo "  Bundle version:    $VERSION"
     echo "  Bundle output:     $BUNDLE_OUTPUT_DIR"
     echo "  Skip upload:       $NO_UPLOAD"
@@ -276,52 +257,63 @@ local_pull_docker_image() {
 # LOCAL: Filters the PBF file using the Paikka container.
 ###
 local_filter_pbf() {
+    if [ -n "$PBF_INPUT_PATH" ]; then
+        log "Step 3: Skipping filter – using provided PBF directly"
+        return 0
+    fi
+
     log "Step 3: Filtering PBF file"
 
-    if [ -n "$PBF_INPUT_PATH" ]; then
-        INPUT_DIR="$(dirname "$PBF_INPUT_PATH")"
-        INPUT_FILE="$(basename "$PBF_INPUT_PATH")"
-        sudo docker run --rm \
-            -v "$INPUT_DIR":/input \
-            -v "$DOWNLOAD_DIR":/data \
-            "$DOCKER_IMAGE" prepare-boundaries "/input/$INPUT_FILE" "/data/$PBF_FILTERED_FILE"
-    else
-        sudo docker run --rm \
-            -v "$DOWNLOAD_DIR":/data \
-            "$DOCKER_IMAGE" prepare-boundaries "/data/$PBF_INPUT_FILE" "/data/$PBF_FILTERED_FILE"
-    fi
+    sudo docker run --rm \
+        -v "$DOWNLOAD_DIR":/data \
+        "$DOCKER_IMAGE" prepare-boundaries "/data/$PBF_INPUT_FILE" "/data/$PBF_FILTERED_FILE"
 }
-
 ###
 # LOCAL: Runs the Java H3 import.
 ###
 local_import_h3() {
     log "Step 4: Running H3 import"
 
-    local PBF_TO_IMPORT="$DOWNLOAD_DIR/$PBF_FILTERED_FILE"
-
-    cd "$LOCAL_WORK_DIR"
-    ./scripts/import-boundaries.sh \
-        --jar-file "$JAR_FILE" \
-        --data-dir "$DATA_DIR" \
-        --memory "$IMPORT_MEMORY" \
-        --threads "$IMPORT_THREADS" \
-        "$PBF_TO_IMPORT"
+    if [ -n "$PBF_INPUT_PATH" ]; then
+        INPUT_DIR="$(dirname "$PBF_INPUT_PATH")"
+        INPUT_FILE="$(basename "$PBF_INPUT_PATH")"
+        sudo docker run --rm \
+            -v "$INPUT_DIR":/input \
+            -v "$DATA_DIR":/data \
+            "$DOCKER_IMAGE" \
+            import-boundaries \
+            --data-dir /data \
+            --memory "$IMPORT_MEMORY" \
+            --threads "$IMPORT_THREADS" \
+            "/input/$INPUT_FILE"
+    else
+        sudo docker run --rm \
+            -v "$DOWNLOAD_DIR":/input \
+            -v "$DATA_DIR":/data \
+            "$DOCKER_IMAGE" \
+            import-boundaries \
+            --data-dir /data \
+            --memory "$IMPORT_MEMORY" \
+            --threads "$IMPORT_THREADS" \
+            "/input/$PBF_FILTERED_FILE"
+    fi
 }
-
 ###
 # LOCAL: Removes intermediate PBF files.
 ###
 local_cleanup_pbf() {
     log "Step 5: Cleaning up intermediate PBF files"
+
+    if [ -n "$PBF_INPUT_PATH" ]; then
+        echo "No intermediate files to clean up (user-provided PBF)"
+        return 0
+    fi
+
     cd "$DOWNLOAD_DIR"
     rm -f "$PBF_FILTERED_FILE"
-    if [ -z "$PBF_INPUT_PATH" ]; then
-        rm -f "$PBF_INPUT_FILE"
-    fi
-    echo "Cleaned up filtered PBF file"
+    rm -f "$PBF_INPUT_FILE"
+    echo "Cleaned up downloaded PBF files"
 }
-
 ###
 # LOCAL: Creates the H3 RocksDB bundle ZIP and manifest.
 ###
@@ -346,10 +338,15 @@ local_upload_bundle() {
 
     log "Step 7: Uploading bundle to R2"
 
-    ./scripts/upload-h3-bundle.sh \
+    local upload_args=(
         --dist-dir "$BUNDLE_OUTPUT_DIR"
-}
+    )
+    if [ -n "$ENV_FILE" ] && [ -f "$ENV_FILE" ]; then
+        upload_args+=(--env-file "$ENV_FILE")
+    fi
 
+    ./scripts/upload-h3-bundle.sh "${upload_args}"
+}
 # ==============================================================================
 # MAIN ORCHESTRATION FUNCTION
 # ==============================================================================
@@ -358,7 +355,7 @@ main() {
     parse_args_and_configure "$@"
     local_prepare_directories
     local_download_planet_file
-#    local_pull_docker_image
+    local_pull_docker_image
     local_filter_pbf
     local_import_h3
     local_cleanup_pbf

@@ -318,6 +318,9 @@ class ImportStatistics {
     public void setCompactionEntriesTotal(long v) {
         this.compactionEntriesTotal.set(v);
     }
+    public void resetCompactionProgress() {
+        this.compactionEntriesProcessed.set(0);
+    }
 
     public void incrementCompactionEntriesProcessed(long size) {
         this.compactionEntriesProcessed.addAndGet(size);
@@ -489,8 +492,8 @@ class ImportStatistics {
     }
 
     public void startProgressReporter() {
-        boolean isTty = System.console() != null;
-
+        boolean isTty = System.console() != null && System.console().isTerminal();
+        long sleepMillis = isTty ? 1000 : 5000;
         Thread.ofPlatform().daemon().start(() -> {
             while (isRunning()) {
                 long elapsed = System.currentTimeMillis() - getStartTime();
@@ -612,7 +615,7 @@ class ImportStatistics {
                 }
 
                 try {
-                    Thread.sleep(1000);
+                    Thread.sleep(sleepMillis);
                 } catch (InterruptedException e) {
                     break;
                 }

@@ -192,7 +192,8 @@ public class BoundaryImportStatistics {
     }
 
     public void startProgressReporter() {
-        boolean isTty = System.console() != null;
+        boolean isTty = System.console() != null && System.console().isTerminal();
+        long sleepMillis = isTty ? 1000 : 5000;
 
         Thread.ofPlatform().daemon().start(() -> {
             while (isRunning()) {
@@ -237,7 +238,7 @@ public class BoundaryImportStatistics {
                 }
 
                 try {
-                    Thread.sleep(1000);
+                    Thread.sleep(sleepMillis);
                 } catch (InterruptedException e) {
                     break;
                 }

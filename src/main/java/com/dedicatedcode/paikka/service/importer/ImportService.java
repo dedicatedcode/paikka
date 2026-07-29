@@ -793,9 +793,9 @@ public class ImportService {
                     RelRec rec = decodeRelRec(val, relId);
 
                     semaphore.acquire();
-                    stats.incrementActiveThreads();
                     ecs.submit(() -> {
                         try {
+                            stats.incrementActiveThreads();
                             org.locationtech.jts.geom.Geometry geometry = buildGeometryFromRelRec(rec, nodeCache, wayIndexDb, stats);
                             if (geometry == null) return null;
 
@@ -908,11 +908,12 @@ public class ImportService {
 
                         if (currentBatchIds.size() >= batchSize) {
                             semaphore.acquire();
-                            stats.incrementActiveThreads();
                             List<Long> idsToProcess = new ArrayList<>(currentBatchIds);
                             List<PoiIndexRec> recsToProcess = new ArrayList<>(currentBatchRecs);
                             ecs.submit(() -> {
                                 try {
+                                    stats.incrementActiveThreads();
+
                                     List<BuildingData> results = new ArrayList<>();
                                     for (int i = 0; i < idsToProcess.size(); i++) {
                                         long wayIdInner = idsToProcess.get(i);
@@ -972,11 +973,11 @@ public class ImportService {
 
             if (!currentBatchIds.isEmpty()) {
                 semaphore.acquire();
-                stats.incrementActiveThreads();
                 List<Long> idsToProcess = new ArrayList<>(currentBatchIds);
                 List<PoiIndexRec> recsToProcess = new ArrayList<>(currentBatchRecs);
                 ecs.submit(() -> {
                     try {
+                        stats.incrementActiveThreads();
                         List<BuildingData> results = new ArrayList<>();
                         for (int i = 0; i < idsToProcess.size(); i++) {
                             long wayIdInner = idsToProcess.get(i);
@@ -1160,6 +1161,7 @@ public class ImportService {
     private void compactBuildingShards(RocksDB appendDb, RocksDB buildingsDb, ImportStatistics stats) {
         stats.setCompactionStartTime(System.currentTimeMillis());
         stats.setCompactionEntriesTotal(buildingSequence.get());
+        stats.resetCompactionProgress();
 
         Building reusableBuilding = new Building();
         Geometry reusableGeom = new Geometry();

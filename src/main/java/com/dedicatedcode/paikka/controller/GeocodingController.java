@@ -45,12 +45,12 @@ public class GeocodingController {
     
     private final ReverseGeocodingService reverseGeocodingService;
     private final PaikkaConfiguration config;
-    private final MetadataService metadataService; // Inject MetadataService
+    private final MetadataService metadataService;
     
     public GeocodingController(ReverseGeocodingService reverseGeocodingService, PaikkaConfiguration config, MetadataService metadataService) {
         this.reverseGeocodingService = reverseGeocodingService;
         this.config = config;
-        this.metadataService = metadataService; // Inject MetadataService
+        this.metadataService = metadataService;
     }
     
     /**
@@ -64,8 +64,8 @@ public class GeocodingController {
      */
     @GetMapping("/reverse")
     public ResponseEntity<Map<String, Object>> reverse(
-            @RequestParam double lat,
-            @RequestParam double lon,
+            @RequestParam(required = false) Double lat,
+            @RequestParam(required = false) Double lon,
             @RequestParam(defaultValue = "en") String lang,
             @RequestParam(required = false) Integer limit) {
         
@@ -73,7 +73,19 @@ public class GeocodingController {
         int effectiveLimit = (limit != null) ? Math.min(limit, config.getQueryConfiguration().getMaxResults()) : config.getQueryConfiguration().getDefaultResults();
         
         logger.debug("Reverse geocoding request: lat={}, lon={}, lang={}, limit={}", lat, lon, lang, effectiveLimit);
-        
+
+        if (lat == null || lon == null) {
+            Map<String, Object> error = new HashMap<>();
+            if (lat == null && lon == null) {
+                error.put("error", "Missing required parameters: lat, lon");
+            } else if (lat == null) {
+                error.put("error", "Missing required parameter: lat");
+            } else {
+                error.put("error", "Missing required parameter: lon");
+            }
+            return ResponseEntity.badRequest().body(error);
+        }
+
         // Validate coordinates
         if (lat < -90 || lat > 90) {
             Map<String, Object> error = new HashMap<>();
@@ -111,7 +123,7 @@ public class GeocodingController {
 
         return ResponseEntity.ok()
             .header("X-Result-Count", String.valueOf(results.size()))
-            .header("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0") // No caching
+            .header("Cache-Control", "max-age=86400")
             .body(response);
     }
     
@@ -123,7 +135,7 @@ public class GeocodingController {
         Map<String, Object> response = new HashMap<>();
         response.put("status", "ok");
         response.put("service", "paikka");
-        response.put("metadata", metadataService.getMetadata()); // Include metadata
+        response.put("metadata", metadataService.getMetadata());
         return ResponseEntity.ok()
             .header("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0") // No caching
             .body(response);
