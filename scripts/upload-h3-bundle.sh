@@ -4,8 +4,8 @@ set -e
 
 # --- Configuration & Defaults ---
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ENV_FILE="$SCRIPT_DIR/.env"
-DIST_DIR="$SCRIPT_DIR/dist"  # Default fallback if no directory parameter is provided
+ENV_FILE=""  # No default - must be provided or use environment variables
+DIST_DIR="$SCRIPT_DIR/dist"
 
 # Show help/usage instructions
 usage() {
@@ -13,6 +13,7 @@ usage() {
     echo ""
     echo "Options:"
     echo "  -d, --dist-dir     Path to folder containing the ZIP file and manifest.json (Default: $DIST_DIR)"
+    echo "  -e, --env-file     Path to .env file with R2 credentials (optional if set via environment)"
     echo "  -h, --help         Show this help message"
     exit 1
 }
@@ -21,18 +22,21 @@ usage() {
 while [[ "$#" -gt 0 ]]; do
     case $1 in
         -d|--dist-dir) DIST_DIR="$2"; shift ;;
+        -e|--env-file) ENV_FILE="$2"; shift ;;
         -h|--help) usage ;;
         *) echo "Unknown parameter: $1"; usage ;;
     esac
     shift
 done
 
-# Load credentials from .env file
-if [ -f "$ENV_FILE" ]; then
-    source "$ENV_FILE"
-else
-    echo "Error: Configuration file .env was not found at: $ENV_FILE"
-    exit 1
+# Load credentials from .env file (if provided)
+if [ -n "$ENV_FILE" ]; then
+    if [ -f "$ENV_FILE" ]; then
+        source "$ENV_FILE"
+    else
+        echo "Error: Configuration file .env was not found at: $ENV_FILE"
+        exit 1
+    fi
 fi
 
 # AWS CLI check
@@ -89,7 +93,7 @@ echo "Uploading H3 RocksDB Bundle to R2"
 echo "Source Dir: $DIST_DIR_ABS"
 echo "Bundle:     $ZIP_FILENAME"
 echo "Bucket:     $R2_BUCKET"
-echo "Prefix:     ${REMOTE_PREFIX:-[root]}"
+echo "Prefix:     ${REMOTE_PREFIX:-}"
 echo "=========================================="
 
 # 1. Upload the heavy ZIP file first
@@ -119,7 +123,7 @@ ZIPS_IN_BUCKET=$(aws s3api list-objects-v2 \
 
 # Convert output into a Bash array
 read -r -a ZIP_ARRAY <<< "$ZIPS_IN_BUCKET"
-TOTAL_ZIPS=${#ZIP_ARRAY[@]}
+TOTAL_ZIPS=${#ZIP_ARRAY}
 
 echo "$TOTAL_ZIPS ZIP file(s) found in bucket."
 
