@@ -39,3 +39,4 @@ build/
 /.idea/
 /data-boundaries/
 /.env
+/tmp/

@@ -45,7 +45,7 @@ import java.util.concurrent.atomic.AtomicLong;
  * Reads a pre-filtered boundaries_only.pbf (Nodes -> Ways -> Relations ordered)
  * and produces three RocksDB databases for offline mobile lookup:
  * - h3_to_osm: H3_CELL_ID (uint64) -> List[OSM_ID] (raw byte array)
- * - region_metadata: OSM_ID -> total cell count (int)
+ * - region_metadata: OSM_ID -> [total cell count (long), h3 resolution (int)] (12 bytes)
  * - region_geometry: OSM_ID -> simplified WKB (bytes)
  */
 @Service
@@ -54,6 +54,7 @@ public class StandaloneBoundaryImporter {
 
     private static final GeometryFactory GEOMETRY_FACTORY = new GeometryFactory();
     private static final double BUFFER_DISTANCE = 0.0001; // ~11m at equator, ensures border cells
+    private static final long H3_THREAD_WRITE_BUFFER = 64L * 1024 * 1024; // per-thread RocksDB write buffer
 
     private final GeometrySimplificationService geometrySimplificationService;
     private final PaikkaConfiguration paikkaConfiguration;
@@ -83,7 +84,6 @@ public class StandaloneBoundaryImporter {
         Path regionGeomPath = out.resolve("region_geometry");
         Path nameSql = out.resolve("osm_names.tsv");
 
-        Path tmpH3ToOsmPath = tmp.resolve("tmp_h3_to_osm");
         Path tmpRegionMetaPath = tmp.resolve("tmp_region_metadata");
         Path tmpRegionGeomPath = tmp.resolve("tmp_region_geometry");
 
@@ -92,14 +92,13 @@ public class StandaloneBoundaryImporter {
         cleanup(h3ToOsmPath);
         cleanup(regionMetaPath);
         cleanup(regionGeomPath);
-        cleanup(tmpH3ToOsmPath);
         cleanup(tmpRegionMetaPath);
         cleanup(tmpRegionGeomPath);
 
-        // Shared Rocksoptions (inline with ImportService style)
         BlockBasedTableConfig tableCfg = new BlockBasedTableConfig()
                 .setBlockSize(64 * 1024)
                 .setFilterPolicy(new BloomFilter(10, false));
+
         Options cacheOpts = new Options()
                 .setCreateIfMissing(true)
                 .setTableFormatConfig(tableCfg)
@@ -107,6 +106,12 @@ public class StandaloneBoundaryImporter {
                 .setWriteBufferSize(512 * 1024 * 1024)
                 .setMaxWriteBufferNumber(3)
                 .setLevel0FileNumCompactionTrigger(4);
+
+        // Per-thread H3 DBs use smaller write buffers (64MB each) to control memory
+        Options threadH3Opts = new Options(cacheOpts)
+                .setWriteBufferSize(H3_THREAD_WRITE_BUFFER)
+                .setMaxWriteBufferNumber(2);
+
         Options finalOpts = new Options()
                 .setCreateIfMissing(true)
                 .setTableFormatConfig(tableCfg)
@@ -125,215 +130,201 @@ public class StandaloneBoundaryImporter {
 
         stats.startProgressReporter();
 
-        try (
-                RocksDB nodeCache = RocksDB.open(cacheOpts, nodeCachePath.toString());
-                RocksDB wayCache = RocksDB.open(cacheOpts, wayCachePath.toString());
-                RocksDB h3ToOsm = RocksDB.open(finalOpts, h3ToOsmPath.toString());
-                RocksDB regionMeta = RocksDB.open(finalOpts, regionMetaPath.toString());
-                RocksDB regionGeom = RocksDB.open(finalOpts, regionGeomPath.toString());
-                RocksDB tmpH3ToOsm = RocksDB.open(cacheOpts, tmpH3ToOsmPath.toString());
-                RocksDB tmpRegionMeta = RocksDB.open(cacheOpts, tmpRegionMetaPath.toString());
-                RocksDB tmpRegionGeom = RocksDB.open(cacheOpts, tmpRegionGeomPath.toString());
-                OsmNameStreamer nameStreamer = new OsmNameStreamer(nameSql.toString())
-        ) {
-            for (String pbfPath : pbfPaths) {
-                stats.setCurrentPhase(1, "1.1: Caching Nodes & Ways");
-                try (WriteOptions wo = new WriteOptions().setDisableWAL(true)) {
+        // Shared block cache reduces redundant I/O across all RocksDB instances
+        try (Cache sharedCache = new LRUCache(2L * 1024 * 1024 * 1024)) {
+            tableCfg.setBlockCache(sharedCache);
 
-                    // ---------- SINGLE PASS ----------
-                    PbfIterator iterator = new PbfIterator(Files.newInputStream(Paths.get(pbfPath)), false);
+            try (
+                    RocksDB nodeCache = RocksDB.open(cacheOpts, nodeCachePath.toString());
+                    RocksDB wayCache = RocksDB.open(cacheOpts, wayCachePath.toString());
+                    RocksDB h3ToOsm = RocksDB.open(finalOpts, h3ToOsmPath.toString());
+                    RocksDB regionMeta = RocksDB.open(finalOpts, regionMetaPath.toString());
+                    RocksDB regionGeom = RocksDB.open(finalOpts, regionGeomPath.toString());
+                    RocksDB tmpRegionMeta = RocksDB.open(cacheOpts, tmpRegionMetaPath.toString());
+                    RocksDB tmpRegionGeom = RocksDB.open(cacheOpts, tmpRegionGeomPath.toString());
+                    OsmNameStreamer nameStreamer = new OsmNameStreamer(nameSql.toString())
+            ) {
+                int threads = paikkaConfiguration.getImportConfiguration().getThreads();
 
-                    // Phase 1 & 2: Stream nodes and ways (cached)
-                    WriteBatch nodeBatch = new WriteBatch();
-                    WriteBatch wayBatch = new WriteBatch();
-                    AtomicLong phaseCounter = new AtomicLong();
-
-                    while (iterator.hasNext()) {
-                        EntityContainer c = iterator.next();
-                        if (c.getType() == EntityType.Node) {
-                            // PHASE 1: Cache node coordinates (lat, lon) as 16-byte double pair
-                            OsmNode n = (OsmNode) c.getEntity();
-                            ByteBuffer bb = ByteBuffer.allocate(16)
-                                    .putDouble(n.getLatitude())
-                                    .putDouble(n.getLongitude());
-                            nodeBatch.put(longToBytes(n.getId()), bb.array());
-                            stats.incrementNodesCached();
-                            if (phaseCounter.incrementAndGet() % 100_000 == 0) {
-                                nodeCache.write(wo, nodeBatch);
-                                nodeBatch.clear();
-                            }
-                        } else if (c.getType() == EntityType.Way) {
-                            // PHASE 2: Cache way node-id sequences (long[] as raw bytes)
-                            OsmWay w = (OsmWay) c.getEntity();
-                            long[] ids = new long[w.getNumberOfNodes()];
-                            for (int i = 0; i < w.getNumberOfNodes(); i++) ids[i] = w.getNodeId(i);
-                            wayBatch.put(longToBytes(w.getId()), longArrayToBytes(ids));
-                            stats.incrementWaysCached();
-                            if (phaseCounter.incrementAndGet() % 50_000 == 0) {
-                                wayCache.write(wo, wayBatch);
-                                wayBatch.clear();
-                            }
-                        } else if (c.getType() == EntityType.Relation) {
-                            // PHASE 3: Count administrative boundaries for accurate progress tracking
-                            OsmRelation r = (OsmRelation) c.getEntity();
-                            if (isAdministrativeBoundary(r)) {
-                                stats.incrementRelationsFound();
-                            }
-                        }
-                    }
-                    nodeCache.write(wo, nodeBatch);
-                    wayCache.write(wo, wayBatch);
-                    nodeBatch.close();
-                    wayBatch.close();
+                // Pre-create per-thread H3 db paths and clean any left-overs
+                Path[] threadH3Paths = new Path[threads];
+                for (int t = 0; t < threads; t++) {
+                    threadH3Paths[t] = tmp.resolve("h3_osm_" + t);
+                    cleanup(threadH3Paths[t]);
                 }
 
-                stats.setCurrentPhase(2, "2.1: Processing Relations & H3");
-                // Re-open iterator for Phase 3 (or use two iterators; here we reuse file)
+                for (String pbfPath : pbfPaths) {
+                    stats.setCurrentPhase(1, "1.1: Caching Nodes & Ways");
 
-                // Phase 3: Process Relations (separate iterator pass is fine since PBF is local)
-                try (InputStream is = Files.newInputStream(Paths.get(pbfPath))) {
-                    PbfIterator relIter = new PbfIterator(is, false);
+                    // ------ Single pass: cache nodes/ways and collect relation stubs ------
+                    List<RelationStub> stubs = new ArrayList<>(500_000);
 
-                    int threads = paikkaConfiguration.getImportConfiguration().getThreads();
-                    ExecutorService executor = Executors.newFixedThreadPool(threads);
-                    BlockingQueue<List<RelationStub>> queue = new LinkedBlockingQueue<>(100);
-                    List<RelationStub> POISON_PILL = List.of();
+                    try (InputStream is = Files.newInputStream(Paths.get(pbfPath));
+                         WriteOptions wo = new WriteOptions().setDisableWAL(true)) {
 
-                    // Producer thread
-                    Thread producer = new Thread(() -> {
-                        try {
-                            List<RelationStub> batch = new ArrayList<>(100);
-                            while (relIter.hasNext()) {
-                                EntityContainer c = relIter.next();
-                                if (c.getType() == EntityType.Relation) {
-                                    OsmRelation r = (OsmRelation) c.getEntity();
-                                    try {
-                                        nameStreamer.processEntity(r, "R");
-                                    } catch (IOException e) {
-                                        logger.warn("Failed to stream name for relation ID: {}", r.getId(), e);
-                                    }
-                                    if (isAdministrativeBoundary(r)) {
-                                        batch.add(buildRelationStub(r));
-                                        if (batch.size() >= 100) {
-                                            queue.put(batch);
-                                            batch = new ArrayList<>(100);
-                                        }
-                                    }
+                        PbfIterator iterator = new PbfIterator(is, false);
+                        WriteBatch nodeBatch = new WriteBatch();
+                        WriteBatch wayBatch = new WriteBatch();
+                        AtomicLong phaseCounter = new AtomicLong();
+
+                        while (iterator.hasNext()) {
+                            EntityContainer c = iterator.next();
+                            if (c.getType() == EntityType.Node) {
+                                OsmNode n = (OsmNode) c.getEntity();
+                                ByteBuffer bb = ByteBuffer.allocate(16)
+                                        .putDouble(n.getLatitude())
+                                        .putDouble(n.getLongitude());
+                                nodeBatch.put(longToBytes(n.getId()), bb.array());
+                                stats.incrementNodesCached();
+                                if (phaseCounter.incrementAndGet() % 100_000 == 0) {
+                                    nodeCache.write(wo, nodeBatch);
+                                    nodeBatch.clear();
                                 }
-                            }
-                            if (!batch.isEmpty()) {
-                                queue.put(batch);
-                            }
-                        } catch (Exception e) {
-                            stats.recordError(BoundaryImportStatistics.Stage.PROCESSING_RELATIONS, BoundaryImportStatistics.Kind.READ, null, "producer-thread", e);
-                        } finally {
-                            for (int i = 0; i < threads; i++) {
+                            } else if (c.getType() == EntityType.Way) {
+                                OsmWay w = (OsmWay) c.getEntity();
+                                long[] ids = new long[w.getNumberOfNodes()];
+                                for (int i = 0; i < w.getNumberOfNodes(); i++) ids[i] = w.getNodeId(i);
+                                wayBatch.put(longToBytes(w.getId()), longArrayToBytes(ids));
+                                stats.incrementWaysCached();
+                                if (phaseCounter.incrementAndGet() % 50_000 == 0) {
+                                    wayCache.write(wo, wayBatch);
+                                    wayBatch.clear();
+                                }
+                            } else if (c.getType() == EntityType.Relation) {
+                                OsmRelation r = (OsmRelation) c.getEntity();
                                 try {
-                                    queue.put(POISON_PILL);
-                                } catch (InterruptedException e) {
-                                    Thread.currentThread().interrupt();
+                                    nameStreamer.processEntity(r, "R");
+                                } catch (IOException e) {
+                                    logger.warn("Failed to stream name for relation ID: {}", r.getId(), e);
+                                }
+                                if (isAdministrativeBoundary(r)) {
+                                    stats.incrementRelationsFound();
+                                    stubs.add(buildRelationStub(r));
                                 }
                             }
                         }
-                    });
+                        nodeCache.write(wo, nodeBatch);
+                        wayCache.write(wo, wayBatch);
+                        nodeBatch.close();
+                        wayBatch.close();
+                    }
 
-                    producer.start();
+                    // ------ Process Relations via partitioned thread pool ------
+                    stats.setCurrentPhase(2, "2.1: Processing Relations & H3");
 
-                    // Consumer threads
-                    List<Future<?>> futures = new ArrayList<>();
-                    for (int i = 0; i < threads; i++) {
-                        futures.add(executor.submit(() -> {
-                            try (WriteOptions wo = new WriteOptions().setDisableWAL(true)) {
-                                while (true) {
-                                    List<RelationStub> batch = queue.take();
-                                    if (batch == POISON_PILL) break;
+                    if (!stubs.isEmpty()) {
+                        ExecutorService executor = Executors.newFixedThreadPool(threads);
+                        List<Future<?>> futures = new ArrayList<>();
+                        int partitionSize = (stubs.size() + threads - 1) / threads;
 
-                                    for (RelationStub stub : batch) {
-                                        if (stub.adminLevel() <= 3) {
-                                            logger.debug("Processing relation OSM ID: {} [Admin Level: {}]", stub.osmId(), stub.adminLevel());
-                                        }
-                                        try {
-                                            Geometry geom = buildMultiPolygon(stub, nodeCache, wayCache);
-                                            if (geom == null || geom.isEmpty()) {
-                                                continue;
+                        for (int t = 0; t < threads; t++) {
+                            int from = t * partitionSize;
+                            int to = Math.min(from + partitionSize, stubs.size());
+                            if (from >= to) break;
+
+                            List<RelationStub> partition = stubs.subList(from, to);
+                            final int threadIndex = t;
+
+                            futures.add(executor.submit(() -> {
+                                try {
+                                    try (RocksDB threadH3 = RocksDB.open(threadH3Opts, threadH3Paths[threadIndex].toString());
+                                         WriteOptions wo = new WriteOptions().setDisableWAL(true)) {
+                                        for (RelationStub stub : partition) {
+                                            if (stub.adminLevel() <= 3) {
+                                                logger.debug("Processing relation OSM ID: {} [Admin Level: {}]", stub.osmId(), stub.adminLevel());
                                             }
-
-                                            // Repair invalid geometries using buffer(0)
-                                            if (!geom.isValid()) {
-                                                logger.debug("Relation OSM ID: {} [Admin Level: {}] Geometry is invalid, attempting repair", stub.osmId(), stub.adminLevel());
-                                                geom = geom.buffer(0);
-                                                if (geom == null || geom.isEmpty() || !geom.isValid()) {
-                                                    logger.error("Relation OSM ID: {} [Admin Level: {}] Geometry repair failed", stub.osmId(), stub.adminLevel());
+                                            try {
+                                                Geometry geom = buildMultiPolygon(stub, nodeCache, wayCache);
+                                                if (geom == null || geom.isEmpty()) {
                                                     continue;
                                                 }
-                                            }
-                                            // Simplify first to reduce H3 cell count, then buffer
-                                            Geometry simplified = geometrySimplificationService.simplifyByAdminLevel(geom, stub.adminLevel());
-                                            if (simplified == null || simplified.isEmpty()) {
-                                                simplified = geom;
-                                            }
-                                            // Buffer to include border-touching cells
-                                            Geometry buffered = simplified.buffer(BUFFER_DISTANCE);
-                                            if (stub.adminLevel() <= 3) {
-                                                logger.debug("Simplified Geometry: {} points for OSM ID: {}", simplified.getNumPoints(), stub.osmId());
-                                            }
-                                            
-                                            int resolution = getResolutionForAdminLevel(stub.adminLevel());
-                                            
-                                            // ---- H3 Polyfill ----
-                                            AtomicLong cellCount = new AtomicLong(0);
-                                            long startTime = System.currentTimeMillis();
-                                            processCellsH3Stream(buffered, stub.osmId(), wo, tmpH3ToOsm, cellCount, resolution);
-                                            if (stub.adminLevel() <= 3) {
-                                                logger.debug("H3 Polyfill (Res {}) took {}ms for OSM ID: {}", resolution, System.currentTimeMillis() - startTime, stub.osmId());
-                                            }
-                                            if (cellCount.get() == 0) continue;
 
-                                            stats.incrementRelationsProcessed();
-                                            stats.addH3CellsGenerated((int) cellCount.get());
+                                                // Repair invalid geometries using buffer(0)
+                                                if (!geom.isValid()) {
+                                                    logger.debug("Relation OSM ID: {} [Admin Level: {}] Geometry is invalid, attempting repair", stub.osmId(), stub.adminLevel());
+                                                    geom = geom.buffer(0);
+                                                    if (geom == null || geom.isEmpty() || !geom.isValid()) {
+                                                        logger.error("Relation OSM ID: {} [Admin Level: {}] Geometry repair failed", stub.osmId(), stub.adminLevel());
+                                                        continue;
+                                                    }
+                                                }
+                                                // Simplify first to reduce H3 cell count, then buffer
+                                                Geometry simplified = geometrySimplificationService.simplifyByAdminLevel(geom, stub.adminLevel());
+                                                if (simplified == null || simplified.isEmpty()) {
+                                                    simplified = geom;
+                                                }
+                                                // Buffer to include border-touching cells
+                                                Geometry buffered = simplified.buffer(BUFFER_DISTANCE);
+                                                if (stub.adminLevel() <= 3) {
+                                                    logger.debug("Simplified Geometry: {} points for OSM ID: {}", simplified.getNumPoints(), stub.osmId());
+                                                }
 
-                                            startTime = System.currentTimeMillis();
-                                            tmpRegionMeta.put(wo, longToBytes(stub.osmId()), intToBytes((int) cellCount.get()));
-                                            if (stub.adminLevel() <= 3) {
-                                                logger.debug("H3 Cells written to tmpRegionMeta in {}ms for OSM ID: {}", System.currentTimeMillis() - startTime, stub.osmId());
+                                                int resolution = getResolutionForAdminLevel(stub.adminLevel());
+
+                                                // ---- H3 Polyfill ----
+                                                AtomicLong cellCount = new AtomicLong(0);
+                                                long startTime = System.currentTimeMillis();
+                                                processCellsH3Stream(buffered, stub.osmId(), wo, threadH3, cellCount, resolution);
+                                                if (stub.adminLevel() <= 3) {
+                                                    logger.debug("H3 Polyfill (Res {}) took {}ms for OSM ID: {}", resolution, System.currentTimeMillis() - startTime, stub.osmId());
+                                                }
+                                                long totalCells = cellCount.get();
+                                                if (totalCells == 0) continue;
+
+                                                stats.incrementRelationsProcessed();
+                                                stats.addH3CellsGenerated(totalCells);
+
+                                                startTime = System.currentTimeMillis();
+                                                tmpRegionMeta.put(wo, longToBytes(stub.osmId()), cellMetaToBytes(totalCells, resolution));
+                                                if (stub.adminLevel() <= 3) {
+                                                    logger.debug("H3 Cells written to tmpRegionMeta in {}ms for OSM ID: {}", System.currentTimeMillis() - startTime, stub.osmId());
+                                                }
+                                                startTime = System.currentTimeMillis();
+                                                byte[] wkb = new WKBWriter().write(simplified);
+                                                tmpRegionGeom.put(wo, longToBytes(stub.osmId()), wkb);
+                                                if (stub.adminLevel() <= 3) {
+                                                    logger.debug("WKB written to tmpRegionGeom in {}ms for OSM ID: {}", System.currentTimeMillis() - startTime, stub.osmId());
+                                                }
+                                            } catch (Exception e) {
+                                                stats.recordError(BoundaryImportStatistics.Stage.PROCESSING_RELATIONS, BoundaryImportStatistics.Kind.GEOMETRY, stub.osmId(), "process-relation", e);
                                             }
-                                            startTime = System.currentTimeMillis();
-                                            byte[] wkb = new WKBWriter().write(simplified);
-                                            tmpRegionGeom.put(wo, longToBytes(stub.osmId()), wkb);
-                                            if (stub.adminLevel() <= 3) {
-                                                logger.debug("WKB written to tmpRegionGeom in {}ms for OSM ID: {}", System.currentTimeMillis() - startTime, stub.osmId());
-                                            }
-                                        } catch (Exception e) {
-                                            stats.recordError(BoundaryImportStatistics.Stage.PROCESSING_RELATIONS, BoundaryImportStatistics.Kind.GEOMETRY, stub.osmId(), "process-relation", e);
                                         }
                                     }
+                                } catch (RocksDBException e) {
+                                    throw new RuntimeException("Failed to open per-thread H3 DB", e);
                                 }
-                            } catch (InterruptedException e) {
-                                Thread.currentThread().interrupt();
+                            }));
+                        }
+
+                        for (Future<?> f : futures) {
+                            f.get();
+                        }
+                        executor.shutdown();
+                        executor.awaitTermination(Long.MAX_VALUE, TimeUnit.NANOSECONDS);
+
+                        // Merge per-thread H3 DBs into the final h3_to_osm
+                        stats.setCurrentPhase(3, "3.1: Merging H3 thread DBs");
+                        for (int t = 0; t < threads; t++) {
+                            if (Files.exists(threadH3Paths[t])) {
+                                try (RocksDB threadDb = RocksDB.open(cacheOpts, threadH3Paths[t].toString())) {
+                                    copyH3Db(threadDb, h3ToOsm);
+                                }
+                                cleanup(threadH3Paths[t]);
                             }
-                        }));
+                        }
                     }
-
-                    // Wait for consumers to finish
-                    for (Future<?> f : futures) {
-                        f.get();
-                    }
-                    executor.shutdown();
-                    executor.awaitTermination(Long.MAX_VALUE, TimeUnit.NANOSECONDS);
-                    producer.join();
                 }
+
+                stats.setCurrentPhase(3, "3.2: Compacting Final Databases");
+                // Copy from temporary DBs to final DBs in sorted order
+                copyDb(tmpRegionMeta, regionMeta);
+                copyDb(tmpRegionGeom, regionGeom);
+
+                // Compact finals
+                h3ToOsm.compactRange();
+                regionMeta.compactRange();
+                regionGeom.compactRange();
             }
-
-            stats.setCurrentPhase(3, "3.1: Compacting Final Databases");
-            // Final Step: Copy from temporary DBs to final DBs in sorted order
-            copyDb(tmpRegionMeta, regionMeta);
-            copyDb(tmpRegionGeom, regionGeom);
-            copyH3Db(tmpH3ToOsm, h3ToOsm);
-
-            // Compact finals
-            h3ToOsm.compactRange();
-            regionMeta.compactRange();
-            regionGeom.compactRange();
         }
 
         stats.stop();
@@ -501,9 +492,11 @@ public class StandaloneBoundaryImporter {
 
     /**
      * Converts a JTS Geometry to H3 cells at the specified resolution.
-     * Uses h3.polygonToCellsStream with LatLng vertices. Multipolygons are expanded.
+     * Uses h3.polygonToCells with LatLng vertices. Multipolygons are expanded.
+     * Each thread has its own RocksDB instance (passed via threadH3ToOsm) so no
+     * synchronization is needed on writes.
      */
-    private void processCellsH3Stream(Geometry geom, long osmId, WriteOptions wo, RocksDB tmpH3ToOsm, AtomicLong cellCount, int resolution) {
+    private void processCellsH3Stream(Geometry geom, long osmId, WriteOptions wo, RocksDB threadH3ToOsm, AtomicLong cellCount, int resolution) {
         int num = geom.getNumGeometries();
         for (int i = 0; i < num; i++) {
             Geometry part = geom.getGeometryN(i);
@@ -513,49 +506,45 @@ public class StandaloneBoundaryImporter {
             for (int h = 0; h < poly.getNumInteriorRing(); h++) {
                 holes.add(toLatLng(poly.getInteriorRingN(h).getCoordinates()));
             }
-            try {
-                List<Long> batch = new ArrayList<>(5_000); // Reduced batch size to prevent OOM
-                h3.polygonToCells(outer, holes, resolution).forEach(cell -> {
-                    batch.add(cell);
-                    if (batch.size() >= 5_000) {
-                        try {
-                            processH3Batch(batch, osmId, wo, tmpH3ToOsm, cellCount);
-                        } catch (RocksDBException e) {
-                            throw new RuntimeException(e);
-                        }
-                        batch.clear();
-                    }
-                });
-                if (!batch.isEmpty()) {
-                    processH3Batch(batch, osmId, wo, tmpH3ToOsm, cellCount);
+            List<Long> batch = new ArrayList<>(5_000);
+            h3.polygonToCells(outer, holes, resolution).forEach(cell -> {
+                batch.add(cell);
+                if (batch.size() >= 5_000) {
+                    processH3Batch(batch, osmId, wo, threadH3ToOsm, cellCount);
+                    batch.clear();
                 }
-            } catch (Exception e) {
-                stats.recordError(BoundaryImportStatistics.Stage.PROCESSING_RELATIONS, BoundaryImportStatistics.Kind.GEOMETRY, osmId, "processCellsH3Stream", e);
+            });
+            if (!batch.isEmpty()) {
+                processH3Batch(batch, osmId, wo, threadH3ToOsm, cellCount);
             }
         }
     }
 
-    private void processH3Batch(List<Long> cells, long osmId, WriteOptions wo, RocksDB tmpH3ToOsm, AtomicLong cellCount) throws RocksDBException {
+    /**
+     * Writes H3 cell -> OSM ID associations to a thread-local RocksDB.
+     * No synchronization needed since each thread owns its RocksDB instance.
+     */
+    private void processH3Batch(List<Long> cells, long osmId, WriteOptions wo, RocksDB h3Db, AtomicLong cellCount) {
         List<byte[]> keys = new ArrayList<>(cells.size());
         for (long cell : cells) {
             keys.add(longToBytes(cell));
         }
-
-        // Synchronize to prevent race conditions when multiple threads update the same H3 cell
-        synchronized (tmpH3ToOsm) {
-            List<byte[]> existingValues = tmpH3ToOsm.multiGetAsList(keys);
+        try {
+            List<byte[]> existingValues = h3Db.multiGetAsList(keys);
             try (WriteBatch writeBatch = new WriteBatch()) {
                 for (int i = 0; i < cells.size(); i++) {
                     cellCount.incrementAndGet();
-                    byte[] key = keys.get(i);
                     byte[] existing = existingValues.get(i);
                     byte[] updated = appendOsmIdToArray(existing, osmId);
-                    writeBatch.put(key, updated);
+                    writeBatch.put(keys.get(i), updated);
                 }
-                tmpH3ToOsm.write(wo, writeBatch);
+                h3Db.write(wo, writeBatch);
             }
+        } catch (RocksDBException e) {
+            throw new RuntimeException(e);
         }
     }
+
     private List<LatLng> toLatLng(Coordinate[] coords) {
         List<LatLng> list = new ArrayList<>(coords.length);
         for (Coordinate c : coords) {
@@ -583,8 +572,11 @@ public class StandaloneBoundaryImporter {
         return arr;
     }
 
-    private byte[] intToBytes(int v) {
-        return ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(v).array();
+    private byte[] cellMetaToBytes(long cellCount, int resolution) {
+        return ByteBuffer.allocate(12).order(ByteOrder.BIG_ENDIAN)
+                .putLong(cellCount)
+                .putInt(resolution)
+                .array();
     }
 
     /**
