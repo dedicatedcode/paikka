@@ -79,8 +79,15 @@ public class BoundaryImportStatistics {
     private volatile long phaseStartTime = System.currentTimeMillis();
     private long totalTime;
 
-    private final int TOTAL_STEPS = 2;
+    private final int TOTAL_STEPS = 3;
     private int currentStep = 0;
+
+    private volatile long phase1Duration;
+    private volatile long phase2Duration;
+    private volatile long h3OsmSizeBytes;
+    private volatile long regionMetaSizeBytes;
+    private volatile long regionGeomSizeBytes;
+    private volatile long osmNamesSizeBytes;
 
     public long getNodesCached() {
         return nodesCached.get();
@@ -127,8 +134,14 @@ public class BoundaryImportStatistics {
     }
 
     public void setCurrentPhase(int step, String phase) {
+        long now = System.currentTimeMillis();
+        if (this.currentStep == 1 && step != 1) {
+            this.phase1Duration = now - this.phaseStartTime;
+        } else if (this.currentStep == 2 && step != 2) {
+            this.phase2Duration = now - this.phaseStartTime;
+        }
         this.currentPhase = phase;
-        this.phaseStartTime = System.currentTimeMillis();
+        this.phaseStartTime = now;
         this.currentStep = step;
     }
 
@@ -186,9 +199,16 @@ public class BoundaryImportStatistics {
 
     public String getMemoryStats() {
         Runtime r = Runtime.getRuntime();
-        long used = (r.totalMemory() - r.freeMemory()) / 1024 / 1024 / 1024;
-        long max = r.maxMemory() / 1024 / 1024 / 1024;
-        return String.format("%dGB/%dGB", used, max);
+        long usedBytes = r.totalMemory() - r.freeMemory();
+        long maxBytes = r.maxMemory();
+        return String.format("%.1fG/%.1fG", usedBytes / (1024.0 * 1024.0 * 1024.0), maxBytes / (1024.0 * 1024.0 * 1024.0));
+    }
+
+    public void setOutputSizes(long h3OsmBytes, long regionMetaBytes, long regionGeomBytes, long osmNamesBytes) {
+        this.h3OsmSizeBytes = h3OsmBytes;
+        this.regionMetaSizeBytes = regionMetaBytes;
+        this.regionGeomSizeBytes = regionGeomBytes;
+        this.osmNamesSizeBytes = osmNamesBytes;
     }
 
     public void startProgressReporter() {
@@ -210,13 +230,13 @@ public class BoundaryImportStatistics {
 
                 sb.append(String.format("\033[1;90m[%d/%d]\033[0m ", currentStep, TOTAL_STEPS));
 
-                if (phase.contains("1.1")) {
+                if (phase.contains("Caching")) {
                     long nodesPerSec = phaseSeconds > 0 ? (long) (getNodesCached() / phaseSeconds) : 0;
                     sb.append(String.format("\033[1;36m[%s]\033[0m \033[1mCaching Nodes & Ways\033[0m", formatTime(elapsed)));
                     sb.append(String.format(" │ \033[32mNodes:\033[0m %s \033[33m(%s/s)\033[0m",
                                             formatCompactNumber(getNodesCached()), formatCompactRate(nodesPerSec)));
                     sb.append(String.format(" │ \033[34mWays:\033[0m %s", formatCompactNumber(getWaysCached())));
-                } else if (phase.contains("2.1")) {
+                } else if (phase.contains("Processing")) {
                     long relsPerSec = phaseSeconds > 0 ? (long) (getRelationsProcessed() / phaseSeconds) : 0;
                     double percentage = getRelationsFound() > 0 ? (double) getRelationsProcessed() / getRelationsFound() * 100.0 : 0.0;
                     sb.append(String.format("\033[1;36m[%s]\033[0m \033[1mProcessing Relations & H3\033[0m", formatTime(elapsed)));
@@ -224,6 +244,9 @@ public class BoundaryImportStatistics {
                                             formatCompactNumber(getRelationsProcessed()), formatCompactNumber(getRelationsFound()), formatCompactRate(relsPerSec)));
                     sb.append(String.format(" │ \033[35mProgress:\033[0m %.2f%%", percentage));
                     sb.append(String.format(" │ \033[36mH3 Cells:\033[0m %s", formatCompactNumber(getH3CellsGenerated())));
+                    if (getErrorsTotal() > 0) {
+                        sb.append(String.format(" │ \033[31mErrors:\033[0m %d", getErrorsTotal()));
+                    }
                 } else {
                     sb.append(String.format("\033[1;36m[%s]\033[0m %s", formatTime(elapsed), phase));
                 }
@@ -248,33 +271,43 @@ public class BoundaryImportStatistics {
     }
 
     public void printFinalStatistics() {
-        System.out.println("\n\033[1;36m" + "═".repeat(80) + "\n" + centerText("🎯 BOUNDARY IMPORT STATISTICS") + "\n" + "═".repeat(80) + "\033[0m");
+        System.out.println("\n\033[1;36m" + "═".repeat(80) + "\n" + centerText("BOUNDARY IMPORT STATISTICS") + "\n" + "═".repeat(80) + "\033[0m");
 
         long totalTime = Math.max(1, getTotalTime());
         double totalSeconds = totalTime / 1000.0;
+        double phase1Seconds = Math.max(0.001, phase1Duration / 1000.0);
+        double phase2Seconds = Math.max(0.001, phase2Duration / 1000.0);
 
-        System.out.printf("\n\033[1;37m⏱️  Total Import Time:\033[0m \033[1;33m%s\033[0m%n%n", formatTime(getTotalTime()));
+        System.out.printf("\n\033[1;37mTotal Import Time:\033[0m \033[1;33m%s\033[0m%n%n", formatTime(getTotalTime()));
 
-        System.out.println("\033[1;37m📊 Processing Summary:\033[0m");
-        System.out.println("┌────────────────────┬─────────────────┬─────────────────┐");
-        System.out.println("│ \033[1mEntity Type\033[0m        │ \033[1mTotal Count\033[0m     │ \033[1mAvg Speed\033[0m       │");
-        System.out.println("├────────────────────┼─────────────────┼─────────────────┤");
-        System.out.printf("│ \033[32mNodes Cached\033[0m       │ %15s │ %13s/s │%n",
+        System.out.println("\033[1;37mProcessing Summary:\033[0m");
+        System.out.println("┌──────────────────────┬─────────────────┬─────────────────┐");
+        System.out.println("│ \033[1mEntity Type\033[0m          │ \033[1mTotal Count\033[0m     │ \033[1mAvg Speed\033[0m       │");
+        System.out.println("├──────────────────────┼─────────────────┼─────────────────┤");
+        System.out.printf("│ \033[32mNodes Cached\033[0m         │ %15s │ %13s/s │%n",
                           formatCompactNumber(getNodesCached()),
-                          formatCompactNumber((long) (getNodesCached() / totalSeconds)));
-        System.out.printf("│ \033[34mWays Cached\033[0m        │ %15s │ %13s/s │%n",
+                          formatCompactNumber((long) (getNodesCached() / phase1Seconds)));
+        System.out.printf("│ \033[34mWays Cached\033[0m          │ %15s │ %13s/s │%n",
                           formatCompactNumber(getWaysCached()),
-                          formatCompactNumber((long) (getWaysCached() / totalSeconds)));
-        System.out.printf("│ \033[35mRelations Found\033[0m    │ %15s │ %13s/s │%n",
+                          formatCompactNumber((long) (getWaysCached() / phase1Seconds)));
+        System.out.printf("│ \033[35mRelations Found\033[0m      │ %15s │ %13s/s │%n",
                           formatCompactNumber(getRelationsFound()),
                           formatCompactNumber((long) (getRelationsFound() / totalSeconds)));
-        System.out.printf("│ \033[36mRelations Processed\033[0m│ %15s │ %13s/s │%n",
+        System.out.printf("│ \033[36mRelations Processed\033[0m  │ %15s │ %13s/s │%n",
                           formatCompactNumber(getRelationsProcessed()),
-                          formatCompactNumber((long) (getRelationsProcessed() / totalSeconds)));
-        System.out.printf("│ \033[33mH3 Cells Generated\033[0m │ %15s │ %13s/s │%n",
+                          formatCompactNumber((long) (getRelationsProcessed() / phase2Seconds)));
+        System.out.printf("│ \033[33mH3 Cells Generated\033[0m   │ %15s │ %13s/s │%n",
                           formatCompactNumber(getH3CellsGenerated()),
-                          formatCompactNumber((long) (getH3CellsGenerated() / totalSeconds)));
-        System.out.println("└────────────────────┴─────────────────┴─────────────────┘");
+                          formatCompactNumber((long) (getH3CellsGenerated() / phase2Seconds)));
+        System.out.println("└──────────────────────┴─────────────────┴─────────────────┘");
+
+        if (h3OsmSizeBytes > 0) {
+            System.out.println("\n\033[1;37mOutput Database Sizes:\033[0m");
+            System.out.printf("  \033[36mh3_to_osm:\033[0m       %s%n", formatSize(h3OsmSizeBytes));
+            System.out.printf("  \033[36mregion_metadata:\033[0m  %s%n", formatSize(regionMetaSizeBytes));
+            System.out.printf("  \033[36mregion_geometry:\033[0m  %s%n", formatSize(regionGeomSizeBytes));
+            System.out.printf("  \033[36mosm_names.tsv:\033[0m    %s%n", formatSize(osmNamesSizeBytes));
+        }
 
         System.out.println();
     }
@@ -329,6 +362,13 @@ public class BoundaryImportStatistics {
         if (n < 1000) return String.valueOf(n);
         if (n < 1_000_000) return String.format("%.1fk", n / 1000.0);
         return String.format("%.1fM", n / 1_000_000.0);
+    }
+
+    private String formatSize(long bytes) {
+        if (bytes < 1024) return bytes + " B";
+        if (bytes < 1024 * 1024) return String.format("%.1f KB", bytes / 1024.0);
+        if (bytes < 1024L * 1024 * 1024) return String.format("%.1f MB", bytes / (1024.0 * 1024.0));
+        return String.format("%.2f GB", bytes / (1024.0 * 1024.0 * 1024.0));
     }
 
     private String centerText(String text) {

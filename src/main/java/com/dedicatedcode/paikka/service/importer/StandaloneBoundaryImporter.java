@@ -154,7 +154,7 @@ public class StandaloneBoundaryImporter {
                 }
 
                 for (String pbfPath : pbfPaths) {
-                    stats.setCurrentPhase(1, "1.1: Caching Nodes & Ways");
+                    stats.setCurrentPhase(1, "Phase 1: Caching Nodes & Ways");
 
                     // ------ Single pass: cache nodes/ways and collect relation stubs ------
                     List<RelationStub> stubs = new ArrayList<>(500_000);
@@ -210,7 +210,7 @@ public class StandaloneBoundaryImporter {
                     }
 
                     // ------ Process Relations via partitioned thread pool ------
-                    stats.setCurrentPhase(2, "2.1: Processing Relations & H3");
+                    stats.setCurrentPhase(2, "Phase 2: Processing Relations & H3");
 
                     if (!stubs.isEmpty()) {
                         ExecutorService executor = Executors.newFixedThreadPool(threads);
@@ -326,6 +326,13 @@ public class StandaloneBoundaryImporter {
                 regionGeom.compactRange();
             }
         }
+
+        stats.setOutputSizes(
+                dirSize(h3ToOsmPath),
+                dirSize(regionMetaPath),
+                dirSize(regionGeomPath),
+                fileSize(nameSql)
+        );
 
         stats.stop();
         stats.setTotalTime(System.currentTimeMillis() - stats.getStartTime());
@@ -651,6 +658,31 @@ public class StandaloneBoundaryImporter {
             } catch (IOException e) {
                 System.err.println("Failed cleanup: " + p + " -> " + e.getMessage());
             }
+        }
+    }
+
+    private long dirSize(Path dir) {
+        try {
+            return Files.walk(dir)
+                    .filter(Files::isRegularFile)
+                    .mapToLong(p -> {
+                        try {
+                            return Files.size(p);
+                        } catch (IOException e) {
+                            return 0L;
+                        }
+                    })
+                    .sum();
+        } catch (IOException e) {
+            return 0L;
+        }
+    }
+
+    private long fileSize(Path file) {
+        try {
+            return Files.exists(file) ? Files.size(file) : 0L;
+        } catch (IOException e) {
+            return 0L;
         }
     }
 }
