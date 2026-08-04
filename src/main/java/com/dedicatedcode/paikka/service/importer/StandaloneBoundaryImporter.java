@@ -304,11 +304,13 @@ public class StandaloneBoundaryImporter {
 
                         // Merge per-thread H3 DBs into the final h3_to_osm
                         stats.setCurrentPhase(3, "3.1: Merging H3 thread DBs");
+                        stats.setMergedThreadCount(threads);
                         for (int t = 0; t < threads; t++) {
                             if (Files.exists(threadH3Paths[t])) {
                                 try (RocksDB threadDb = RocksDB.open(cacheOpts, threadH3Paths[t].toString())) {
                                     copyH3Db(threadDb, h3ToOsm);
                                 }
+                                stats.incrementMergedThreadDatabasesProcessed();
                                 cleanup(threadH3Paths[t]);
                             }
                         }
@@ -367,6 +369,7 @@ public class StandaloneBoundaryImporter {
                     target.put(wo, key, merged);
                 }
                 it.next();
+                this.stats.incrementMergedEntriesProcessed();
             }
         }
     }

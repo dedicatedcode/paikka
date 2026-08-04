@@ -73,6 +73,10 @@ public class BoundaryImportStatistics {
     private final AtomicLong relationsProcessed = new AtomicLong(0);
     private final AtomicLong h3CellsGenerated = new AtomicLong(0);
 
+    private volatile int mergedThreadDatabasesTotal;
+    private final AtomicLong mergedThreadDatabasesProcessed = new AtomicLong(0);
+    private final AtomicLong mergedEntriesProcessed = new AtomicLong(0);
+
     private volatile String currentPhase = "Initializing";
     private volatile boolean running = true;
     private final long startTime = System.currentTimeMillis();
@@ -127,6 +131,30 @@ public class BoundaryImportStatistics {
 
     public void addH3CellsGenerated(long count) {
         h3CellsGenerated.addAndGet(count);
+    }
+
+    public void setMergedThreadCount(int count) {
+        this.mergedThreadDatabasesTotal = count;
+    }
+
+    public int getMergedThreadDatabasesTotal() {
+        return mergedThreadDatabasesTotal;
+    }
+
+    public long getMergedThreadDatabasesProcessed() {
+        return mergedThreadDatabasesProcessed.get();
+    }
+
+    public void incrementMergedThreadDatabasesProcessed() {
+        mergedThreadDatabasesProcessed.incrementAndGet();
+    }
+
+    public long getMergedEntriesProcessed() {
+        return mergedEntriesProcessed.get();
+    }
+
+    public void incrementMergedEntriesProcessed() {
+        mergedEntriesProcessed.incrementAndGet();
     }
 
     public String getCurrentPhase() {
@@ -247,6 +275,15 @@ public class BoundaryImportStatistics {
                     if (getErrorsTotal() > 0) {
                         sb.append(String.format(" │ \033[31mErrors:\033[0m %d", getErrorsTotal()));
                     }
+                } else if (phase.contains("Merging")) {
+                    long dbsProcessed = mergedThreadDatabasesProcessed.get();
+                    int dbsTotal = mergedThreadDatabasesTotal;
+                    long entriesProcessed = mergedEntriesProcessed.get();
+                    long entriesPerSec = phaseSeconds > 0 ? (long) (entriesProcessed / phaseSeconds) : 0;
+                    sb.append(String.format("\033[1;36m[%s]\033[0m \033[1mMerging H3 thread DBs\033[0m", formatTime(elapsed)));
+                    sb.append(String.format(" │ \033[32mDBs:\033[0m %d/%d", dbsProcessed, dbsTotal));
+                    sb.append(String.format(" │ \033[36mEntries:\033[0m %s \033[33m(%s/s)\033[0m",
+                            formatCompactNumber(entriesProcessed), formatCompactRate(entriesPerSec)));
                 } else {
                     sb.append(String.format("\033[1;36m[%s]\033[0m %s", formatTime(elapsed), phase));
                 }
@@ -277,6 +314,8 @@ public class BoundaryImportStatistics {
         double totalSeconds = totalTime / 1000.0;
         double phase1Seconds = Math.max(0.001, phase1Duration / 1000.0);
         double phase2Seconds = Math.max(0.001, phase2Duration / 1000.0);
+        long phase3Duration = totalTime - phase1Duration - phase2Duration;
+        double phase3Seconds = Math.max(0.001, phase3Duration / 1000.0);
 
         System.out.printf("\n\033[1;37mTotal Import Time:\033[0m \033[1;33m%s\033[0m%n%n", formatTime(getTotalTime()));
 
@@ -299,6 +338,9 @@ public class BoundaryImportStatistics {
         System.out.printf("│ \033[33mH3 Cells Generated\033[0m   │ %15s │ %13s/s │%n",
                           formatCompactNumber(getH3CellsGenerated()),
                           formatCompactNumber((long) (getH3CellsGenerated() / phase2Seconds)));
+        System.out.printf("│ \033[36mH3 Entries Merged\033[0m    │ %15s │ %13s/s │%n",
+                          formatCompactNumber(getMergedEntriesProcessed()),
+                          formatCompactNumber((long) (getMergedEntriesProcessed() / phase3Seconds)));
         System.out.println("└──────────────────────┴─────────────────┴─────────────────┘");
 
         if (h3OsmSizeBytes > 0) {
