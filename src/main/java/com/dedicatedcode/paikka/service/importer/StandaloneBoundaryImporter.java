@@ -45,7 +45,7 @@ import java.util.concurrent.atomic.AtomicLong;
  * Reads a pre-filtered boundaries_only.pbf (Nodes -> Ways -> Relations ordered)
  * and produces three RocksDB databases for offline mobile lookup:
  * - h3_to_osm: H3_CELL_ID (uint64) -> List[OSM_ID] (raw byte array)
- * - region_metadata: OSM_ID -> [total cell count (long), h3 resolution (int)] (12 bytes)
+ * - region_metadata: OSM_ID -> [total cell count (long), h3 resolution (int), admin_level (int)] (16 bytes)
  * - region_geometry: OSM_ID -> simplified WKB (bytes)
  */
 @Service
@@ -275,7 +275,7 @@ public class StandaloneBoundaryImporter {
                                                 stats.addH3CellsGenerated(totalCells);
 
                                                 startTime = System.currentTimeMillis();
-                                                tmpRegionMeta.put(wo, longToBytes(stub.osmId()), cellMetaToBytes(totalCells, resolution));
+                                                tmpRegionMeta.put(wo, longToBytes(stub.osmId()), cellMetaToBytes(totalCells, resolution, stub.adminLevel()));
                                                 if (stub.adminLevel() <= 3) {
                                                     logger.debug("H3 Cells written to tmpRegionMeta in {}ms for OSM ID: {}", System.currentTimeMillis() - startTime, stub.osmId());
                                                 }
@@ -582,10 +582,11 @@ public class StandaloneBoundaryImporter {
         return arr;
     }
 
-    private byte[] cellMetaToBytes(long cellCount, int resolution) {
-        return ByteBuffer.allocate(12).order(ByteOrder.BIG_ENDIAN)
+    private byte[] cellMetaToBytes(long cellCount, int resolution, int adminLevel) {
+        return ByteBuffer.allocate(16).order(ByteOrder.BIG_ENDIAN)
                 .putLong(cellCount)
                 .putInt(resolution)
+                .putInt(adminLevel)
                 .array();
     }
 

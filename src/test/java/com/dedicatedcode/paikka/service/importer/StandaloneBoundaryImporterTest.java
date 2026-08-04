@@ -135,15 +135,18 @@ class StandaloneBoundaryImporterTest {
             assertEquals(8, key.length, "Region metadata key should be 8 bytes (OSM ID)");
 
             byte[] val = it.value();
-            assertEquals(12, val.length, "Value should be 12 bytes (8-byte cell count + 4-byte resolution)");
+            assertEquals(16, val.length, "Value should be 16 bytes (8-byte cell count + 4-byte resolution + 4-byte admin level)");
 
             ByteBuffer bb = ByteBuffer.wrap(val).order(ByteOrder.BIG_ENDIAN);
             long cellCount = bb.getLong();
             int resolution = bb.getInt();
+            int adminLevel = bb.getInt();
 
             assertTrue(cellCount > 0, "Cell count should be positive, got: " + cellCount);
             assertTrue(resolution >= 4 && resolution <= 9,
                     "Resolution should be between 4 and 9, got: " + resolution);
+            assertTrue(adminLevel >= 1 && adminLevel <= 11,
+                    "Admin level should be between 2 and 11, got: " + adminLevel);
 
             int count = 0;
             it.seekToFirst();
@@ -167,17 +170,20 @@ class StandaloneBoundaryImporterTest {
             int checked = 0;
             while (it.isValid()) {
                 byte[] val = it.value();
-                assertEquals(12, val.length,
-                        "Every region_metadata entry should be 12 bytes");
+                assertEquals(16, val.length,
+                        "Every region_metadata entry should be 16 bytes");
 
                 ByteBuffer bb = ByteBuffer.wrap(val).order(ByteOrder.BIG_ENDIAN);
                 long cellCount = bb.getLong();
                 int resolution = bb.getInt();
+                int adminLevel = bb.getInt();
 
                 assertTrue(cellCount > 0,
                         "Cell count should be positive for entry " + checked);
                 assertTrue(resolution >= 4 && resolution <= 9,
                         "Resolution should be 4-9 for entry " + checked + ", got: " + resolution);
+                assertTrue(adminLevel >= 1 && adminLevel <= 11,
+                        "Admin level should be 2-11 for entry " + checked + ", got: " + adminLevel);
 
                 checked++;
                 it.next();
