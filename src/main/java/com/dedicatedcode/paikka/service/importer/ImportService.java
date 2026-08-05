@@ -35,6 +35,7 @@ import de.topobyte.osm4j.pbf.seq.PbfIterator;
 import org.locationtech.jts.algorithm.construct.MaximumInscribedCircle;
 import org.locationtech.jts.geom.*;
 import org.locationtech.jts.io.WKBWriter;
+import org.locationtech.jts.operation.polygonize.Polygonizer;
 import org.rocksdb.*;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -1524,39 +1525,46 @@ public class ImportService {
         List<List<Coordinate>> outerRings = buildConnectedRings(toList(rec.outer), nodeCache, wayIndexDb);
         List<List<Coordinate>> innerRings = buildConnectedRings(toList(rec.inner), nodeCache, wayIndexDb);
         if (outerRings.isEmpty()) return null;
-        List<Polygon> validPolygons = new ArrayList<>();
+
+        Polygonizer polygonizer = new Polygonizer();
         for (List<Coordinate> outerRing : outerRings) {
             try {
-                LinearRing shell = GEOMETRY_FACTORY.createLinearRing(outerRing.toArray(new Coordinate[0]));
-                List<LinearRing> holes = new ArrayList<>();
-                for (List<Coordinate> innerRing : innerRings)
-                    try {
-                        holes.add(GEOMETRY_FACTORY.createLinearRing(innerRing.toArray(new Coordinate[0])));
-                    } catch (Exception e) {
-                        stats.recordError(ImportStatistics.Stage.PROCESSING_ADMIN_BOUNDARIES, Kind.READ, rec.osmId, "rocks-get:way_index", e);
-                    }
-                Polygon polygon = GEOMETRY_FACTORY.createPolygon(shell, holes.toArray(new LinearRing[0]));
-                if (polygon.isValid()) {
-                    validPolygons.add(polygon);
-                } else {
-                    try {
-                        org.locationtech.jts.geom.Geometry repaired = polygon.buffer(0);
-                        if (repaired != null && repaired.isValid() && !repaired.isEmpty()) {
-                            for (int i = 0; i < repaired.getNumGeometries(); i++) {
-                                org.locationtech.jts.geom.Geometry part = repaired.getGeometryN(i);
-                                if (part instanceof Polygon && part.isValid()) {
-                                    validPolygons.add((Polygon) part);
-                                }
-                            }
-                        }
-                    } catch (Exception repairEx) {
-                        stats.recordError(ImportStatistics.Stage.PROCESSING_ADMIN_BOUNDARIES, Kind.GEOMETRY, rec.osmId, "repair-polygon", repairEx);
-                    }
-                }
+                polygonizer.add(GEOMETRY_FACTORY.createLinearRing(outerRing.toArray(new Coordinate[0])));
             } catch (Exception e) {
-                stats.recordError(ImportStatistics.Stage.PROCESSING_ADMIN_BOUNDARIES, Kind.GEOMETRY, null, "build-boundary-geometry", e);
+                stats.recordError(ImportStatistics.Stage.PROCESSING_ADMIN_BOUNDARIES, Kind.GEOMETRY, rec.osmId, "createLinearRing-outer", e);
             }
         }
+        for (List<Coordinate> innerRing : innerRings) {
+            try {
+                polygonizer.add(GEOMETRY_FACTORY.createLinearRing(innerRing.toArray(new Coordinate[0])));
+            } catch (Exception e) {
+                stats.recordError(ImportStatistics.Stage.PROCESSING_ADMIN_BOUNDARIES, Kind.READ, rec.osmId, "buildConnectedRings-inner", e);
+            }
+        }
+
+        @SuppressWarnings("unchecked")
+        Collection<Polygon> polygons = polygonizer.getPolygons();
+        List<Polygon> validPolygons = new ArrayList<>();
+        for (Polygon p : polygons) {
+            if (p.isValid()) {
+                validPolygons.add(p);
+            } else {
+                try {
+                    org.locationtech.jts.geom.Geometry repaired = p.buffer(0);
+                    if (repaired != null && repaired.isValid() && !repaired.isEmpty()) {
+                        for (int i = 0; i < repaired.getNumGeometries(); i++) {
+                            org.locationtech.jts.geom.Geometry part = repaired.getGeometryN(i);
+                            if (part instanceof Polygon polygon && polygon.isValid()) {
+                                validPolygons.add(polygon);
+                            }
+                        }
+                    }
+                } catch (Exception repairEx) {
+                    stats.recordError(ImportStatistics.Stage.PROCESSING_ADMIN_BOUNDARIES, Kind.GEOMETRY, rec.osmId, "repair-polygon", repairEx);
+                }
+            }
+        }
+
         if (validPolygons.isEmpty()) return null;
         return validPolygons.size() == 1 ? validPolygons.getFirst() : GEOMETRY_FACTORY.createMultiPolygon(validPolygons.toArray(new Polygon[0]));
     }
