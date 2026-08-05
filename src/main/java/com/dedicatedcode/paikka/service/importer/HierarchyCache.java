@@ -25,6 +25,8 @@ import org.locationtech.jts.geom.Envelope;
 import org.locationtech.jts.geom.Location;
 import org.locationtech.jts.io.WKBReader;
 import org.rocksdb.RocksDB;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
@@ -32,6 +34,8 @@ import java.util.Comparator;
 import java.util.List;
 
 public class HierarchyCache {
+    private static final Logger log = LoggerFactory.getLogger(HierarchyCache.class);
+
     private final RocksDB boundariesDb;
     private final RocksDB gridIndexDb;
     private final S2Helper s2Helper;
@@ -108,14 +112,20 @@ public class HierarchyCache {
 
             IndexedPointInAreaLocator locator = new IndexedPointInAreaLocator(wkbReader.read(wkb));
             return new CachedBoundary(b.level(), b.name(), b.code(), b.osmId(), mir, mbr, locator);
-        } catch (Exception e) { return null; }
+        } catch (Exception e) {
+            log.warn("Failed to load boundary {}: {}", id, e.getMessage());
+            return null;
+        }
     }
 
     private long[] fetchGridCandidates(long cellId) {
         try {
             byte[] data = gridIndexDb.get(s2Helper.longToByteArray(cellId));
             return (data == null) ? null : s2Helper.byteArrayToLongArray(data);
-        } catch (Exception e) { return null; }
+        } catch (Exception e) {
+            log.warn("Failed to fetch grid candidates for cell {}: {}", cellId, e.getMessage());
+            return null;
+        }
     }
 
     public record CachedBoundary(int level, String name, String code, long osmId, Envelope mir, Envelope mbr,
