@@ -1669,12 +1669,17 @@ public class ImportService {
 
     private boolean isAdministrativeBoundary(OsmRelation relation) {
         boolean hasBoundaryTag = false, hasAdminLevel = false;
+        String typeValue = null;
         for (int i = 0; i < relation.getNumberOfTags(); i++) {
             OsmTag tag = relation.getTag(i);
             if ("boundary".equals(tag.getKey()) && "administrative".equals(tag.getValue())) hasBoundaryTag = true;
             if ("admin_level".equals(tag.getKey())) hasAdminLevel = true;
-            if ("type".equals(tag.getKey()) && "boundary".equals(tag.getValue())) hasBoundaryTag = true;
+            if ("type".equals(tag.getKey())) {
+                typeValue = tag.getValue();
+                if ("boundary".equals(typeValue) || "multipolygon".equals(typeValue)) hasBoundaryTag = true;
+            }
         }
+        if ("multilinestring".equals(typeValue) || "route".equals(typeValue)) return false;
         return hasBoundaryTag && hasAdminLevel;
     }
 
