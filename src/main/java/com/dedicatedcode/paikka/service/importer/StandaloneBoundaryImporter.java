@@ -23,6 +23,7 @@ import de.topobyte.osm4j.core.model.iface.*;
 import de.topobyte.osm4j.pbf.seq.PbfIterator;
 import org.locationtech.jts.geom.*;
 import org.locationtech.jts.io.WKBWriter;
+import org.locationtech.jts.operation.polygonize.Polygonizer;
 import org.rocksdb.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -395,26 +396,26 @@ public class StandaloneBoundaryImporter {
         List<List<Coordinate>> innerRings = stitchRings(stub.innerWays(), nodeCache, wayCache);
         if (outerRings.isEmpty()) return null;
 
-        List<Polygon> polygons = new ArrayList<>();
+        Polygonizer polygonizer = new Polygonizer();
         for (List<Coordinate> outer : outerRings) {
             try {
-                LinearRing shell = GEOMETRY_FACTORY.createLinearRing(outer.toArray(new Coordinate[0]));
-                List<LinearRing> holes = new ArrayList<>();
-                for (List<Coordinate> inner : innerRings) {
-                    try {
-                        holes.add(GEOMETRY_FACTORY.createLinearRing(inner.toArray(new Coordinate[0])));
-                    } catch (Exception e) {
-                        stats.recordError(BoundaryImportStatistics.Stage.PROCESSING_RELATIONS, BoundaryImportStatistics.Kind.GEOMETRY, stub.osmId(), "createLinearRing-inner", e);
-                    }
-                }
-                Polygon p = GEOMETRY_FACTORY.createPolygon(shell, holes.toArray(new LinearRing[0]));
-                if (p.isValid()) polygons.add(p);
+                polygonizer.add(GEOMETRY_FACTORY.createLinearRing(outer.toArray(new Coordinate[0])));
             } catch (Exception e) {
-                stats.recordError(BoundaryImportStatistics.Stage.PROCESSING_RELATIONS, BoundaryImportStatistics.Kind.GEOMETRY, stub.osmId(), "buildMultiPolygon", e);
+                stats.recordError(BoundaryImportStatistics.Stage.PROCESSING_RELATIONS, BoundaryImportStatistics.Kind.GEOMETRY, stub.osmId(), "createLinearRing-outer", e);
             }
         }
+        for (List<Coordinate> inner : innerRings) {
+            try {
+                polygonizer.add(GEOMETRY_FACTORY.createLinearRing(inner.toArray(new Coordinate[0])));
+            } catch (Exception e) {
+                stats.recordError(BoundaryImportStatistics.Stage.PROCESSING_RELATIONS, BoundaryImportStatistics.Kind.GEOMETRY, stub.osmId(), "createLinearRing-inner", e);
+            }
+        }
+
+        @SuppressWarnings("unchecked")
+        Collection<Polygon> polygons = polygonizer.getPolygons();
         if (polygons.isEmpty()) return null;
-        return polygons.size() == 1 ? polygons.getFirst() : GEOMETRY_FACTORY.createMultiPolygon(polygons.toArray(new Polygon[0]));
+        return polygons.size() == 1 ? polygons.iterator().next() : GEOMETRY_FACTORY.createMultiPolygon(polygons.toArray(new Polygon[0]));
     }
 
     private List<List<Coordinate>> stitchRings(List<Long> wayIds, RocksDB nodeCache, RocksDB wayCache) {
