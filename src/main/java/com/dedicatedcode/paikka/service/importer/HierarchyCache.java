@@ -17,12 +17,13 @@
 package com.dedicatedcode.paikka.service.importer;
 
 import com.dedicatedcode.paikka.flatbuffers.Boundary;
+import com.dedicatedcode.paikka.service.S2Geometry;
 import com.dedicatedcode.paikka.service.S2Helper;
 import com.github.benmanes.caffeine.cache.Cache;
-import org.locationtech.jts.algorithm.locate.IndexedPointInAreaLocator;
-import org.locationtech.jts.geom.Coordinate;
+import com.google.common.geometry.S2LatLng;
+import com.google.common.geometry.S2Point;
+import com.google.common.geometry.S2Polygon;
 import org.locationtech.jts.geom.Envelope;
-import org.locationtech.jts.geom.Location;
 import org.locationtech.jts.io.WKBReader;
 import org.rocksdb.RocksDB;
 import org.slf4j.Logger;
@@ -55,7 +56,6 @@ public class HierarchyCache {
 
     public List<SimpleHierarchyItem> resolve(Double lon, Double lat) {
         long currentS2Cell = s2Helper.getS2CellId(lon, lat, S2Helper.GRID_LEVEL);
-
         if (currentS2Cell == lastS2CellId && lastHierarchy != null && lastCellFullyContained) {
             return lastHierarchy;
         }
@@ -67,7 +67,7 @@ public class HierarchyCache {
 
     private List<SimpleHierarchyItem> refresh(double lon, double lat, long cellId) {
         long[] candidates = fetchGridCandidates(cellId);
-        List<CachedBoundary> lastActiveBoundaries = new ArrayList<>(); // Reset this list
+        List<CachedBoundary> lastActiveBoundaries = new ArrayList<>();
 
         Envelope cellEnvelope = s2Helper.getCellEnvelope(cellId);
         boolean allLayersContainCell = true;
@@ -77,10 +77,9 @@ public class HierarchyCache {
                 CachedBoundary cb = globalCache.get(id, this::fetchFromDb);
 
                 if (cb != null && cb.contains(lon, lat)) {
-                    lastActiveBoundaries.add(cb); // Store for Semi-Fast Path
+                    lastActiveBoundaries.add(cb);
 
-                    // Keep the MIR check for the Ultra-Fast path
-                    if (cb.mir == null || !cb.mir.contains(cellEnvelope)) {
+                    if (cb.antimeridianCrossing || cb.mir == null || !cb.mir.contains(cellEnvelope)) {
                         allLayersContainCell = false;
                     }
                 } else {
@@ -103,15 +102,23 @@ public class HierarchyCache {
             if (data == null) return null;
             Boundary b = Boundary.getRootAsBoundary(ByteBuffer.wrap(data));
 
-            Envelope mir = b.mirMinX() != 0 ? new Envelope(b.mirMinX(), b.mirMaxX(), b.mirMinY(), b.mirMaxY()) : null;
             Envelope mbr = new Envelope(b.minX(), b.maxX(), b.minY(), b.maxY());
+            boolean antimeridianCrossing = mbr.getWidth() > 180;
+
+            Envelope mir = null;
+            if (!antimeridianCrossing && b.mirMinX() != 0) {
+                mir = new Envelope(b.mirMinX(), b.mirMaxX(), b.mirMinY(), b.mirMaxY());
+            }
 
             ByteBuffer wkbBuf = b.geometry().dataAsByteBuffer();
             byte[] wkb = new byte[wkbBuf.remaining()];
             wkbBuf.get(wkb);
 
-            IndexedPointInAreaLocator locator = new IndexedPointInAreaLocator(wkbReader.read(wkb));
-            return new CachedBoundary(b.level(), b.name(), b.code(), b.osmId(), mir, mbr, locator);
+            org.locationtech.jts.geom.Geometry jtsGeom = wkbReader.read(wkb);
+            List<S2Polygon> s2Polygons = S2Geometry.toS2Polygons(jtsGeom);
+            if (s2Polygons.isEmpty()) return null;
+
+            return new CachedBoundary(b.level(), b.name(), b.code(), b.osmId(), mir, mbr, antimeridianCrossing, s2Polygons);
         } catch (Exception e) {
             log.warn("Failed to load boundary {}: {}", id, e.getMessage());
             return null;
@@ -128,14 +135,17 @@ public class HierarchyCache {
         }
     }
 
-    public record CachedBoundary(int level, String name, String code, long osmId, Envelope mir, Envelope mbr,
-                                 IndexedPointInAreaLocator locator) {
+    public record CachedBoundary(int level, String name, String code, long osmId,
+                                 Envelope mir, Envelope mbr, boolean antimeridianCrossing,
+                                 List<S2Polygon> s2Polygons) {
         public boolean contains(double lon, double lat) {
             if (mir != null && mir.contains(lon, lat)) return true;
-            if (!mbr.contains(lon, lat)) return false;
-            synchronized (this) {
-                return locator.locate(new Coordinate(lon, lat)) != Location.EXTERIOR;
+            if (!antimeridianCrossing && !mbr.contains(lon, lat)) return false;
+            S2Point point = S2LatLng.fromDegrees(lat, lon).toPoint();
+            for (S2Polygon sp : s2Polygons) {
+                if (sp.contains(point)) return true;
             }
+            return false;
         }
     }
 
