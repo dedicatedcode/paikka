@@ -566,9 +566,6 @@ public class ImportService {
                                             }
                                         }
 
-                                        if (rec.id == 632074828) {
-                                            System.out.println("rec.id == 632074828");
-                                        }
                                         List<HierarchyCache.SimpleHierarchyItem> hierarchy = hierarchyCache.resolve(lon, lat);
 
                                         PoiData poiData = createPoiDataFromIndex(rec, lat, lon, hierarchy, boundaryWkb);
