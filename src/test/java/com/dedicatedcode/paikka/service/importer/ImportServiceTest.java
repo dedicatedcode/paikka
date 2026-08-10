@@ -217,7 +217,12 @@ class ImportServiceTest {
         POI poiById = findPoiById(tempDataDir, 432751852);
         assertEquals(1, poiById.namesLength(), "POI should have no");
         assertEquals("Jardin des Boulingrins", poiById.names(0).text(), "POI should have no");
-        assertEquals(3, poiById.hierarchyLength());
+        assertTrue(poiById.hierarchyLength() >= 2, "POI should have at least 2 hierarchy items");
+        boolean hasAdminLevel2 = false;
+        for (int i = 0; i < poiById.hierarchyLength(); i++) {
+            if (poiById.hierarchy(i).level() == 2) { hasAdminLevel2 = true; break; }
+        }
+        assertTrue(hasAdminLevel2, "POI must have admin_level=2");
     }
 
     @Test

@@ -20,13 +20,14 @@ import com.dedicatedcode.paikka.config.PaikkaConfiguration;
 import com.dedicatedcode.paikka.flatbuffers.*;
 import com.dedicatedcode.paikka.flatbuffers.Geometry;
 import com.dedicatedcode.paikka.service.PaikkaMetadata;
+import com.dedicatedcode.paikka.service.S2Geometry;
 import com.dedicatedcode.paikka.service.S2Helper;
 import com.dedicatedcode.paikka.service.importer.ImportStatistics.Kind;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import com.google.common.geometry.S2CellId;
 import com.google.common.geometry.S2LatLng;
-import com.google.common.geometry.S2LatLngRect;
+import com.google.common.geometry.S2Polygon;
 import com.google.common.geometry.S2RegionCoverer;
 import com.google.flatbuffers.FlatBufferBuilder;
 import de.topobyte.osm4j.core.access.OsmIterator;
@@ -565,7 +566,11 @@ public class ImportService {
                                             }
                                         }
 
+                                        if (rec.id == 632074828) {
+                                            System.out.println("rec.id == 632074828");
+                                        }
                                         List<HierarchyCache.SimpleHierarchyItem> hierarchy = hierarchyCache.resolve(lon, lat);
+
                                         PoiData poiData = createPoiDataFromIndex(rec, lat, lon, hierarchy, boundaryWkb);
                                         localShardBuffer.computeIfAbsent(s2Helper.getShardId(lat, lon), k -> new ArrayList<>()).add(poiData);
                                     } catch (Exception e) {
@@ -1725,9 +1730,26 @@ public class ImportService {
                         usedWays.add(entry.getKey());
                         found = true;
                         break;
-                    } else if (ringEnd.equals2D(nextEnd)) {
+                    }
+                    if (ringEnd.equals2D(nextEnd)) {
                         Collections.reverse(nextWay);
                         ring.addAll(nextWay.subList(1, nextWay.size()));
+                        usedWays.add(entry.getKey());
+                        found = true;
+                        break;
+                    }
+                    double wrapOffset = antimeridianWrapOffset(ringEnd, nextStart);
+                    if (wrapOffset != 0) {
+                        addUnwrappedCoords(ring, nextWay, wrapOffset, 1);
+                        usedWays.add(entry.getKey());
+                        found = true;
+                        break;
+                    }
+                    wrapOffset = antimeridianWrapOffset(ringEnd, nextEnd);
+                    if (wrapOffset != 0) {
+                        List<Coordinate> reversed = new ArrayList<>(nextWay);
+                        Collections.reverse(reversed);
+                        addUnwrappedCoords(ring, reversed, wrapOffset, 1);
                         usedWays.add(entry.getKey());
                         found = true;
                         break;
@@ -1741,6 +1763,23 @@ public class ImportService {
         return rings;
     }
 
+    static double antimeridianWrapOffset(Coordinate a, Coordinate b) {
+        if (Math.abs(a.y - b.y) > 0.001) return 0;
+        double dLonDirect = b.x - a.x;
+        double dLonShort = ((dLonDirect + 180) % 360) - 180;
+        if (Math.abs(dLonShort) < 2.0 && Math.abs(dLonDirect) > 170) {
+            return dLonDirect < 0 ? 360.0 : -360.0;
+        }
+        return 0;
+    }
+
+    static void addUnwrappedCoords(List<Coordinate> ring, List<Coordinate> way, double offset, int startIdx) {
+        for (int i = startIdx; i < way.size(); i++) {
+            Coordinate c = way.get(i);
+            ring.add(new Coordinate(c.x + offset, c.y));
+        }
+    }
+
     private void storeBoundary(long osmId, int level, String name, String code,
                                org.locationtech.jts.geom.Geometry geometry,
                                RocksBatchWriter boundariesWriter, RocksDB gridsIndexDb) throws Exception {
@@ -1749,23 +1788,26 @@ public class ImportService {
         int geomDataOffset = Geometry.createDataVector(fbb, wkb);
         int geomOffset = Geometry.createGeometry(fbb, geomDataOffset);
         Envelope mbr = geometry.getEnvelopeInternal();
+        boolean antimeridianCrossing = mbr.getWidth() > 180;
 
         double mirMinX = 0, mirMinY = 0, mirMaxX = 0, mirMaxY = 0;
         boolean hasMir = false;
-        try {
-            MaximumInscribedCircle mic = new MaximumInscribedCircle(geometry, 0.00001);
-            double radius = mic.getRadiusLine().getLength();
-            if (radius > 0) {
-                Coordinate center = mic.getCenter().getCoordinate();
-                double offset = radius / Math.sqrt(2);
-                mirMinX = center.x - offset;
-                mirMinY = center.y - offset;
-                mirMaxX = center.x + offset;
-                mirMaxY = center.y + offset;
-                hasMir = true;
+        if (!antimeridianCrossing) {
+            try {
+                MaximumInscribedCircle mic = new MaximumInscribedCircle(geometry, 0.00001);
+                double radius = mic.getRadiusLine().getLength();
+                if (radius > 0) {
+                    Coordinate center = mic.getCenter().getCoordinate();
+                    double offset = radius / Math.sqrt(2);
+                    mirMinX = center.x - offset;
+                    mirMinY = center.y - offset;
+                    mirMaxX = center.x + offset;
+                    mirMaxY = center.y + offset;
+                    hasMir = true;
+                }
+            } catch (Exception e) {
+                // MIR computation failed
             }
-        } catch (Exception e) {
-            // MIR computation failed
         }
 
         int nameOffset = fbb.createString(name != null ? name : "Unknown");
@@ -1789,16 +1831,19 @@ public class ImportService {
         int root = Boundary.endBoundary(fbb);
         fbb.finish(root);
 
-        S2LatLng low = S2LatLng.fromDegrees(mbr.getMinY(), mbr.getMinX());
-        S2LatLng high = S2LatLng.fromDegrees(mbr.getMaxY(), mbr.getMaxX());
-        S2LatLngRect rect = S2LatLngRect.fromPointPair(low, high);
+        List<S2Polygon> s2Polygons = S2Geometry.toS2Polygons(geometry);
         S2RegionCoverer coverer = S2RegionCoverer.builder()
                 .setMinLevel(S2Helper.GRID_LEVEL)
                 .setMaxLevel(S2Helper.GRID_LEVEL)
                 .setMaxCells(Integer.MAX_VALUE)
                 .build();
         ArrayList<S2CellId> covering = new ArrayList<>();
-        coverer.getCovering(rect, covering);
+        ArrayList<S2CellId> partList = new ArrayList<>();
+        for (S2Polygon sp : s2Polygons) {
+            partList.clear();
+            coverer.getCovering(sp, partList);
+            covering.addAll(partList);
+        }
 
         batchUpdateGridIndex(gridsIndexDb, covering, osmId);
 
