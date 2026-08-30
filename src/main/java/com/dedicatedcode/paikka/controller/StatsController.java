@@ -86,4 +86,10 @@ public class StatsController {
         List<StatsService.LocationStatsResponse> locationStats = statsService.getLocationStats();
         return ResponseEntity.ok(locationStats);
     }
+
+    @GetMapping("/api/query-summary")
+    @ResponseBody
+    public ResponseEntity<StatsService.SummaryStatsResponse> getQuerySummary() {
+        return ResponseEntity.ok(statsService.getSummaryStats());
+    }
 }

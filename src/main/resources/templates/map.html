@@ -6,7 +6,6 @@
     <title>Paikka Query Locations</title>
     <link rel="stylesheet" href="/css/dark-theme.css">
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    <link rel="stylesheet" th:href="@{/css/main.css}" />
 </head>
 <body>
     <div class="container">
@@ -34,15 +33,39 @@
             <div class="info-grid">
                 <div class="info-item">
                     <span class="info-value" id="total-locations">-</span>
-                    <div class="info-label">Unique Locations</div>
+                    <div class="info-label">Locations</div>
                 </div>
                 <div class="info-item">
                     <span class="info-value" id="total-queries">-</span>
-                    <div class="info-label">Total Queries</div>
+                    <div class="info-label">Total Requests</div>
+                </div>
+                <div class="info-item">
+                    <span class="info-value" id="queries-today">-</span>
+                    <div class="info-label">Today</div>
+                </div>
+                <div class="info-item">
+                    <span class="info-value" id="queries-last-7-days">-</span>
+                    <div class="info-label">Last 7 Days</div>
+                </div>
+                <div class="info-item">
+                    <span class="info-value" id="avg-per-day">-</span>
+                    <div class="info-label">Avg / Day (30d)</div>
+                </div>
+                <div class="info-item">
+                    <span class="info-value" id="success-rate">-</span>
+                    <div class="info-label">Success Rate</div>
+                </div>
+                <div class="info-item">
+                    <span class="info-value" id="error-count">-</span>
+                    <div class="info-label">Errors</div>
+                </div>
+                <div class="info-item">
+                    <span class="info-value" id="avg-response-time">-</span>
+                    <div class="info-label">Avg Response</div>
                 </div>
                 <div class="info-item">
                     <span class="info-value" id="avg-queries">-</span>
-                    <div class="info-label">Avg Queries/Location</div>
+                    <div class="info-label">Avg / Location</div>
                 </div>
                 <div class="info-item">
                     <span class="info-value" id="last-updated">-</span>
@@ -58,18 +81,10 @@
         const map = L.map('map').setView([50.0, 10.0], 4);
 
         // Add dark tile layer as base
-        const darkLayer = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-            attribution: '© OpenStreetMap contributors, © CARTO',
-            subdomains: 'abcd',
-            maxZoom: 19
-        }).addTo(map);
-
-        // Add light tile layer for uncovering effect
-        const lightLayer = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
-            attribution: '© OpenStreetMap contributors, © CARTO',
-            subdomains: 'abcd',
+        const darkLayer = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}', {
+            attribution: 'Tiles © Esri — Source: Esri, HERE, Garmin, © OpenStreetMap contributors',
             maxZoom: 19,
-            opacity: 0
+            maxNativeZoom: 16
         }).addTo(map);
 
         // Function to get square opacity based on query count (for uncovering effect)
@@ -155,14 +170,13 @@
 
                 // Update info panel
                 const totalLocations = data.length;
-                const totalQueries = data.reduce((sum, loc) => sum + loc.queryCount, 0);
-                const avgQueries = totalLocations > 0 ? (totalQueries / totalLocations).toFixed(1) : 0;
+                const locationQueries = data.reduce((sum, loc) => sum + loc.queryCount, 0);
+                const avgQueries = totalLocations > 0 ? (locationQueries / totalLocations).toFixed(1) : 0;
                 const lastUpdated = data.length > 0 ?
                     new Date(Math.max(...data.map(d => new Date(d.lastQueried)))).toLocaleDateString() :
                     'No data';
 
                 document.getElementById('total-locations').textContent = totalLocations;
-                document.getElementById('total-queries').textContent = totalQueries;
                 document.getElementById('avg-queries').textContent = avgQueries;
                 document.getElementById('last-updated').textContent = lastUpdated;
 
@@ -178,6 +192,23 @@
                 console.error('Error loading location data:', error);
                 document.querySelector('.loading').textContent = 'Error loading location data';
             });
+
+        // Load global query summary stats
+        fetch('/admin/api/query-summary')
+            .then(response => response.json())
+            .then(summary => {
+                document.getElementById('total-queries').textContent = summary.totalQueries;
+                document.getElementById('queries-today').textContent = summary.queriesToday;
+                document.getElementById('queries-last-7-days').textContent = summary.queriesLast7Days;
+                document.getElementById('avg-per-day').textContent = summary.avgQueriesPerDay.toFixed(1);
+                const total = summary.successCount + summary.errorCount;
+                document.getElementById('success-rate').textContent =
+                    total > 0 ? ((summary.successCount / total) * 100).toFixed(1) + '%' : '-';
+                document.getElementById('error-count').textContent = summary.errorCount;
+                document.getElementById('avg-response-time').textContent =
+                    Math.round(summary.avgResponseTimeMs) + ' ms';
+            })
+            .catch(error => console.error('Error loading query summary:', error));
     </script>
 </body>
 </html>
