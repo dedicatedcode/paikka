@@ -335,6 +335,49 @@ public class StatsService {
         return results;
     }
     
+    public SummaryStatsResponse getSummaryStats() {
+        LocalDate today = LocalDate.now();
+        String sql = """
+            SELECT COUNT(*) AS total_queries,
+                   SUM(CASE WHEN date_only = ? THEN 1 ELSE 0 END) AS queries_today,
+                   SUM(CASE WHEN date_only >= ? THEN 1 ELSE 0 END) AS queries_last_7_days,
+                   SUM(CASE WHEN date_only >= ? THEN 1 ELSE 0 END) AS queries_last_30_days,
+                   COUNT(DISTINCT CASE WHEN date_only >= ? THEN date_only END) AS active_days_last_30,
+                   AVG(response_time_ms) AS avg_response_time,
+                   SUM(CASE WHEN status_code >= 200 AND status_code < 300 THEN 1 ELSE 0 END) AS success_count,
+                   SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END) AS error_count
+            FROM query_stats
+            """;
+
+        try (PreparedStatement pstmt = connection.prepareStatement(sql)) {
+            pstmt.setString(1, today.toString());
+            pstmt.setString(2, today.minusDays(6).toString());
+            pstmt.setString(3, today.minusDays(29).toString());
+            pstmt.setString(4, today.minusDays(29).toString());
+
+            try (ResultSet rs = pstmt.executeQuery()) {
+                if (rs.next()) {
+                    long queriesLast30Days = rs.getLong("queries_last_30_days");
+                    long activeDays = rs.getLong("active_days_last_30");
+                    double avgQueriesPerDay = activeDays > 0 ? (double) queriesLast30Days / activeDays : 0.0;
+                    return new SummaryStatsResponse(
+                        rs.getLong("total_queries"),
+                        rs.getLong("queries_today"),
+                        rs.getLong("queries_last_7_days"),
+                        avgQueriesPerDay,
+                        rs.getLong("success_count"),
+                        rs.getLong("error_count"),
+                        rs.getDouble("avg_response_time")
+                    );
+                }
+            }
+        } catch (SQLException e) {
+            logger.error("Failed to retrieve summary stats", e);
+        }
+
+        return new SummaryStatsResponse(0L, 0L, 0L, 0.0, 0L, 0L, 0.0);
+    }
+
     public List<String> getAvailableEndpoints() {
         String sql = "SELECT DISTINCT endpoint FROM query_stats ORDER BY endpoint";
         List<String> endpoints = new ArrayList<>();
@@ -420,6 +463,11 @@ public class StatsService {
     }
 
     public record LocationStatsResponse(double lat, double lon, int queryCount, String lastQueried) {
+    }
+
+    public record SummaryStatsResponse(long totalQueries, long queriesToday, long queriesLast7Days,
+                                       double avgQueriesPerDay, long successCount, long errorCount,
+                                       double avgResponseTimeMs) {
     }
 
     private record StatsRecord(String endpoint, String parametersJson, long responseTimeMs, int resultCount,

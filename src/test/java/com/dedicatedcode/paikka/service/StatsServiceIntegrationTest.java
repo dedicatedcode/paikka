@@ -188,4 +188,27 @@ class StatsServiceIntegrationTest {
         assertThat(reverseStats).isNotEmpty();
         assertThat(reverseStats.get(0).getQueryCount()).isEqualTo(1);
     }
+
+    @Test
+    void testGetSummaryStats() {
+        statsService.recordQuery("/api/v1/search", Map.of("q", "test1"), 100L, 5, 200);
+        statsService.recordQuery("/api/v1/search", Map.of("q", "test2"), 200L, 5, 404);
+
+        await().atMost(15, TimeUnit.SECONDS)
+            .pollInterval(1, TimeUnit.SECONDS)
+            .until(() -> {
+                statsService.flushPendingStats();
+                return statsService.getSummaryStats().totalQueries() >= 2;
+            });
+
+        StatsService.SummaryStatsResponse summary = statsService.getSummaryStats();
+
+        assertThat(summary.totalQueries()).isEqualTo(2);
+        assertThat(summary.queriesToday()).isEqualTo(2);
+        assertThat(summary.queriesLast7Days()).isEqualTo(2);
+        assertThat(summary.avgQueriesPerDay()).isEqualTo(2.0);
+        assertThat(summary.successCount()).isEqualTo(1);
+        assertThat(summary.errorCount()).isEqualTo(1);
+        assertThat(summary.avgResponseTimeMs()).isBetween(100.0, 200.0);
+    }
 }
