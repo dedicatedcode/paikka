@@ -7,25 +7,24 @@
     <link rel="stylesheet" href="/css/dark-theme.css">
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 </head>
-<body>
+<body class="map-page">
     <div class="container">
         <div id="map">
             <div class="loading">Loading map and location data...</div>
         </div>
 
         <div class="legend">
-            <h4>Query Activity</h4>
             <div class="legend-item">
                 <div class="legend-square" style="background-color: #ffffff; border: 1px solid #daa520; opacity: 0.3;"></div>
-                <span>High activity (100+ queries) - White fill, more transparent</span>
+                <span>High (100+)</span>
             </div>
             <div class="legend-item">
                 <div class="legend-square" style="background-color: #cccccc; border: 1px solid #daa520; opacity: 0.6;"></div>
-                <span>Medium activity (20-99 queries) - Light gray fill</span>
+                <span>Medium (20-99)</span>
             </div>
             <div class="legend-item">
                 <div class="legend-square" style="background-color: #888888; border: 1px solid #daa520; opacity: 0.9;"></div>
-                <span>Low activity (5-19 queries) - Dark gray fill, less transparent</span>
+                <span>Low (5-19)</span>
             </div>
         </div>
 
