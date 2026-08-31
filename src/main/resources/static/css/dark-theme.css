@@ -154,6 +154,27 @@ body {
     border-radius: 0 0 12px 12px;
 }
 
+/* Full-viewport map page */
+body.map-page {
+    margin: 0;
+    overflow: hidden;
+}
+
+body.map-page .container {
+    max-width: none;
+    margin: 0;
+    border-radius: 0;
+    box-shadow: none;
+    background: transparent;
+}
+
+body.map-page #map {
+    width: 100vw;
+    height: 100vh;
+    min-height: 100vh;
+    border-radius: 0;
+}
+
 .map-info {
     position: absolute;
     left: 15px;
@@ -206,30 +227,32 @@ body {
 
 .legend {
     position: absolute;
-    top: 15px;
-    right: 15px;
-    background: var(--bg-card);
-    padding: 15px;
-    border-radius: 8px;
-    box-shadow: 0 4px 15px var(--shadow);
+    top: 10px;
+    right: 10px;
+    background: rgba(37, 37, 37, 0.85);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    padding: 6px 10px;
+    border-radius: 6px;
+    box-shadow: 0 2px 8px var(--shadow);
     z-index: 1000;
-    font-size: 13px;
+    font-size: 11px;
     border: 1px solid var(--border-color);
-    min-width: 200px;
 }
 
 .legend h4 {
-    margin: 0 0 10px 0;
+    margin: 0 0 6px 0;
     color: var(--text-primary);
-    font-size: 14px;
+    font-size: 11px;
     font-weight: 600;
 }
 
 .legend-item {
     display: flex;
     align-items: center;
-    margin-bottom: 8px;
+    margin-bottom: 4px;
     color: var(--text-secondary);
+    white-space: nowrap;
 }
 
 .legend-item:last-child {
@@ -237,17 +260,17 @@ body {
 }
 
 .legend-circle {
-    width: 14px;
-    height: 14px;
+    width: 10px;
+    height: 10px;
     border-radius: 50%;
-    margin-right: 10px;
+    margin-right: 6px;
     border: 1px solid rgba(255, 255, 255, 0.3);
 }
 
 .legend-square {
-    width: 12px;
-    height: 12px;
-    margin-right: 8px;
+    width: 9px;
+    height: 9px;
+    margin-right: 6px;
     flex-shrink: 0;
     border: 1px solid #daa520;
 }
@@ -257,6 +280,11 @@ body {
     .container {
         margin: 10px;
         border-radius: 8px;
+    }
+
+    body.map-page .container {
+        margin: 0;
+        border-radius: 0;
     }
     
     .header {
@@ -300,13 +328,13 @@ body {
         bottom: 40px;
         padding: 6px 10px;
     }
-    
-    .legend {
-        position: relative;
-        top: auto;
-        right: auto;
-        margin: 15px;
-        width: calc(100% - 30px);
+
+    body.map-page .legend {
+        position: absolute;
+        top: 8px;
+        right: 8px;
+        margin: 0;
+        width: auto;
     }
 }
 
