@@ -23,10 +23,19 @@ IMPORT_THREADS="${IMPORT_THREADS:-10}"
 # --- Remote Machine Settings ---
 REMOTE_BASE_DIR="/opt/paikka/data"
 
+# --- Cloudflare Cache Invalidation Settings ---
+CLOUDFLARE_API_BASE_URL="https://api.cloudflare.com/client/v4"
+PURGE_CLOUDFLARE_CACHE="${PURGE_CLOUDFLARE_CACHE:-false}"
+CLOUDFLARE_API_TOKEN="${CLOUDFLARE_API_TOKEN:-}"
+CLOUDFLARE_ZONE_ID="${CLOUDFLARE_ZONE_ID:-}"
+CLOUDFLARE_PURGE_PATTERN="${CLOUDFLARE_PURGE_PATTERN:-}"
+PURGE_URLS=() # Populated from CLOUDFLARE_PURGE_PATTERN by validate_purge_pattern
+
 # Global variables that will be set by parse_args_and_configure or environment
-REMOTE_USER=""
-REMOTE_HOST=""
-GEOCODER_API_TOKEN=""
+REMOTE_USER="${REMOTE_USER:-}"
+REMOTE_HOST="${REMOTE_HOST:-}"
+GEOCODER_API_TOKEN="${GEOCODER_API_TOKEN:-}"
+PBF_INPUT_PATH="${PBF_INPUT_PATH:-}"
 
 # ==============================================================================
 # HELPER FUNCTIONS
@@ -36,41 +45,207 @@ log() {
   echo -e "\n[$(date +'%Y-%m-%d %H:%M:%S')] --- $1 ---"
 }
 
+###
+# Prints usage information for this script.
+###
+print_usage() {
+    cat <<EOF
+Usage: $0 [OPTIONS]
+
+Downloads (or uses a provided) OSM planet file, filters and imports it into a
+geocoder bundle, syncs it to the remote host, deploys it atomically, and
+verifies the result. Optionally purges the Cloudflare cache of the public zone
+afterwards.
+
+Options:
+  --remote-user USER          SSH user of the remote host (env: REMOTE_USER)
+  --remote-host HOST          SSH host to deploy to. Should bypass Cloudflare,
+                              e.g. geo-direkt.dedicatedcode.com (env: REMOTE_HOST)
+  --api-token TOKEN           Admin API token of the geocoder (env: GEOCODER_API_TOKEN)
+  --download-dir DIR          Where to download PBF files (env: DOWNLOAD_DIR, default: current directory)
+  --import-data-dir DIR       Where to store import data (env: IMPORT_DATA_DIR, default: ./import)
+  --memory SIZE               Memory for import (env: IMPORT_MEMORY, default: 16G)
+  --threads NUM               Threads for import (env: IMPORT_THREADS, default: 10)
+  --pbf-file PATH             Use a local PBF file instead of downloading the latest planet file
+
+Cloudflare cache invalidation:
+  --purge-cache               Purge the Cloudflare cache after a successful, verified update
+                              (env: PURGE_CLOUDFLARE_CACHE)
+  --cloudflare-token TOKEN    Cloudflare API token with "Zone.Cache Purge" permission
+                              (env: CLOUDFLARE_API_TOKEN)
+  --cloudflare-zone-id ID     Cloudflare zone ID of the public zone to purge, e.g. the zone
+                              of geo.dedicatedcode.com (env: CLOUDFLARE_ZONE_ID)
+  --purge-pattern URLS        Comma-separated list of exact https:// URLs to purge instead of
+                              the entire zone cache, at most 30 URLs per request
+                              (env: CLOUDFLARE_PURGE_PATTERN)
+
+  -h, --help                  Show this help message
+
+Examples:
+  $0 --remote-user deploy --remote-host geo-direkt.dedicatedcode.com --api-token SECRET
+  $0 --remote-user deploy --remote-host geo-direkt.dedicatedcode.com --api-token SECRET \\
+     --purge-cache --cloudflare-token CF_TOKEN --cloudflare-zone-id CF_ZONE_ID
+  $0 --remote-user deploy --remote-host geo-direkt.dedicatedcode.com --api-token SECRET \\
+     --pbf-file ./new-zealand.osm.pbf --memory 8G --threads 4
+EOF
+}
+
+###
+# Trims leading and trailing whitespace from the given string.
+###
+trim() {
+    local s="$1"
+    s="${s#"${s%%[![:space:]]*}"}"
+    s="${s%"${s##*[![:space:]]}"}"
+    printf '%s' "$s"
+}
+
+###
+# Ensures that the given flag was followed by a non-flag value.
+# $1: flag name, $2: candidate value
+###
+require_flag_value() {
+    if [ -z "$2" ] || [[ "$2" == -* ]]; then
+        echo "Error: Missing value for $1"
+        print_usage
+        exit 1
+    fi
+}
+
 # ==============================================================================
 # CORE LOGIC FUNCTIONS
 # ==============================================================================
 
 ###
-# Parses command-line arguments or uses environment variables for configuration.
+# Validates the configured purge pattern and fills the PURGE_URLS array with
+# the trimmed https:// URLs.
 ###
-parse_args_and_configure() {
-    log "Step 0: Parsing arguments and setting configuration"
+validate_purge_pattern() {
+    local raw_url trimmed_url
+    local validated_urls=()
+    local count=0
 
-    # Precedence: Command-line arguments > Environment variables
-    REMOTE_USER="${1:-$REMOTE_USER}"
-    REMOTE_HOST="${2:-$REMOTE_HOST}"
-    GEOCODER_API_TOKEN="${3:-$GEOCODER_API_TOKEN}"
+    IFS=',' read -r -a PURGE_URLS <<< "$CLOUDFLARE_PURGE_PATTERN"
 
-    DOWNLOAD_DIR="${4:-$DOWNLOAD_DIR}"
-    IMPORT_DATA_DIR="${5:-$IMPORT_DATA_DIR}"
-    IMPORT_MEMORY="${6:-$IMPORT_MEMORY}"
-    IMPORT_THREADS="${7:-$IMPORT_THREADS}"
-    PBF_INPUT_PATH="${8:-}"
-    if [ -z "$REMOTE_USER" ] || [ -z "$REMOTE_HOST" ] || [ -z "$GEOCODER_API_TOKEN" ]; then
-        echo "Usage: $0 <REMOTE_USER> <REMOTE_HOST> <API_TOKEN> [DOWNLOAD_DIR] [IMPORT_DATA_DIR] [MEMORY] [THREADS]"
-        echo "  DOWNLOAD_DIR: Where to download PBF files (default: current directory)"
-        echo "  IMPORT_DATA_DIR: Where to store import data (default: ./import)"
-        echo "  MEMORY: Memory for import (default: 16G)"
-        echo "  THREADS: Threads for import (default: 10)"
-        echo "Error: Missing required configuration."
+    for raw_url in "${PURGE_URLS[@]}"; do
+        trimmed_url="$(trim "$raw_url")"
+        [ -z "$trimmed_url" ] && continue
+        if [[ "$trimmed_url" != https://* ]]; then
+            echo "Error: Invalid purge pattern entry (must start with https://): $trimmed_url"
+            exit 1
+        fi
+        validated_urls+=("$trimmed_url")
+        count=$((count + 1))
+    done
+
+    if [ "$count" -eq 0 ]; then
+        echo "Error: --purge-pattern was given but contains no URLs."
+        print_usage
         exit 1
     fi
-    if [ -n "$PBF_INPUT_PATH" ] && [ ! -f "$PBF_INPUT_PATH" ]; then echo "Error: PBF file not found"; exit 1; fi
+    if [ "$count" -gt 30 ]; then
+        echo "Warning: $count URLs given, but Cloudflare allows at most 30 URLs per purge request." >&2
+    fi
+
+    PURGE_URLS=("${validated_urls[@]}")
+}
+
+###
+# Parses command-line arguments and applies configuration.
+# Precedence: command-line arguments > environment variables > defaults.
+###
+parse_args_and_configure() {
+    local arg
+    for arg in "$@"; do
+        if [ "$arg" = "-h" ] || [ "$arg" = "--help" ]; then
+            print_usage
+            exit 0
+        fi
+    done
+
+    log "Step 0: Parsing arguments and setting configuration"
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --remote-user)          require_flag_value "$1" "${2:-}"; REMOTE_USER="$2"; shift 2 ;;
+            --remote-user=*)        REMOTE_USER="${1#*=}"; shift ;;
+            --remote-host)          require_flag_value "$1" "${2:-}"; REMOTE_HOST="$2"; shift 2 ;;
+            --remote-host=*)        REMOTE_HOST="${1#*=}"; shift ;;
+            --api-token)            require_flag_value "$1" "${2:-}"; GEOCODER_API_TOKEN="$2"; shift 2 ;;
+            --api-token=*)          GEOCODER_API_TOKEN="${1#*=}"; shift ;;
+            --download-dir)         require_flag_value "$1" "${2:-}"; DOWNLOAD_DIR="$2"; shift 2 ;;
+            --download-dir=*)       DOWNLOAD_DIR="${1#*=}"; shift ;;
+            --import-data-dir)      require_flag_value "$1" "${2:-}"; IMPORT_DATA_DIR="$2"; shift 2 ;;
+            --import-data-dir=*)    IMPORT_DATA_DIR="${1#*=}"; shift ;;
+            --memory)               require_flag_value "$1" "${2:-}"; IMPORT_MEMORY="$2"; shift 2 ;;
+            --memory=*)             IMPORT_MEMORY="${1#*=}"; shift ;;
+            --threads)              require_flag_value "$1" "${2:-}"; IMPORT_THREADS="$2"; shift 2 ;;
+            --threads=*)            IMPORT_THREADS="${1#*=}"; shift ;;
+            --pbf-file)             require_flag_value "$1" "${2:-}"; PBF_INPUT_PATH="$2"; shift 2 ;;
+            --pbf-file=*)           PBF_INPUT_PATH="${1#*=}"; shift ;;
+            --purge-cache)          PURGE_CLOUDFLARE_CACHE=true; shift ;;
+            --purge-cache=*)
+                case "${1#*=}" in
+                    true)  PURGE_CLOUDFLARE_CACHE=true ;;
+                    false) PURGE_CLOUDFLARE_CACHE=false ;;
+                    *) echo "Error: Invalid value for --purge-cache (expected true or false)"; print_usage; exit 1 ;;
+                esac
+                shift ;;
+            --cloudflare-token)     require_flag_value "$1" "${2:-}"; CLOUDFLARE_API_TOKEN="$2"; shift 2 ;;
+            --cloudflare-token=*)   CLOUDFLARE_API_TOKEN="${1#*=}"; shift ;;
+            --cloudflare-zone-id)   require_flag_value "$1" "${2:-}"; CLOUDFLARE_ZONE_ID="$2"; shift 2 ;;
+            --cloudflare-zone-id=*) CLOUDFLARE_ZONE_ID="${1#*=}"; shift ;;
+            --purge-pattern)        require_flag_value "$1" "${2:-}"; CLOUDFLARE_PURGE_PATTERN="$2"; shift 2 ;;
+            --purge-pattern=*)      CLOUDFLARE_PURGE_PATTERN="${1#*=}"; shift ;;
+            *)                      echo "Error: Unknown option: $1"; print_usage; exit 1 ;;
+        esac
+    done
+
+    if [ -z "$REMOTE_USER" ] || [ -z "$REMOTE_HOST" ] || [ -z "$GEOCODER_API_TOKEN" ]; then
+        echo "Error: Missing required configuration (--remote-user, --remote-host, --api-token)."
+        print_usage
+        exit 1
+    fi
+    if [ -n "$PBF_INPUT_PATH" ] && [ ! -f "$PBF_INPUT_PATH" ]; then
+        echo "Error: PBF file not found: $PBF_INPUT_PATH"
+        exit 1
+    fi
+    if [ "$PURGE_CLOUDFLARE_CACHE" = "true" ]; then
+        if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
+            echo "Error: Cache purge is enabled but no Cloudflare API token was provided (--cloudflare-token)."
+            print_usage
+            exit 1
+        fi
+        if [ -z "$CLOUDFLARE_ZONE_ID" ]; then
+            echo "Error: Cache purge is enabled but no Cloudflare zone ID was provided (--cloudflare-zone-id)."
+            print_usage
+            exit 1
+        fi
+        if [ -n "$CLOUDFLARE_PURGE_PATTERN" ]; then
+            validate_purge_pattern
+        fi
+    elif [ -n "$CLOUDFLARE_PURGE_PATTERN" ]; then
+        echo "Warning: --purge-pattern given but cache purge is not enabled (--purge-cache). The pattern will be ignored."
+    fi
+
     echo "Configuration loaded for ${REMOTE_USER}@${REMOTE_HOST}"
     echo "  Download directory: $DOWNLOAD_DIR"
     echo "  Import data directory: $IMPORT_DATA_DIR"
     echo "  Import memory: $IMPORT_MEMORY"
     echo "  Import threads: $IMPORT_THREADS"
+    if [ -n "$PBF_INPUT_PATH" ]; then
+        echo "  PBF input file: $PBF_INPUT_PATH"
+    fi
+    if [ "$PURGE_CLOUDFLARE_CACHE" = "true" ]; then
+        echo "  Cloudflare cache purge: enabled (zone ID: $CLOUDFLARE_ZONE_ID)"
+        if [ "${#PURGE_URLS[@]}" -gt 0 ]; then
+            echo "  Purge pattern: ${PURGE_URLS[*]}"
+        else
+            echo "  Purge pattern: entire zone cache"
+        fi
+    else
+        echo "  Cloudflare cache purge: disabled"
+    fi
 }
 
 ###
@@ -286,6 +461,53 @@ remote_cleanup_old_releases() {
   echo_remote "Cleanup complete"
 EOF
 }
+
+###
+# LOCAL: Purges the Cloudflare cache for the configured zone after a successful
+# update. Purges the entire zone when no pattern is configured, otherwise only
+# the configured URLs. Fails soft: warns and continues if the purge fails,
+# because the data deployment itself has already completed at this point.
+###
+purge_cloudflare_cache() {
+    if [ "$PURGE_CLOUDFLARE_CACHE" != "true" ]; then
+        return 0
+    fi
+
+    log "CLOUDFLARE: Purging cache for zone $CLOUDFLARE_ZONE_ID"
+
+    local purge_body
+    if [ "${#PURGE_URLS[@]}" -gt 0 ]; then
+        log "CLOUDFLARE: Purging ${#PURGE_URLS[@]} URL(s) from the configured pattern"
+        local urls_json=""
+        local url
+        for url in "${PURGE_URLS[@]}"; do
+            urls_json+="\"${url//\"/\\\"}\","
+        done
+        purge_body="{\"files\":[${urls_json%,}]}"
+    else
+        log "CLOUDFLARE: Purging the entire zone cache"
+        purge_body='{"purge_everything":true}'
+    fi
+
+    local response_file
+    response_file="$(mktemp)"
+    local http_status
+    http_status="$(curl -s -o "$response_file" -w "%{http_code}" \
+        --max-time 60 \
+        -X POST \
+        "${CLOUDFLARE_API_BASE_URL}/zones/${CLOUDFLARE_ZONE_ID}/purge_cache" \
+        -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+        -H "Content-Type: application/json" \
+        --data "$purge_body")" || http_status="curl_failed"
+
+    if [ "$http_status" = "200" ] && grep -Eq '"success":[[:space:]]*true' "$response_file"; then
+        log "CLOUDFLARE: Cache purge successful"
+    else
+        echo "WARNING: Cloudflare cache purge failed (HTTP status: $http_status). Continuing anyway." >&2
+        echo "WARNING: Cloudflare response: $(cat "$response_file")" >&2
+    fi
+    rm -f "$response_file"
+}
 # ==============================================================================
 # MAIN ORCHESTRATION FUNCTION
 # ==============================================================================
@@ -305,6 +527,7 @@ main() {
     local_cleanup_pbf
     remote_sync_bundle
     remote_deploy_and_verify
+    purge_cloudflare_cache
     remote_cleanup_old_releases
 
     log "Update process finished."
