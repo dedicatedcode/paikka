@@ -47,6 +47,7 @@ public class SecurityConfig {
                 .addFilterBefore(adminTokenFilter, AuthorizationFilter.class)
                 .formLogin(form -> form
                         .loginPage("/login")
+                        .defaultSuccessUrl("/admin/stats", true)
                 )
                 .rememberMe(rememberMe -> rememberMe
                         .key("uniqueAndSecretKey")
