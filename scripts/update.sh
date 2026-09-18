@@ -10,6 +10,13 @@ set -o pipefail # The return value of a pipeline is the status of the last comma
 # --- Local Machine Settings ---
 PLANET_URL="https://planet.osm.org/pbf/planet-latest.osm.pbf"
 LOCAL_WORK_DIR="$(pwd)" # Use the current directory as the working directory.
+
+# --- Local configuration (optional .env file, e.g. GitHub credentials) ---
+if [ -f "$LOCAL_WORK_DIR/.env" ]; then
+    # shellcheck disable=SC1091
+    source "$LOCAL_WORK_DIR/.env"
+fi
+
 PBF_INPUT_FILE="planet-latest.osm.pbf"
 PBF_FILTERED_FILE="planet-filtered.pbf"
 IMPORT_DIR="import"
@@ -30,6 +37,27 @@ CLOUDFLARE_API_TOKEN="${CLOUDFLARE_API_TOKEN:-}"
 CLOUDFLARE_ZONE_ID="${CLOUDFLARE_ZONE_ID:-}"
 CLOUDFLARE_PURGE_PATTERN="${CLOUDFLARE_PURGE_PATTERN:-}"
 PURGE_URLS=() # Populated from CLOUDFLARE_PURGE_PATTERN by validate_purge_pattern
+
+# --- GitHub Import Statistics Settings (see issue #63) ---
+GH_STATS_REPO="${GH_STATS_REPO:-dedicatedcode/paikka}"
+GITHUB_TOKEN="${GITHUB_TOKEN:-}"
+GH_DISCUSSION_NUMBER="${GH_DISCUSSION_NUMBER:-}"
+POST_IMPORT_STATS="${POST_IMPORT_STATS:-false}"
+
+# --- Import statistics runtime state ---
+STATS_FILE_NAME="paikka-import-stats.ndjson"
+IMPORT_LOG_FILE_NAME="paikka-import-run.log"
+STATS_IMPORT_SUCCESS=false
+STATS_OUTCOME_LINE=""
+STATS_TOTAL_TIME=""
+STATS_THROUGHPUT=""
+STATS_DATASET_SIZE=""
+STATS_FINAL_BLOCK=""
+STATS_FILTER_INPUT_NAME=""
+STATS_FILTER_INPUT_SIZE=0
+STATS_FILTER_OUTPUT_NAME=""
+STATS_FILTER_OUTPUT_SIZE=0
+STATS_FILTER_DURATION=0
 
 # Global variables that will be set by parse_args_and_configure or environment
 REMOTE_USER="${REMOTE_USER:-}"
@@ -79,6 +107,19 @@ Cloudflare cache invalidation:
                               the entire zone cache, at most 30 URLs per request
                               (env: CLOUDFLARE_PURGE_PATTERN)
 
+GitHub import statistics (posts one comment per successful import to a GitHub
+discussion so import performance can be monitored over time):
+  --post-stats                Upload import statistics after a successful, verified
+                              update (env: POST_IMPORT_STATS)
+  --github-token TOKEN        GitHub token with "Discussions: Read & write"
+                              permission for the target repository
+                              (env: GITHUB_TOKEN, usually set in .env)
+  --discussion-number NUM     Number of the discussion that receives one comment per
+                              successful import, taken from the discussion URL
+                              (env: GH_DISCUSSION_NUMBER, usually set in .env)
+  --stats-repo OWNER/REPO     Repository to post to (env: GH_STATS_REPO,
+                              default: dedicatedcode/paikka)
+
   -h, --help                  Show this help message
 
 Examples:
@@ -87,6 +128,8 @@ Examples:
      --purge-cache --cloudflare-token CF_TOKEN --cloudflare-zone-id CF_ZONE_ID
   $0 --remote-user deploy --remote-host geo-direkt.dedicatedcode.com --api-token SECRET \\
      --pbf-file ./new-zealand.osm.pbf --memory 8G --threads 4
+  $0 --remote-user deploy --remote-host geo-direkt.dedicatedcode.com --api-token SECRET \\
+     --post-stats --github-token GH_TOKEN --discussion-number 7
 EOF
 }
 
@@ -197,6 +240,20 @@ parse_args_and_configure() {
             --cloudflare-zone-id=*) CLOUDFLARE_ZONE_ID="${1#*=}"; shift ;;
             --purge-pattern)        require_flag_value "$1" "${2:-}"; CLOUDFLARE_PURGE_PATTERN="$2"; shift 2 ;;
             --purge-pattern=*)      CLOUDFLARE_PURGE_PATTERN="${1#*=}"; shift ;;
+            --post-stats)           POST_IMPORT_STATS=true; shift ;;
+            --post-stats=*)
+                case "${1#*=}" in
+                    true)  POST_IMPORT_STATS=true ;;
+                    false) POST_IMPORT_STATS=false ;;
+                    *) echo "Error: Invalid value for --post-stats (expected true or false)"; print_usage; exit 1 ;;
+                esac
+                shift ;;
+            --github-token)         require_flag_value "$1" "${2:-}"; GITHUB_TOKEN="$2"; shift 2 ;;
+            --github-token=*)       GITHUB_TOKEN="${1#*=}"; shift ;;
+            --discussion-number)    require_flag_value "$1" "${2:-}"; GH_DISCUSSION_NUMBER="$2"; shift 2 ;;
+            --discussion-number=*)  GH_DISCUSSION_NUMBER="${1#*=}"; shift ;;
+            --stats-repo)           require_flag_value "$1" "${2:-}"; GH_STATS_REPO="$2"; shift 2 ;;
+            --stats-repo=*)         GH_STATS_REPO="${1#*=}"; shift ;;
             *)                      echo "Error: Unknown option: $1"; print_usage; exit 1 ;;
         esac
     done
@@ -228,6 +285,33 @@ parse_args_and_configure() {
         echo "Warning: --purge-pattern given but cache purge is not enabled (--purge-cache). The pattern will be ignored."
     fi
 
+    if [ "$POST_IMPORT_STATS" = "true" ]; then
+        if [ -z "$GITHUB_TOKEN" ]; then
+            echo "Error: Statistics upload is enabled but no GitHub token was provided (--github-token or GITHUB_TOKEN in .env)."
+            print_usage
+            exit 1
+        fi
+        if ! [[ "$GH_DISCUSSION_NUMBER" =~ ^[0-9]+$ ]]; then
+            echo "Error: Statistics upload is enabled but no valid discussion number was provided (--discussion-number or GH_DISCUSSION_NUMBER in .env)."
+            print_usage
+            exit 1
+        fi
+        if ! [[ "$GH_STATS_REPO" =~ ^[^/[:space:]]+/[^/[:space:]]+$ ]]; then
+            echo "Error: --stats-repo must be in OWNER/REPO format (got: $GH_STATS_REPO)."
+            print_usage
+            exit 1
+        fi
+        for stats_dep in jq curl; do
+            if ! command -v "$stats_dep" >/dev/null 2>&1; then
+                echo "Error: Statistics upload is enabled but '$stats_dep' is not installed on this machine."
+                print_usage
+                exit 1
+            fi
+        done
+    elif [ -n "$GITHUB_TOKEN" ] || [ -n "$GH_DISCUSSION_NUMBER" ]; then
+        echo "Warning: GitHub statistics configuration found but statistics upload is not enabled (--post-stats). It will be ignored."
+    fi
+
     echo "Configuration loaded for ${REMOTE_USER}@${REMOTE_HOST}"
     echo "  Download directory: $DOWNLOAD_DIR"
     echo "  Import data directory: $IMPORT_DATA_DIR"
@@ -246,6 +330,11 @@ parse_args_and_configure() {
     else
         echo "  Cloudflare cache purge: disabled"
     fi
+    if [ "$POST_IMPORT_STATS" = "true" ]; then
+        echo "  GitHub statistics: enabled (repo: $GH_STATS_REPO, discussion: #$GH_DISCUSSION_NUMBER)"
+    else
+        echo "  GitHub statistics: disabled"
+    fi
 }
 
 ###
@@ -256,6 +345,39 @@ local_prepare_directories() {
     mkdir -p "$DOWNLOAD_DIR"
     mkdir -p "$IMPORT_DATA_DIR"
     cd "$DOWNLOAD_DIR"
+    # Start with a clean statistics log for this run
+    : > "$DOWNLOAD_DIR/$STATS_FILE_NAME"
+}
+
+###
+# LOCAL: Appends the filter step result to the import statistics log and
+# remembers it for the GitHub statistics report.
+# $1: input (source) PBF path, $2: filtered output PBF path, $3: duration in seconds
+###
+record_filter_stats() {
+    local input_path="$1" output_path="$2" duration_seconds="$3"
+    local input_size output_size
+    input_size=$(stat -c%s "$input_path" 2>/dev/null || stat -f%z "$input_path" 2>/dev/null || echo 0)
+    output_size=$(stat -c%s "$output_path" 2>/dev/null || stat -f%z "$output_path" 2>/dev/null || echo 0)
+
+    STATS_FILTER_INPUT_NAME=$(basename "$input_path")
+    STATS_FILTER_INPUT_SIZE="$input_size"
+    STATS_FILTER_OUTPUT_NAME=$(basename "$output_path")
+    STATS_FILTER_OUTPUT_SIZE="$output_size"
+    STATS_FILTER_DURATION="$duration_seconds"
+
+    if command -v jq >/dev/null 2>&1; then
+        jq -cn \
+            --arg step "filter" \
+            --arg input_file "$STATS_FILTER_INPUT_NAME" \
+            --argjson input_size "$STATS_FILTER_INPUT_SIZE" \
+            --arg output_file "$STATS_FILTER_OUTPUT_NAME" \
+            --argjson output_size "$STATS_FILTER_OUTPUT_SIZE" \
+            --argjson duration_seconds "$STATS_FILTER_DURATION" \
+            '{step: $step, input_file: $input_file, input_size: $input_size, output_file: $output_file, output_size: $output_size, duration_seconds: $duration_seconds}' \
+            >> "$DOWNLOAD_DIR/$STATS_FILE_NAME" \
+            || echo "WARNING: Could not append filter statistics to $DOWNLOAD_DIR/$STATS_FILE_NAME" >&2
+    fi
 }
 
 ###
@@ -277,20 +399,35 @@ local_pull_docker_image() {
 
 ###
 # LOCAL: Filters the full planet PBF file using the Paikka container.
+# Measures the filter duration per file and records it for the statistics report.
 ###
 local_filter_pbf() {
     log "LOCAL: Filtering PBF file"
-  if [ -n "$PBF_INPUT_PATH" ]; then
-      INPUT_DIR="$(dirname "$PBF_INPUT_PATH")"
-      INPUT_FILE="$(basename "$PBF_INPUT_PATH")"
-      sudo docker run --rm -v "$INPUT_DIR":/input -v "$DOWNLOAD_DIR":/data "$DOCKER_IMAGE" prepare "/input/$INPUT_FILE" "/data/$PBF_FILTERED_FILE"
-  else
-      sudo docker run --rm -v "$DOWNLOAD_DIR":/data "$DOCKER_IMAGE" prepare "/data/$PBF_INPUT_FILE" "/data/$PBF_FILTERED_FILE"
-  fi
+    local filter_start_ts filter_end_ts filter_input_path
+    if [ -n "$PBF_INPUT_PATH" ]; then
+        INPUT_DIR="$(dirname "$PBF_INPUT_PATH")"
+        INPUT_FILE="$(basename "$PBF_INPUT_PATH")"
+        filter_input_path="$PBF_INPUT_PATH"
+    else
+        filter_input_path="$DOWNLOAD_DIR/$PBF_INPUT_FILE"
+    fi
+
+    filter_start_ts=$(date +%s)
+    if [ -n "$PBF_INPUT_PATH" ]; then
+        sudo docker run --rm -v "$INPUT_DIR":/input -v "$DOWNLOAD_DIR":/data "$DOCKER_IMAGE" prepare "/input/$INPUT_FILE" "/data/$PBF_FILTERED_FILE"
+    else
+        sudo docker run --rm -v "$DOWNLOAD_DIR":/data "$DOCKER_IMAGE" prepare "/data/$PBF_INPUT_FILE" "/data/$PBF_FILTERED_FILE"
+    fi
+    filter_end_ts=$(date +%s)
+
+    record_filter_stats "$filter_input_path" "$DOWNLOAD_DIR/$PBF_FILTERED_FILE" "$((filter_end_ts - filter_start_ts))"
 }
 
 ###
 # LOCAL: Creates the geocoder import bundle from the filtered PBF.
+# Captures the paikka import output in a log file which is then parsed for
+# the statistics report. A run only counts as successful when the import
+# process exited with code 0 AND reported "IMPORT OUTCOME: OK".
 ###
 local_create_import_bundle() {
     log "LOCAL: Creating import bundle with $IMPORT_MEMORY memory and $IMPORT_THREADS threads"
@@ -298,7 +435,9 @@ local_create_import_bundle() {
           --memory "$IMPORT_MEMORY" \
           --threads "$IMPORT_THREADS" \
           --data-dir "/import/" \
-          "/download/$PBF_FILTERED_FILE"
+          "/download/$PBF_FILTERED_FILE" 2>&1 | tee "$DOWNLOAD_DIR/$IMPORT_LOG_FILE_NAME"
+
+    analyze_import_log
 }
 
 ###
@@ -508,6 +647,212 @@ purge_cloudflare_cache() {
     fi
     rm -f "$response_file"
 }
+###
+# Parses the captured paikka import log (which contains ANSI color codes) and
+# extracts the values needed for the statistics report. Strips all ANSI escape
+# sequences first so the report is clean markdown.
+###
+analyze_import_log() {
+    local raw_log="$DOWNLOAD_DIR/$IMPORT_LOG_FILE_NAME"
+    local clean_log="$DOWNLOAD_DIR/$IMPORT_LOG_FILE_NAME.clean"
+
+    # Strip ANSI color codes and carriage returns emitted by the paikka import
+    sed -e $'s/\033\\[[0-9;]*[mK]//g' "$raw_log" | tr -d '\r' > "$clean_log"
+
+    STATS_OUTCOME_LINE=$(grep '^IMPORT OUTCOME: ' "$clean_log" | tail -n 1 || true)
+    STATS_TOTAL_TIME=$(sed -n 's/.*Total Import Time: *//p' "$clean_log" | tail -n 1)
+    STATS_THROUGHPUT=$(sed -n 's/.*Overall Throughput: *//p' "$clean_log" | tail -n 1)
+    STATS_DATASET_SIZE=$(sed -n 's/.*Dataset Size: *//p' "$clean_log" | tail -n 1)
+    STATS_FINAL_BLOCK=$(awk '/FINAL IMPORT STATISTICS/{found=1} found{print} found && /^IMPORT OUTCOME: /{exit}' "$clean_log")
+
+    if grep -q '^IMPORT OUTCOME: OK ' "$clean_log"; then
+        STATS_IMPORT_SUCCESS=true
+    else
+        STATS_IMPORT_SUCCESS=false
+        echo "WARNING: Import did not report 'IMPORT OUTCOME: OK'. Statistics will not be uploaded." >&2
+    fi
+
+    rm -f "$clean_log"
+}
+
+###
+# Formats a duration given in seconds as H:MM:SS.
+###
+format_duration() {
+    local total_seconds="$1"
+    printf '%d:%02d:%02d' $((total_seconds / 3600)) $((total_seconds % 3600 / 60)) $((total_seconds % 60))
+}
+
+###
+# Formats a size given in bytes as a human readable value.
+###
+format_bytes() {
+    awk -v bytes="$1" 'BEGIN {
+        split("B KB MB GB TB PB", units, " ")
+        i = 1
+        value = bytes + 0
+        while (value >= 1024 && i < 6) { value /= 1024; i++ }
+        printf "%.1f %s", value, units[i]
+    }'
+}
+
+###
+# Gathers system information of the machine that performed the import.
+###
+gather_system_info() {
+    STATS_CPU=$(LC_ALL=C lscpu 2>/dev/null | sed -n 's/^[[:space:]]*Model name:[[:space:]]*//p' | head -n 1)
+    if [ -z "$STATS_CPU" ]; then
+        STATS_CPU=$(sed -n 's/^model name[[:space:]]*:[[:space:]]*//p' /proc/cpuinfo 2>/dev/null | head -n 1)
+    fi
+    [ -z "$STATS_CPU" ] && STATS_CPU="unknown"
+    STATS_CPU_CORES=$(nproc 2>/dev/null || echo "unknown")
+    STATS_RAM=$(awk '/^MemTotal/ {printf "%.1f GB", $2 / 1048576}' /proc/meminfo 2>/dev/null)
+    [ -z "$STATS_RAM" ] && STATS_RAM="unknown"
+    STATS_OS=$(sed -n 's/^PRETTY_NAME="\([^"]*\)".*/\1/p' /etc/os-release 2>/dev/null | head -n 1)
+    [ -z "$STATS_OS" ] && STATS_OS="$(uname -s 2>/dev/null || echo unknown)"
+    STATS_KERNEL=$(uname -r 2>/dev/null || echo "unknown")
+}
+
+###
+# Builds the markdown report for one successful import and writes it to stdout.
+###
+build_stats_report() {
+    local data_version="unknown" paikka_version="unknown" grid_level="unknown" result_line
+    local metadata_file="$IMPORT_DATA_DIR/paikka_metadata.json"
+
+    if [ -f "$metadata_file" ] && command -v jq >/dev/null 2>&1; then
+        data_version=$(jq -r '.dataVersion // "unknown"' "$metadata_file" 2>/dev/null || echo "unknown")
+        paikka_version=$(jq -r '.paikkaVersion // "unknown"' "$metadata_file" 2>/dev/null || echo "unknown")
+        grid_level=$(jq -r '.gridLevel // "unknown"' "$metadata_file" 2>/dev/null || echo "unknown")
+    fi
+
+    result_line=$(sed 's/|/\\|/g' <<< "${STATS_OUTCOME_LINE#IMPORT OUTCOME: }")
+
+    cat <<REPORT_HEADER
+### Import statistics — \`${data_version}\` ($(date -u '+%Y-%m-%d %H:%M UTC'))
+
+| Metric | Value |
+| --- | --- |
+| Result | \`${result_line}\` |
+| Source PBF | \`${STATS_FILTER_INPUT_NAME}\` ($(format_bytes "$STATS_FILTER_INPUT_SIZE")) |
+| Filtered PBF (imported) | \`${STATS_FILTER_OUTPUT_NAME}\` ($(format_bytes "$STATS_FILTER_OUTPUT_SIZE")) |
+| Filter duration | $(format_duration "$STATS_FILTER_DURATION") |
+| Import duration | ${STATS_TOTAL_TIME} |
+| Throughput | ${STATS_THROUGHPUT} |
+| Dataset size | ${STATS_DATASET_SIZE} |
+| Heap (Xmx/Xms) | ${IMPORT_MEMORY} |
+| Import threads | ${IMPORT_THREADS} |
+| Paikka version | ${paikka_version} (image \`${DOCKER_IMAGE}\`) |
+| Grid level | ${grid_level} |
+| CPU | ${STATS_CPU} · ${STATS_CPU_CORES} cores |
+| RAM | ${STATS_RAM} |
+| OS | ${STATS_OS} · kernel ${STATS_KERNEL} |
+REPORT_HEADER
+
+    cat <<'REPORT_BLOCK_OPEN'
+
+<details><summary>Full paikka import statistics</summary>
+
+```
+REPORT_BLOCK_OPEN
+
+    printf '%s\n' "$STATS_FINAL_BLOCK"
+
+    cat <<'REPORT_BLOCK_CLOSE'
+```
+
+</details>
+REPORT_BLOCK_CLOSE
+}
+
+###
+# LOCAL: Removes the intermediate statistics artifacts after a successful run.
+# On a degraded import the import log is kept for inspection.
+###
+local_cleanup_stats_files() {
+    if [ "$STATS_IMPORT_SUCCESS" != "true" ]; then
+        echo "Keeping '$DOWNLOAD_DIR/$IMPORT_LOG_FILE_NAME' for inspection (import was not fully successful)."
+        return 0
+    fi
+    rm -f "$DOWNLOAD_DIR/$STATS_FILE_NAME" "$DOWNLOAD_DIR/$IMPORT_LOG_FILE_NAME"
+}
+
+###
+# Posts the collected import statistics as a comment to the configured GitHub
+# discussion. Uses the GraphQL API because the REST API does not support
+# creating discussion comments. Only runs that were deployed and verified
+# successfully are posted. Fails soft: warns and continues if the upload
+# fails, because the data deployment itself has already completed at this point.
+###
+post_import_stats_to_github() {
+    if [ "$POST_IMPORT_STATS" != "true" ]; then
+        return 0
+    fi
+
+    if [ "$STATS_IMPORT_SUCCESS" != "true" ]; then
+        echo "WARNING: Import was not fully successful (exit code 0 and 'IMPORT OUTCOME: OK' required). Skipping statistics upload." >&2
+        return 0
+    fi
+
+    log "GITHUB: Posting import statistics to discussion #$GH_DISCUSSION_NUMBER in $GH_STATS_REPO"
+
+    gather_system_info
+
+    local body_file payload_file response_file resolve_file graphql_status comment_url discussion_id
+    body_file="$(mktemp)"
+    payload_file="$(mktemp)"
+    response_file="$(mktemp)"
+    resolve_file="$(mktemp)"
+
+    build_stats_report > "$body_file"
+
+    # Resolve the discussion node id for the configured discussion number
+    jq -n \
+        --arg owner "${GH_STATS_REPO%%/*}" \
+        --arg name "${GH_STATS_REPO##*/}" \
+        --argjson number "$GH_DISCUSSION_NUMBER" \
+        '{query: "query($owner:String!,$name:String!,$number:Int!){ repository(owner:$owner,name:$name){ discussion(number:$number){ id } } }", variables: {owner: $owner, name: $name, number: $number}}' \
+        > "$payload_file"
+
+    graphql_status="$(curl -s -o "$resolve_file" -w "%{http_code}" \
+        --max-time 60 \
+        -X POST \
+        "https://api.github.com/graphql" \
+        -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+        -H "Content-Type: application/json" \
+        --data @"$payload_file")" || graphql_status="curl_failed"
+
+    discussion_id=$(jq -r '.data.repository.discussion.id // empty' "$resolve_file" 2>/dev/null)
+    if [ -z "$discussion_id" ]; then
+        echo "WARNING: Could not resolve discussion #$GH_DISCUSSION_NUMBER in $GH_STATS_REPO (HTTP status: $graphql_status). Continuing anyway." >&2
+        echo "WARNING: GitHub response: $(cat "$resolve_file")" >&2
+        rm -f "$body_file" "$payload_file" "$response_file" "$resolve_file"
+        return 0
+    fi
+
+    jq -n \
+        --arg discussion_id "$discussion_id" \
+        --rawfile body "$body_file" \
+        '{query: "mutation($id:ID!,$body:String!){ addDiscussionComment(input:{discussionId:$id, body:$body}){ comment{ url } } }", variables: {id: $discussion_id, body: $body}}' \
+        > "$payload_file"
+
+    graphql_status="$(curl -s -o "$response_file" -w "%{http_code}" \
+        --max-time 60 \
+        -X POST \
+        "https://api.github.com/graphql" \
+        -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+        -H "Content-Type: application/json" \
+        --data @"$payload_file")" || graphql_status="curl_failed"
+
+    comment_url=$(jq -r '.data.addDiscussionComment.comment.url // empty' "$response_file" 2>/dev/null)
+    if [ -n "$comment_url" ]; then
+        log "GITHUB: Import statistics posted successfully: $comment_url"
+    else
+        echo "WARNING: Posting import statistics failed (HTTP status: $graphql_status). Continuing anyway." >&2
+        echo "WARNING: GitHub response: $(cat "$response_file")" >&2
+    fi
+    rm -f "$body_file" "$payload_file" "$response_file" "$resolve_file"
+}
 # ==============================================================================
 # MAIN ORCHESTRATION FUNCTION
 # ==============================================================================
@@ -527,6 +872,8 @@ main() {
     local_cleanup_pbf
     remote_sync_bundle
     remote_deploy_and_verify
+    post_import_stats_to_github
+    local_cleanup_stats_files
     purge_cloudflare_cache
     remote_cleanup_old_releases
 
