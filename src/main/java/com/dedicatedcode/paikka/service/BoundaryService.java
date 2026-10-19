@@ -21,7 +21,13 @@ import com.dedicatedcode.paikka.dto.GeoJsonGeometry;
 import com.dedicatedcode.paikka.exception.POINotFoundException;
 import com.dedicatedcode.paikka.flatbuffers.Boundary;
 import com.dedicatedcode.paikka.flatbuffers.Geometry;
+import jakarta.annotation.PreDestroy;
 import org.locationtech.jts.io.WKBReader;
+import org.rocksdb.BlockBasedTableConfig;
+import org.rocksdb.BloomFilter;
+import org.rocksdb.Cache;
+import org.rocksdb.Filter;
+import org.rocksdb.LRUCache;
 import org.rocksdb.Options;
 import org.rocksdb.RocksDB;
 import org.rocksdb.RocksDBException;
@@ -44,9 +50,14 @@ import java.util.List;
 public class BoundaryService {
     
     private static final Logger logger = LoggerFactory.getLogger(BoundaryService.class);
-    
+    private static final long MEGABYTE = 1024L * 1024L;
+    private static final long BLOCK_SIZE = 64L * 1024L;
+
     private final PaikkaConfiguration config;
     private RocksDB boundariesDb;
+    private Options boundariesOptions;
+    private Cache blockCache;
+    private Filter filterPolicy;
     
     public BoundaryService(PaikkaConfiguration config) {
         this.config = config;
@@ -67,13 +78,26 @@ public class BoundaryService {
                 logger.warn("Boundaries database not found at: {}", boundariesDbPath);
                 return;
             }
-            
-            Options options = new Options().setCreateIfMissing(false);
-            this.boundariesDb = RocksDB.openReadOnly(options, boundariesDbPath.toString());
-            logger.info("Successfully initialized RocksDB for boundaries");
+
+            long cacheSize = config.getRocksDbConfiguration().getBoundariesBlockCacheSizeMb() * MEGABYTE;
+            this.blockCache = new LRUCache(cacheSize);
+            this.filterPolicy = new BloomFilter(10, false);
+            BlockBasedTableConfig tableConfig = new BlockBasedTableConfig()
+                    .setBlockCache(blockCache)
+                    .setFilterPolicy(filterPolicy)
+                    .setBlockSize(BLOCK_SIZE)
+                    .setCacheIndexAndFilterBlocks(true)
+                    .setPinL0FilterAndIndexBlocksInCache(true)
+                    .setWholeKeyFiltering(true);
+            this.boundariesOptions = new Options()
+                    .setCreateIfMissing(false)
+                    .setTableFormatConfig(tableConfig)
+                    .setMaxOpenFiles(-1);
+            this.boundariesDb = RocksDB.openReadOnly(boundariesOptions, boundariesDbPath.toString());
+            logger.info("Successfully initialized RocksDB for boundaries (block cache: {} MB)", cacheSize / MEGABYTE);
         } catch (Exception e) {
             logger.warn("Failed to initialize RocksDB for boundaries: {}", e.getMessage());
-            this.boundariesDb = null;
+            closeResources();
         }
     }
     
@@ -83,8 +107,22 @@ public class BoundaryService {
      */
     public synchronized void reloadDatabase() {
         logger.info("Reloading boundaries database...");
+        closeResources();
+        initializeRocksDB();
         
-        // Close existing database connection
+        if (boundariesDb != null) {
+            logger.info("Boundaries database reloaded successfully");
+        } else {
+            logger.warn("Boundaries database reload completed but database is not available");
+        }
+    }
+
+    @PreDestroy
+    public synchronized void closeDatabase() {
+        closeResources();
+    }
+
+    private void closeResources() {
         if (boundariesDb != null) {
             try {
                 boundariesDb.close();
@@ -94,14 +132,29 @@ public class BoundaryService {
             }
             boundariesDb = null;
         }
-        
-        // Reinitialize the database
-        initializeRocksDB();
-        
-        if (boundariesDb != null) {
-            logger.info("Boundaries database reloaded successfully");
-        } else {
-            logger.warn("Boundaries database reload completed but database is not available");
+        if (boundariesOptions != null) {
+            try {
+                boundariesOptions.close();
+            } catch (Exception e) {
+                logger.warn("Error closing boundaries database options: {}", e.getMessage());
+            }
+            boundariesOptions = null;
+        }
+        if (filterPolicy != null) {
+            try {
+                filterPolicy.close();
+            } catch (Exception e) {
+                logger.warn("Error closing boundaries filter policy: {}", e.getMessage());
+            }
+            filterPolicy = null;
+        }
+        if (blockCache != null) {
+            try {
+                blockCache.close();
+            } catch (Exception e) {
+                logger.warn("Error closing boundaries block cache: {}", e.getMessage());
+            }
+            blockCache = null;
         }
     }
     
