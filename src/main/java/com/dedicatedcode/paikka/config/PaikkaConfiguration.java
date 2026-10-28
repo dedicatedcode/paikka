@@ -33,6 +33,8 @@ public class PaikkaConfiguration {
     private QueryConfiguration queryConfiguration;
     @Name("simplification")
     private SimplificationConfiguration simplificationConfiguration;
+    @Name("rocksdb")
+    private RocksDbConfiguration rocksDbConfiguration = new RocksDbConfiguration();
 
     public ImportConfiguration getImportConfiguration() {
         return importConfiguration;
@@ -72,6 +74,14 @@ public class PaikkaConfiguration {
 
     public void setSimplificationConfiguration(SimplificationConfiguration simplificationConfiguration) {
         this.simplificationConfiguration = simplificationConfiguration;
+    }
+
+    public RocksDbConfiguration getRocksDbConfiguration() {
+        return rocksDbConfiguration;
+    }
+
+    public void setRocksDbConfiguration(RocksDbConfiguration rocksDbConfiguration) {
+        this.rocksDbConfiguration = rocksDbConfiguration;
     }
 
     public static class ImportConfiguration {
@@ -145,6 +155,37 @@ public class PaikkaConfiguration {
         }
     }
 
+    public static class RocksDbConfiguration {
+
+        private long poiBlockCacheSizeMb = 768;
+        private long buildingsBlockCacheSizeMb = 1024;
+        private long boundariesBlockCacheSizeMb = 256;
+
+        public long getPoiBlockCacheSizeMb() {
+            return poiBlockCacheSizeMb;
+        }
+
+        public void setPoiBlockCacheSizeMb(long poiBlockCacheSizeMb) {
+            this.poiBlockCacheSizeMb = Math.max(8, poiBlockCacheSizeMb);
+        }
+
+        public long getBuildingsBlockCacheSizeMb() {
+            return buildingsBlockCacheSizeMb;
+        }
+
+        public void setBuildingsBlockCacheSizeMb(long buildingsBlockCacheSizeMb) {
+            this.buildingsBlockCacheSizeMb = Math.max(8, buildingsBlockCacheSizeMb);
+        }
+
+        public long getBoundariesBlockCacheSizeMb() {
+            return boundariesBlockCacheSizeMb;
+        }
+
+        public void setBoundariesBlockCacheSizeMb(long boundariesBlockCacheSizeMb) {
+            this.boundariesBlockCacheSizeMb = Math.max(8, boundariesBlockCacheSizeMb);
+        }
+    }
+
     public static class QueryConfiguration {
 
         /**
@@ -160,6 +201,21 @@ public class PaikkaConfiguration {
          * Base URL for the application, used for generating absolute URLs in responses.
          */
         private String baseUrl = "http://localhost:8080";
+
+        /**
+         * Maximum number of building shards kept in one request's lookup context.
+         */
+        private int buildingIndexMaxShards = 64;
+
+        /**
+         * Maximum estimated bytes kept in one request's building lookup context.
+         */
+        private long buildingIndexMaxBytes = 16L * 1024 * 1024;
+
+        /**
+         * Queries taking at least this long are logged with phase timings.
+         */
+        private long slowQueryThresholdMs = 200;
 
         public int getMaxResults() {
             return maxResults;
@@ -185,5 +241,28 @@ public class PaikkaConfiguration {
             this.baseUrl = baseUrl;
         }
 
+        public int getBuildingIndexMaxShards() {
+            return buildingIndexMaxShards;
+        }
+
+        public void setBuildingIndexMaxShards(int buildingIndexMaxShards) {
+            this.buildingIndexMaxShards = Math.max(1, buildingIndexMaxShards);
+        }
+
+        public long getBuildingIndexMaxBytes() {
+            return buildingIndexMaxBytes;
+        }
+
+        public void setBuildingIndexMaxBytes(long buildingIndexMaxBytes) {
+            this.buildingIndexMaxBytes = Math.max(1024 * 1024, buildingIndexMaxBytes);
+        }
+
+        public long getSlowQueryThresholdMs() {
+            return slowQueryThresholdMs;
+        }
+
+        public void setSlowQueryThresholdMs(long slowQueryThresholdMs) {
+            this.slowQueryThresholdMs = Math.max(0, slowQueryThresholdMs);
+        }
     }
 }

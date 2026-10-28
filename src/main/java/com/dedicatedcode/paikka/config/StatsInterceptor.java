@@ -44,7 +44,7 @@ public class StatsInterceptor implements HandlerInterceptor {
     @Override
     public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) {
         if (request.getRequestURI().startsWith("/api/v1/")) {
-            request.setAttribute("startTime", System.currentTimeMillis());
+            request.setAttribute("startTime", System.nanoTime());
         }
         return true;
     }
@@ -60,7 +60,7 @@ public class StatsInterceptor implements HandlerInterceptor {
         }
         
         try {
-            long responseTime = System.currentTimeMillis() - (Long) request.getAttribute("startTime");
+            long responseTime = (System.nanoTime() - (Long) request.getAttribute("startTime")) / 1_000_000L;
 
             Map<String, String> sortedParams = request.getParameterMap().entrySet().stream()
                 .collect(Collectors.toMap(

@@ -241,12 +241,20 @@ When running with Docker, you can configure the service using environment variab
 |---------------------|---------|---------------|
 | `DATA_DIR` | Directory where processed data is stored | `/data` |
 | `MAX_IMPORT_THREADS` | Maximum number of threads for data import | `10` |
+| `IMPORT_CHUNK_SIZE` | Number of elements processed per import chunk | `100000` |
 | `MAX_RESULTS` | Maximum number of results returned by API | `500` |
 | `DEFAULT_RESULTS` | Default number of results when not specified | `10` |
 | `BASE_URL` | Base URL for the service (used in responses) | `http://localhost:8080` |
+| `POI_BLOCK_CACHE_MB` | RocksDB block cache for POI shards (native memory) | `768` |
+| `BUILDINGS_BLOCK_CACHE_MB` | RocksDB block cache for building shards (native memory) | `1024` |
+| `BOUNDARIES_BLOCK_CACHE_MB` | RocksDB block cache for boundary geometries (native memory) | `256` |
+| `BUILDING_INDEX_MAX_SHARDS` | Maximum building shards indexed per request | `64` |
+| `BUILDING_INDEX_MAX_BYTES` | Maximum building index memory per request (bytes) | `16777216` |
+| `SLOW_QUERY_THRESHOLD_MS` | Log queries slower than this with phase timings | `200` |
 | `STATS_DB_PATH` | Path to the statistics database | `/stats/stats.db` |
 | `ADMIN_PASSWORD` | Password for admin interface access (required) | _(empty - admin interface disabled if not set)_ |
 | `APP_LOG_LEVEL` | Log level for the application (`DEBUG`, `INFO`, `WARN`, `ERROR`) | `INFO` |
+| `ROOT_LOG_LEVEL` | Root log level | `WARN` |
 
 **Note:** The admin interface is disabled if `ADMIN_PASSWORD` is not set. To enable admin features, you must provide a password.
 
@@ -404,12 +412,22 @@ paikka.data-dir=${DATA_DIR:/data}
 
 # Import configuration
 paikka.import.threads=${MAX_IMPORT_THREADS:10}
-paikka.import.chunk-size=100000
+paikka.import.chunk-size=${IMPORT_CHUNK_SIZE:100000}
 
 # Query configuration
 paikka.query.max-results=${MAX_RESULTS:500}
 paikka.query.default-results=${DEFAULT_RESULTS:10}
 paikka.query.base-url=${BASE_URL:http://localhost:8080}
+
+# Read-side RocksDB caches (native memory)
+paikka.rocksdb.poi-block-cache-size-mb=${POI_BLOCK_CACHE_MB:768}
+paikka.rocksdb.buildings-block-cache-size-mb=${BUILDINGS_BLOCK_CACHE_MB:1024}
+paikka.rocksdb.boundaries-block-cache-size-mb=${BOUNDARIES_BLOCK_CACHE_MB:256}
+
+# Per-request building lookup
+paikka.query.building-index-max-shards=${BUILDING_INDEX_MAX_SHARDS:64}
+paikka.query.building-index-max-bytes=${BUILDING_INDEX_MAX_BYTES:16777216}
+paikka.query.slow-query-threshold-ms=${SLOW_QUERY_THRESHOLD_MS:200}
 
 # Statistics database path (Docker default: /stats/stats.db)
 paikka.stats-db-path=${STATS_DB_PATH:/stats/stats.db}
@@ -419,7 +437,7 @@ paikka.admin.password=${ADMIN_PASSWORD:}
 
 # Logging
 logging.level.com.dedicatedcode.paikka=${APP_LOG_LEVEL:INFO}
-logging.level.root=WARN
+logging.level.root=${ROOT_LOG_LEVEL:WARN}
 ```
 
 | Property | Description | Default Value (Docker) |
@@ -435,6 +453,12 @@ logging.level.root=WARN
 | `paikka.query.max-results` | Maximum number of results returned by API | `500` |
 | `paikka.query.default-results` | Default number of results when not specified | `10` |
 | `paikka.query.base-url` | Base URL for the service (used in responses) | `http://localhost:8080` |
+| `paikka.rocksdb.poi-block-cache-size-mb` | RocksDB block cache for POI shards (native memory) | `768` |
+| `paikka.rocksdb.buildings-block-cache-size-mb` | RocksDB block cache for building shards (native memory) | `1024` |
+| `paikka.rocksdb.boundaries-block-cache-size-mb` | RocksDB block cache for boundary geometries (native memory) | `256` |
+| `paikka.query.building-index-max-shards` | Maximum building shards indexed per request | `64` |
+| `paikka.query.building-index-max-bytes` | Maximum building index memory per request (bytes) | `16777216` |
+| `paikka.query.slow-query-threshold-ms` | Log queries slower than this with phase timings | `200` |
 | `paikka.stats-db-path` | Path to the statistics database | `/stats/stats.db` |
 | `paikka.admin.password` | Password for admin interface access | _(empty - admin interface disabled)_ |
 | `logging.level.com.dedicatedcode.paikka` | Application log level | `INFO` |
