@@ -20,7 +20,7 @@ fi
 PBF_INPUT_FILE="planet-latest.osm.pbf"
 PBF_FILTERED_FILE="planet-filtered.pbf"
 IMPORT_DIR="import"
-DOCKER_IMAGE="dedicatedcode/paikka:latest"
+DOCKER_IMAGE="${DOCKER_IMAGE:-dedicatedcode/paikka:latest}"
 
 DOWNLOAD_DIR="${DOWNLOAD_DIR:-$LOCAL_WORK_DIR}"
 IMPORT_DATA_DIR="${IMPORT_DATA_DIR:-$LOCAL_WORK_DIR/$IMPORT_DIR}"

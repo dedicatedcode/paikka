@@ -25,7 +25,7 @@
 #   ./scripts/build-h3-bundle.sh [OPTIONS]
 #
 # Options:
-#   --env-file PATH       Path to .env file (default: ./scripts/.env)
+#   --env-file PATH       Path to .env file (default: ./.env)
 #   --data-dir PATH       Directory for import data (default: ./data)
 #   --memory SIZE         JVM heap size (default: 16g)
 #   --threads NUM         Import threads (default: 10)
@@ -93,7 +93,12 @@ parse_args_and_configure() {
     log "Step 0: Parsing arguments and setting configuration"
 
     # Load .env file if it exists (environment variables can override these)
-    ENV_FILE="./scripts/.env"
+    ENV_FILE="$LOCAL_WORK_DIR/.env"
+    LEGACY_ENV_FILE="$LOCAL_WORK_DIR/scripts/.env"
+    if [ ! -f "$ENV_FILE" ] && [ -f "$LEGACY_ENV_FILE" ]; then
+        echo "Warning: $LEGACY_ENV_FILE is deprecated; move it to $ENV_FILE" >&2
+        ENV_FILE="$LEGACY_ENV_FILE"
+    fi
     if [ -f "$ENV_FILE" ]; then
         echo "Loading configuration from $ENV_FILE"
         set -a
@@ -149,7 +154,7 @@ parse_args_and_configure() {
                 echo "Usage: $0 [OPTIONS]"
                 echo ""
                 echo "Options:"
-                echo "  --env-file PATH       Path to .env file (default: ./scripts/.env)"
+                echo "  --env-file PATH       Path to .env file (default: ./.env)"
                 echo "  --data-dir PATH       Directory for import data (default: ./data)"
                 echo "  --memory SIZE         JVM heap size (default: 16g)"
                 echo "  --threads NUM         Import threads (default: 10)"
