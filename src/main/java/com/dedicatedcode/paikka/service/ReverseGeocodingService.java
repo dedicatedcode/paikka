@@ -40,7 +40,6 @@ import java.nio.ByteBuffer;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.*;
-import java.util.stream.Collectors;
 
 /**
  * Service for reverse geocoding operations - finding POIs near coordinates.
@@ -197,7 +196,7 @@ public class ReverseGeocodingService {
             // Get expanding rings of neighbor shards
             Map<Integer, Set<Long>> neighborRings = s2Helper.getExpandingNeighborRings(centerShardId, MAX_SEARCH_RINGS);
 
-            // Search ring by ring until we have enough results or hit max radius
+            // Search ring by ring until we have enough meaningful results or hit max radius
             for (int ring = 1; ring <= MAX_SEARCH_RINGS; ring++) {
                 Set<Long> ringShards = neighborRings.get(ring);
                 if (ringShards == null || ringShards.isEmpty()) {
@@ -218,19 +217,21 @@ public class ReverseGeocodingService {
                 logger.debug("Ring {}: searched {} shards, found {} POIs, total POIs: {}",
                     ring, ringShards.size(), ringPOIs.size(), allPOIs.size());
 
-                // Check if we have enough candidates within radius
-                List<POIData> candidatesWithinRadius = findClosestPOIs(allPOIs, lat, lon, limit * 2); // Get more candidates than needed
-                if (candidatesWithinRadius.size() >= limit) {
-                    logger.debug("Found sufficient POIs ({}) within radius after ring {}, stopping expansion",
-                        candidatesWithinRadius.size(), ring);
+                // Keep expanding until we have enough meaningful results.
+                List<POIWithDistance> candidatesWithinRadius = findCandidatesWithinRadius(allPOIs, lat, lon);
+                long meaningfulCandidates = candidatesWithinRadius.stream()
+                        .filter(candidate -> isMeaningful(candidate.poi()))
+                        .count();
+                if (meaningfulCandidates >= limit) {
+                    logger.debug("Found sufficient meaningful candidates after ring {}, stopping expansion", ring);
                     break;
                 }
             }
             poiLoadNanos = System.nanoTime() - poiLoadStart;
             searchedShardCount = searchedShards.size();
 
-            // Find the closest POIs up to the limit
-            List<POIData> closestPOIs = findClosestPOIs(allPOIs, lat, lon, limit);
+            // Select the closest POIs up to the limit, preferring named/addressed results.
+            List<POIData> closestPOIs = selectPOIs(findCandidatesWithinRadius(allPOIs, lat, lon), limit);
 
             // Convert POIs to response format and enhance with building info if needed
             List<POIResponse> results = new ArrayList<>();
@@ -380,7 +381,7 @@ public class ReverseGeocodingService {
         return pois;
     }
 
-    private List<POIData> findClosestPOIs(List<POIData> pois, double targetLat, double targetLon, int limit) {
+    static List<POIWithDistance> findCandidatesWithinRadius(List<POIData> pois, double targetLat, double targetLon) {
         List<POIWithDistance> poisWithDistance = new ArrayList<>();
 
         for (POIData poi : pois) {
@@ -393,15 +394,106 @@ public class ReverseGeocodingService {
 
         // Sort by distance (closest first)
         poisWithDistance.sort(Comparator.comparingDouble(POIWithDistance::distance));
-
-        // Return up to the requested limit
-        return poisWithDistance.stream()
-                .limit(limit)
-                .map(POIWithDistance::poi)
-                .collect(Collectors.toList());
+        return poisWithDistance;
     }
 
-    private double calculateDistance(double lat1, double lon1, double lat2, double lon2) {
+    /**
+     * Selects the results for a response. Named and addressed POIs are preferred over
+     * anonymous POIs so that a cluster of unnamed objects (for example several charging
+     * stations at a parking lot) cannot crowd out meaningful places. Anonymous POIs are
+     * still used to fill the response when there are not enough named/addressed candidates.
+     */
+    static List<POIData> selectPOIs(List<POIWithDistance> candidates, int limit) {
+        List<POIData> selected = new ArrayList<>(limit);
+        Set<POIData> selectedPois = Collections.newSetFromMap(new IdentityHashMap<>());
+
+        for (POIWithDistance candidate : candidates) {
+            if (selected.size() >= limit) break;
+            if (isMeaningful(candidate.poi()) && selectedPois.add(candidate.poi())) {
+                selected.add(candidate.poi());
+            }
+        }
+
+        if (selected.size() < limit) {
+            for (POIWithDistance candidate : candidates) {
+                if (selected.size() >= limit) break;
+                if (!selectedPois.contains(candidate.poi()) && selectedPois.add(candidate.poi())) {
+                    selected.add(candidate.poi());
+                }
+            }
+        }
+
+        return selected;
+    }
+
+    static boolean isMeaningful(POIData poi) {
+        return hasName(poi.names()) || hasUsableAddress(poi.address());
+    }
+
+    static boolean hasName(Map<String, String> names) {
+        if (names == null || names.isEmpty()) {
+            return false;
+        }
+        for (String name : names.values()) {
+            if (name != null && !name.isBlank()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static boolean hasUsableAddress(AddressData address) {
+        return address != null
+                && (hasText(address.street())
+                    || hasText(address.houseNumber())
+                    || hasText(address.postcode())
+                    || hasText(address.city()));
+    }
+
+    static boolean hasText(String value) {
+        return value != null && !value.isBlank();
+    }
+
+    static String formatAddress(AddressData address) {
+        if (address == null) {
+            return null;
+        }
+
+        StringBuilder streetLine = new StringBuilder();
+        if (hasText(address.street())) {
+            streetLine.append(address.street());
+        }
+        if (hasText(address.houseNumber())) {
+            if (streetLine.length() > 0) {
+                streetLine.append(' ');
+            }
+            streetLine.append(address.houseNumber());
+        }
+
+        StringBuilder cityLine = new StringBuilder();
+        if (hasText(address.postcode())) {
+            cityLine.append(address.postcode());
+        }
+        if (hasText(address.city())) {
+            if (cityLine.length() > 0) {
+                cityLine.append(' ');
+            }
+            cityLine.append(address.city());
+        }
+
+        if (streetLine.length() > 0 && cityLine.length() > 0) {
+            return streetLine.toString() + ", " + cityLine.toString();
+        }
+        if (streetLine.length() > 0) {
+            return streetLine.toString();
+        }
+        if (cityLine.length() > 0) {
+            return cityLine.toString();
+        }
+        return null;
+    }
+
+    static double calculateDistance(double lat1, double lon1, double lat2, double lon2) {
         // Simple Euclidean distance calculation - sufficient for small areas (~2km shards)
         // Approximate conversion: 1 degree latitude ≈ 111 km, longitude varies by latitude
         double latDiff = lat1 - lat2;
@@ -439,6 +531,10 @@ public class ReverseGeocodingService {
             displayName = poiNames.get("default");
         } else if (!poiNames.isEmpty()) {
             displayName = poiNames.values().iterator().next();
+        } else {
+            // Address-only objects (for example generic building footprints) are much
+            // more useful with a formatted address than with a null display name.
+            displayName = formatAddress(poi.address());
         }
 
         response.setNames(poiNames);
@@ -498,19 +594,23 @@ public class ReverseGeocodingService {
                                          BuildingService.BuildingLookupContext buildingContext) {
         BuildingService.BuildingInfo buildingInfo = buildingService.getBuildingInfo(poi.lat(), poi.lon(), buildingContext);
         if (buildingInfo != null) {
-            // Update type and subtype with building information
-            if (buildingInfo.getType() != null) {
+            // A POI inside a building keeps its own type/subtype (for example a shop
+            // inside a commercial building). Building information is only used to fill
+            // missing values.
+            if (response.getType() == null || response.getType().isBlank() || "unknown".equals(response.getType())) {
                 response.setType("building");
             }
-            // For subtype, we can use building name or code
-            if (buildingInfo.getName() != null) {
-                response.setSubtype(buildingInfo.getName());
-            } else if (buildingInfo.getCode() != null) {
-                response.setSubtype(buildingInfo.getCode());
+            if (response.getSubtype() == null || response.getSubtype().isBlank()) {
+                if (buildingInfo.getName() != null) {
+                    response.setSubtype(buildingInfo.getName());
+                } else if (buildingInfo.getCode() != null) {
+                    response.setSubtype(buildingInfo.getCode());
+                }
             }
 
-            // If building has boundary data, set it in the response
-            if (buildingInfo.getBoundaryWkb() != null && buildingInfo.getBoundaryWkb().length > 0) {
+            // Do not replace a geometry that belongs to the POI itself (for example a
+            // mapped building or parking area) with the containing building footprint.
+            if (response.getBoundary() == null && buildingInfo.getBoundaryWkb() != null && buildingInfo.getBoundaryWkb().length > 0) {
                 try {
                     WKBReader wkbReader = new WKBReader();
                     Geometry geometry = wkbReader.read(buildingInfo.getBoundaryWkb());
@@ -539,17 +639,17 @@ public class ReverseGeocodingService {
                 poiLoadNanos / 1_000_000.0, buildingLookupNanos / 1_000_000.0, totalNanos / 1_000_000.0);
     }
 
-    private record POIData(long id, float lat, float lon, String type, String subtype, Map<String, String> names,
+    record POIData(long id, float lat, float lon, String type, String subtype, Map<String, String> names,
                            AddressData address, List<HierarchyData> hierarchy, byte[] boundary) {
     }
 
-    private record AddressData(String street, String houseNumber, String postcode, String city, String country) {
+    record AddressData(String street, String houseNumber, String postcode, String city, String country) {
     }
 
-    private record HierarchyData(int level, String type, String name, String code, long osmId) {
+    record HierarchyData(int level, String type, String name, String code, long osmId) {
     }
 
-    private record POIWithDistance(POIData poi, double distance) {
+    record POIWithDistance(POIData poi, double distance) {
     }
 
     /**

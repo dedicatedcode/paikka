@@ -54,7 +54,7 @@ echo "Input file:  $INPUT_FILE"
 echo "Output file: $OUTPUT_FILE"
 echo ""
 osmium tags-filter "$INPUT_FILE" \
-  nwr/amenity!=bench,drinking_water,waste_basket,bicycle_parking,vending_machine,parking_entrance,fire_hydrant,recycling,post_box,atm,loading_ramp,parcel_locker,trolley_bay \
+  nwr/amenity!=bench,drinking_water,waste_basket,bicycle_parking,vending_machine,parking_entrance,fire_hydrant,recycling,post_box,atm,loading_ramp,parcel_locker,trolley_bay,charging_station \
   nwr/emergency!=fire_hydrant,defibrillator,fire_service_inlet \
   nw/shop \
   nw/tourism \

@@ -1610,7 +1610,7 @@ public class ImportService {
         };
     }
 
-    private boolean isPoi(OsmEntity entity) {
+    boolean isPoi(OsmEntity entity) {
         if (entity.getNumberOfTags() == 0) return false;
 
         boolean isInterestingBuilding = false;
@@ -1624,7 +1624,8 @@ public class ImportService {
                 case "amenity":
                     return switch (val) {
                         case "bench", "drinking_water", "waste_basket", "bicycle_parking",
-                             "vending_machine", "parking_entrance", "fire_hydrant" -> false;
+                             "vending_machine", "parking_entrance", "fire_hydrant",
+                             "charging_station" -> false;
                         default -> true;
                     };
 
