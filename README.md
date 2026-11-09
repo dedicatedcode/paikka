@@ -58,7 +58,7 @@ coordinates into human-readable context.
   Many common OSM features are explicitly excluded, such as:
     - Natural features like trees and grass
     - Man-made structures like electric-poles, trash cans
-    - Amenities like benches, drinking water, and picnic tables
+    - Amenities like benches, drinking water, picnic tables, and EV charging stations
     - Swimming pools and fountains
 
   If you need comprehensive POI coverage including all OSM features, **Nominatim** would be a better fit for your use case. While it would be technically possible to import the complete unfiltered dataset, this was never the intended design and has not been tested.
@@ -480,6 +480,28 @@ curl 'http://localhost:8080/api/v1/reverse?lat=60.1699&lon=24.9384&lang=fi'
 # Get geometry for OSM object
 curl 'http://localhost:8080/api/v1/geometry/12345'
 ```
+
+### Benchmarking
+
+A reverse-geocoding benchmark is included for measuring both single-request latency and concurrent throughput:
+
+```bash
+# Latency and throughput against the local instance
+./scripts/benchmark.sh
+
+# Latency only, with more samples
+./scripts/benchmark.sh --mode latency --runs 100
+
+# Throughput only, trying several concurrency levels
+./scripts/benchmark.sh --mode throughput --concurrency 1,8,32 --requests 20000
+
+# Benchmark the live instance
+./scripts/benchmark.sh --url https://geo.dedicatedcode.com --limit 5
+```
+
+The default POIs are defined in `scripts/benchmark-pois.csv` (`name,lat,lon`). The script reports min, mean, p50, p90, p95, p99, and max latency, plus requests per second for each concurrency level. Results are written as CSV when `--csv FILE` is supplied.
+
+Latency metrics are warm-JIT/warm-cache steady-state numbers. For cold-start measurements, restart the server and run with `--warmup 0`.
 
 ### Web Interface
 
