@@ -155,7 +155,7 @@ public class StandaloneBoundaryImporter {
                 }
 
                 for (String pbfPath : pbfPaths) {
-                    stats.setCurrentPhase(1, "Phase 1: Caching Nodes & Ways");
+                    stats.setCurrentPhase(1, BoundaryImportStatistics.PHASE_CACHING);
 
                     // ------ Single pass: cache nodes/ways and collect relation stubs ------
                     List<RelationStub> stubs = new ArrayList<>(500_000);
@@ -211,7 +211,7 @@ public class StandaloneBoundaryImporter {
                     }
 
                     // ------ Process Relations via partitioned thread pool ------
-                    stats.setCurrentPhase(2, "Phase 2: Processing Relations & H3");
+                    stats.setCurrentPhase(2, BoundaryImportStatistics.PHASE_RELATIONS);
 
                     if (!stubs.isEmpty()) {
                         ExecutorService executor = Executors.newFixedThreadPool(threads);
@@ -304,7 +304,7 @@ public class StandaloneBoundaryImporter {
                         executor.awaitTermination(Long.MAX_VALUE, TimeUnit.NANOSECONDS);
 
                         // Merge per-thread H3 DBs into the final h3_to_osm
-                        stats.setCurrentPhase(3, "3.1: Merging H3 thread DBs");
+                        stats.setCurrentPhase(3, BoundaryImportStatistics.PHASE_MERGING);
                         stats.setMergedThreadCount(threads);
                         for (int t = 0; t < threads; t++) {
                             if (Files.exists(threadH3Paths[t])) {
@@ -318,7 +318,7 @@ public class StandaloneBoundaryImporter {
                     }
                 }
 
-                stats.setCurrentPhase(3, "3.2: Compacting Final Databases");
+                stats.setCurrentPhase(3, BoundaryImportStatistics.PHASE_COMPACTING);
                 // Copy from temporary DBs to final DBs in sorted order
                 copyDb(tmpRegionMeta, regionMeta);
                 copyDb(tmpRegionGeom, regionGeom);

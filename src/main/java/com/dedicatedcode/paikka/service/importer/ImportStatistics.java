@@ -125,6 +125,11 @@ class ImportStatistics {
     private final AtomicLong compactionEntriesTotal = new AtomicLong(0);
     private final AtomicLong compactionEntriesProcessed = new AtomicLong(0);
 
+    private final ConcurrentHashMap<Integer, Long> stepDurations = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<Integer, String> stepNames = new ConcurrentHashMap<>();
+    private final Object phaseLock = new Object();
+    private boolean phaseClosed = false;
+
     private volatile long compactionStartTime = 0;
 
     private volatile long datasetBytes;
@@ -143,7 +148,7 @@ class ImportStatistics {
     private volatile long tmpAppendBytes;
 
     private final int TOTAL_STEPS = 9;
-    private int currentStep = 0;
+    private volatile int currentStep = 0;
 
     public long getEntitiesRead() {
         return entitiesRead.get();
@@ -286,13 +291,45 @@ class ImportStatistics {
     }
 
     public void setCurrentPhase(int step, String phase) {
-        this.currentPhase = phase;
-        this.phaseStartTime = System.currentTimeMillis();
-        this.currentStep = step;
+        long now = System.currentTimeMillis();
+        synchronized (phaseLock) {
+            if (currentStep > 0 && !phaseClosed) {
+                stepDurations.merge(currentStep, Math.max(0L, now - phaseStartTime), Long::sum);
+            }
+            this.stepNames.put(step, cleanStepName(phase));
+            this.currentPhase = phase;
+            this.phaseStartTime = now;
+            this.currentStep = step;
+            this.phaseClosed = false;
+        }
     }
 
     public long getPhaseStartTime() {
         return phaseStartTime;
+    }
+
+    /**
+     * Total time spent in the given step, accumulated across all phase transitions.
+     * If the step is still running the elapsed part so far is included.
+     */
+    public long getPhaseDuration(int step) {
+        synchronized (phaseLock) {
+            long recorded = stepDurations.getOrDefault(step, 0L);
+            if (currentStep == step && !phaseClosed) {
+                recorded += Math.max(0L, System.currentTimeMillis() - phaseStartTime);
+            }
+            return recorded;
+        }
+    }
+
+    private String getStepName(int step) {
+        String name = stepNames.get(step);
+        return name != null && !name.isBlank() ? name : "Step " + step;
+    }
+
+    private String cleanStepName(String phase) {
+        if (phase == null) return "";
+        return phase.replaceFirst("^\\d+(?:\\.\\d+)*:\\s*", "").trim();
     }
 
     public boolean isRunning() {
@@ -300,6 +337,12 @@ class ImportStatistics {
     }
 
     public void stop() {
+        synchronized (phaseLock) {
+            if (!phaseClosed && currentStep > 0) {
+                stepDurations.merge(currentStep, Math.max(0L, System.currentTimeMillis() - phaseStartTime), Long::sum);
+                phaseClosed = true;
+            }
+        }
         this.running = false;
     }
 
@@ -630,37 +673,45 @@ class ImportStatistics {
         long totalTime = Math.max(1, getTotalTime());
         double totalSeconds = totalTime / 1000.0;
 
+        long discoveryMs = getPhaseDuration(1);
+        long nodeCacheMs = getPhaseDuration(3);
+        long adminBoundariesMs = getPhaseDuration(4);
+        long buildingBoundariesMs = getPhaseDuration(5);
+        long poiShardingMs = getPhaseDuration(7);
+
         System.out.printf("\n\033[1;37m⏱️  Total Import Time:\033[0m \033[1;33m%s\033[0m%n%n", formatTime(getTotalTime()));
 
         System.out.println("\033[1;37m📊 Processing Summary:\033[0m");
-        System.out.println("┌────────────────────┬─────────────────┬─────────────────┐");
-        System.out.println("│ \033[1mEntity Type\033[0m        │ \033[1mTotal Count\033[0m     │ \033[1mAvg Speed\033[0m       │");
-        System.out.println("├────────────────────┼─────────────────┼─────────────────┤");
-        System.out.printf("│ \033[32mPBF Entities\033[0m       │ %15s │ %13s/s │%n",
-                          formatCompactNumber(getEntitiesRead()),
-                          formatCompactNumber((long) (getEntitiesRead() / totalSeconds)));
-        System.out.printf("│ \033[37mNodes Found\033[0m        │ %15s │ %13s/s │%n",
-                          formatCompactNumber(getNodesFound()),
-                          formatCompactNumber((long) (getNodesFound() / totalSeconds)));
-        System.out.printf("│ \033[34mNodes Cached\033[0m       │ %15s │ %13s/s │%n",
-                          formatCompactNumber(getNodesCached()),
-                          formatCompactNumber((long) (getNodesCached() / totalSeconds)));
-        System.out.printf("│ \033[35mWays Processed\033[0m     │ %15s │ %13s/s │%n",
-                          formatCompactNumber(getWaysProcessed()),
-                          formatCompactNumber((long) (getWaysProcessed() / totalSeconds)));
-        System.out.printf("│ \033[36mBoundaries\033[0m         │ %15s │ %13s/s │%n",
-                          formatCompactNumber(getBoundariesProcessed()),
-                          formatCompactNumber((long) (getBoundariesProcessed() / totalSeconds)));
-        System.out.printf("│ \033[31mBuildings Found\033[0m    │ %15s │ %13s/s │%n",
-                          formatCompactNumber(getBuildingsFound()),
-                          formatCompactNumber((long) (getBuildingsFound() / totalSeconds)));
-        System.out.printf("│ \033[31mBuildings Processed\033[0m│ %15s │ %13s/s │%n",
-                          formatCompactNumber(getBuildingsProcessed()),
-                          formatCompactNumber((long) (getBuildingsProcessed() / totalSeconds)));
-        System.out.printf("│ \033[33mPOIs Created\033[0m       │ %15s │ %13s/s │%n",
-                          formatCompactNumber(getPoisProcessed()),
-                          formatCompactNumber((long) (getPoisProcessed() / totalSeconds)));
-        System.out.println("└────────────────────┴─────────────────┴─────────────────┘");
+        System.out.println("┌─────────────────────┬─────────────────┬───────────────┬─────────────────┐");
+        System.out.println("│ \033[1mEntity Type\033[0m         │ \033[1mTotal Count\033[0m     │ \033[1mStep Time\033[0m     │ \033[1mAvg Speed\033[0m       │");
+        System.out.println("├─────────────────────┼─────────────────┼───────────────┼─────────────────┤");
+        printStatRow("PBF Entities", "\033[32m", getEntitiesRead(), discoveryMs);
+        printStatRow("Nodes Found", "\033[37m", getNodesFound(), discoveryMs);
+        printStatRow("Nodes Cached", "\033[34m", getNodesCached(), nodeCacheMs);
+        printStatRow("Ways Processed", "\033[35m", getWaysProcessed(), discoveryMs);
+        printStatRow("Boundaries", "\033[36m", getBoundariesProcessed(), adminBoundariesMs);
+        printStatRow("Buildings Found", "\033[31m", getBuildingsFound(), discoveryMs);
+        printStatRow("Buildings Processed", "\033[31m", getBuildingsProcessed(), buildingBoundariesMs);
+        printStatRow("POIs Created", "\033[33m", getPoisProcessed(), poiShardingMs);
+        System.out.println("└─────────────────────┴─────────────────┴───────────────┴─────────────────┘");
+
+        long stepTotalMs = 0;
+        for (int step = 1; step <= TOTAL_STEPS; step++) {
+            stepTotalMs += getPhaseDuration(step);
+        }
+        long postProcessingMs = Math.max(0L, getTotalTime() - stepTotalMs);
+
+        System.out.println("\n\033[1;37m⏱️  Step Timings:\033[0m");
+        System.out.println("┌────┬──────────────────────────────────────┬──────────────┬────────┐");
+        System.out.printf("│ %-2s │ %-36s │ %12s │ %6s │%n", "#", "Step", "Duration", "Share");
+        System.out.println("├────┼──────────────────────────────────────┼──────────────┼────────┤");
+        for (int step = 1; step <= TOTAL_STEPS; step++) {
+            printTimingRow(String.valueOf(step), getStepName(step), getPhaseDuration(step), totalTime);
+        }
+        if (postProcessingMs > 0) {
+            printTimingRow("-", "Setup / compaction / metadata", postProcessingMs, totalTime);
+        }
+        System.out.println("└────┴──────────────────────────────────────┴──────────────┴────────┘");
 
         long totalObjects = getNodesFound() + getNodesCached() + getWaysProcessed() + 
                             getBoundariesProcessed() + getBuildingsProcessed() + getPoisProcessed();
@@ -722,6 +773,26 @@ class ImportStatistics {
         }
 
         System.err.println("=== End import errors summary ===\n");
+    }
+
+    private void printStatRow(String label, String color, long count, long durationMs) {
+        double seconds = Math.max(1L, durationMs) / 1000.0;
+        long rate = (long) (count / seconds);
+        System.out.printf("│ %s%-19s\033[0m │ %15s │ %13s │ %13s/s │%n",
+                          color,
+                          label,
+                          formatCompactNumber(count),
+                          formatTime(durationMs),
+                          formatCompactNumber(rate));
+    }
+
+    private void printTimingRow(String step, String name, long durationMs, long totalTimeMs) {
+        double share = totalTimeMs > 0 ? durationMs * 100.0 / totalTimeMs : 0.0;
+        System.out.printf("│ %-2s │ %-36s │ %12s │ %5.1f%% │%n",
+                          step,
+                          name,
+                          formatTime(durationMs),
+                          share);
     }
 
     private String formatTime(long ms) {
