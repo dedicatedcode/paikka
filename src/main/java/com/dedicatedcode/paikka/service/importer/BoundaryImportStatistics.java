@@ -16,13 +16,20 @@
 
 package com.dedicatedcode.paikka.service.importer;
 
+import java.util.LinkedHashMap;
 import java.util.Locale;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 public class BoundaryImportStatistics {
+
+    static final String PHASE_CACHING = "Phase 1: Caching Nodes & Ways";
+    static final String PHASE_RELATIONS = "Phase 2: Processing Relations & H3";
+    static final String PHASE_MERGING = "3.1: Merging H3 thread DBs";
+    static final String PHASE_COMPACTING = "3.2: Compacting Final Databases";
 
     public enum Stage {
         CACHING_NODES_WAYS("Caching Nodes & Ways"),
@@ -84,10 +91,12 @@ public class BoundaryImportStatistics {
     private long totalTime;
 
     private final int TOTAL_STEPS = 3;
-    private int currentStep = 0;
+    private volatile int currentStep = 0;
 
-    private volatile long phase1Duration;
-    private volatile long phase2Duration;
+    private final Map<String, Long> phaseDurations = new LinkedHashMap<>();
+    private final Object phaseLock = new Object();
+    private boolean phaseClosed = false;
+
     private volatile long h3OsmSizeBytes;
     private volatile long regionMetaSizeBytes;
     private volatile long regionGeomSizeBytes;
@@ -163,18 +172,38 @@ public class BoundaryImportStatistics {
 
     public void setCurrentPhase(int step, String phase) {
         long now = System.currentTimeMillis();
-        if (this.currentStep == 1 && step != 1) {
-            this.phase1Duration = now - this.phaseStartTime;
-        } else if (this.currentStep == 2 && step != 2) {
-            this.phase2Duration = now - this.phaseStartTime;
+        synchronized (phaseLock) {
+            if (currentPhase != null && !"Initializing".equals(currentPhase) && !phaseClosed) {
+                phaseDurations.merge(currentPhase, Math.max(0L, now - phaseStartTime), Long::sum);
+            }
+            this.currentPhase = phase;
+            this.phaseStartTime = now;
+            this.currentStep = step;
+            this.phaseClosed = false;
         }
-        this.currentPhase = phase;
-        this.phaseStartTime = now;
-        this.currentStep = step;
     }
 
     public long getPhaseStartTime() {
         return phaseStartTime;
+    }
+
+    /**
+     * Total time spent in the given phase, accumulated across all entries (e.g. multiple PBF files).
+     * If the phase is still running the elapsed part so far is included.
+     */
+    public long getPhaseDuration(String phase) {
+        synchronized (phaseLock) {
+            long recorded = phaseDurations.getOrDefault(phase, 0L);
+            if (phase.equals(currentPhase) && !phaseClosed) {
+                recorded += Math.max(0L, System.currentTimeMillis() - phaseStartTime);
+            }
+            return recorded;
+        }
+    }
+
+    private String cleanPhaseName(String phase) {
+        if (phase == null) return "";
+        return phase.replaceFirst("^(?:Phase\\s+)?\\d+(?:\\.\\d+)*:\\s*", "").trim();
     }
 
     public boolean isRunning() {
@@ -182,6 +211,12 @@ public class BoundaryImportStatistics {
     }
 
     public void stop() {
+        synchronized (phaseLock) {
+            if (!phaseClosed && currentPhase != null && !"Initializing".equals(currentPhase)) {
+                phaseDurations.merge(currentPhase, Math.max(0L, System.currentTimeMillis() - phaseStartTime), Long::sum);
+                phaseClosed = true;
+            }
+        }
         this.running = false;
     }
 
@@ -311,37 +346,55 @@ public class BoundaryImportStatistics {
         System.out.println("\n\033[1;36m" + "═".repeat(80) + "\n" + centerText("BOUNDARY IMPORT STATISTICS") + "\n" + "═".repeat(80) + "\033[0m");
 
         long totalTime = Math.max(1, getTotalTime());
-        double totalSeconds = totalTime / 1000.0;
+        long phase1Duration = getPhaseDuration(PHASE_CACHING);
+        long phase2Duration = getPhaseDuration(PHASE_RELATIONS);
+        long phase3Duration = getPhaseDuration(PHASE_MERGING) + getPhaseDuration(PHASE_COMPACTING);
         double phase1Seconds = Math.max(0.001, phase1Duration / 1000.0);
         double phase2Seconds = Math.max(0.001, phase2Duration / 1000.0);
-        long phase3Duration = totalTime - phase1Duration - phase2Duration;
         double phase3Seconds = Math.max(0.001, phase3Duration / 1000.0);
 
         System.out.printf("\n\033[1;37mTotal Import Time:\033[0m \033[1;33m%s\033[0m%n%n", formatTime(getTotalTime()));
 
         System.out.println("\033[1;37mProcessing Summary:\033[0m");
-        System.out.println("┌──────────────────────┬─────────────────┬─────────────────┐");
-        System.out.println("│ \033[1mEntity Type\033[0m          │ \033[1mTotal Count\033[0m     │ \033[1mAvg Speed\033[0m       │");
-        System.out.println("├──────────────────────┼─────────────────┼─────────────────┤");
-        System.out.printf("│ \033[32mNodes Cached\033[0m         │ %15s │ %13s/s │%n",
-                          formatCompactNumber(getNodesCached()),
-                          formatCompactNumber((long) (getNodesCached() / phase1Seconds)));
-        System.out.printf("│ \033[34mWays Cached\033[0m          │ %15s │ %13s/s │%n",
-                          formatCompactNumber(getWaysCached()),
-                          formatCompactNumber((long) (getWaysCached() / phase1Seconds)));
-        System.out.printf("│ \033[35mRelations Found\033[0m      │ %15s │ %13s/s │%n",
-                          formatCompactNumber(getRelationsFound()),
-                          formatCompactNumber((long) (getRelationsFound() / totalSeconds)));
-        System.out.printf("│ \033[36mRelations Processed\033[0m  │ %15s │ %13s/s │%n",
-                          formatCompactNumber(getRelationsProcessed()),
-                          formatCompactNumber((long) (getRelationsProcessed() / phase2Seconds)));
-        System.out.printf("│ \033[33mH3 Cells Generated\033[0m   │ %15s │ %13s/s │%n",
-                          formatCompactNumber(getH3CellsGenerated()),
-                          formatCompactNumber((long) (getH3CellsGenerated() / phase2Seconds)));
-        System.out.printf("│ \033[36mH3 Entries Merged\033[0m    │ %15s │ %13s/s │%n",
-                          formatCompactNumber(getMergedEntriesProcessed()),
-                          formatCompactNumber((long) (getMergedEntriesProcessed() / phase3Seconds)));
-        System.out.println("└──────────────────────┴─────────────────┴─────────────────┘");
+        System.out.println("┌──────────────────────┬─────────────────┬───────────────┬─────────────────┐");
+        System.out.println("│ \033[1mEntity Type\033[0m          │ \033[1mTotal Count\033[0m     │ \033[1mStep Time\033[0m     │ \033[1mAvg Speed\033[0m       │");
+        System.out.println("├──────────────────────┼─────────────────┼───────────────┼─────────────────┤");
+        printStatRow("Nodes Cached", "\033[32m", getNodesCached(), phase1Duration);
+        printStatRow("Ways Cached", "\033[34m", getWaysCached(), phase1Duration);
+        printStatRow("Relations Found", "\033[35m", getRelationsFound(), phase1Duration);
+        printStatRow("Relations Processed", "\033[36m", getRelationsProcessed(), phase2Duration);
+        printStatRow("H3 Cells Generated", "\033[33m", getH3CellsGenerated(), phase2Duration);
+        printStatRow("H3 Entries Merged", "\033[36m", getMergedEntriesProcessed(), phase3Duration);
+        System.out.println("└──────────────────────┴─────────────────┴───────────────┴─────────────────┘");
+
+        long phaseTotalMs = 0;
+        synchronized (phaseLock) {
+            for (long duration : phaseDurations.values()) {
+                phaseTotalMs += duration;
+            }
+            if (!phaseClosed && currentPhase != null && !"Initializing".equals(currentPhase)) {
+                phaseTotalMs += Math.max(0L, System.currentTimeMillis() - phaseStartTime);
+            }
+        }
+        long postProcessingMs = Math.max(0L, getTotalTime() - phaseTotalMs);
+
+        System.out.println("\n\033[1;37mStep Timings:\033[0m");
+        System.out.println("┌──────────────────────────────────────┬──────────────┬────────┐");
+        System.out.printf("│ %-36s │ %12s │ %6s │%n", "Step", "Duration", "Share");
+        System.out.println("├──────────────────────────────────────┼──────────────┼────────┤");
+        synchronized (phaseLock) {
+            for (Map.Entry<String, Long> entry : phaseDurations.entrySet()) {
+                printTimingRow(cleanPhaseName(entry.getKey()), entry.getValue(), totalTime);
+            }
+            if (!phaseClosed && currentPhase != null && !"Initializing".equals(currentPhase)) {
+                long running = Math.max(0L, System.currentTimeMillis() - phaseStartTime);
+                printTimingRow(cleanPhaseName(currentPhase), running, totalTime);
+            }
+        }
+        if (postProcessingMs > 0) {
+            printTimingRow("Setup / compaction / metadata", postProcessingMs, totalTime);
+        }
+        System.out.println("└──────────────────────────────────────┴──────────────┴────────┘");
 
         if (h3OsmSizeBytes > 0) {
             System.out.println("\n\033[1;37mOutput Database Sizes:\033[0m");
@@ -387,6 +440,25 @@ public class BoundaryImportStatistics {
         }
 
         System.err.println("=== End boundary import errors summary ===\n");
+    }
+
+    private void printStatRow(String label, String color, long count, long durationMs) {
+        double seconds = Math.max(1L, durationMs) / 1000.0;
+        long rate = (long) (count / seconds);
+        System.out.printf("│ %s%-20s\033[0m │ %15s │ %13s │ %13s/s │%n",
+                          color,
+                          label,
+                          formatCompactNumber(count),
+                          formatTime(durationMs),
+                          formatCompactNumber(rate));
+    }
+
+    private void printTimingRow(String name, long durationMs, long totalTimeMs) {
+        double share = totalTimeMs > 0 ? durationMs * 100.0 / totalTimeMs : 0.0;
+        System.out.printf("│ %-36s │ %12s │ %5.1f%% │%n",
+                          name,
+                          formatTime(durationMs),
+                          share);
     }
 
     private String formatTime(long ms) {
