@@ -35,8 +35,8 @@ usage() {
 # Default values
 JAR_FILE=""
 DATA_DIR="./"
-MEMORY="16g"
-THREADS=""
+IMPORT_MEMORY="${IMPORT_MEMORY:-16g}"
+IMPORT_THREADS="${IMPORT_THREADS:-}"
 PBF_FILES=()
 
 # Parse arguments
@@ -51,11 +51,11 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         --memory)
-            MEMORY="$2"
+            IMPORT_MEMORY="$2"
             shift 2
             ;;
         --threads)
-            THREADS="$2"
+            IMPORT_THREADS="$2"
             shift 2
             ;;
         -h|--help)
@@ -108,10 +108,10 @@ fi
 echo "Starting PAIKKA import..."
 echo "PBF files:   ${PBF_FILES[*]}"
 echo "Data dir:    $DATA_DIR"
-echo "Memory:      $MEMORY"
+echo "Memory:      $IMPORT_MEMORY"
 echo "JAR file:    $JAR_FILE"
-if [ -n "$THREADS" ]; then
-    echo "Threads:     $THREADS"
+if [ -n "$IMPORT_THREADS" ]; then
+    echo "Threads:     $IMPORT_THREADS"
 fi
 echo ""
 
@@ -120,10 +120,10 @@ AVAILABLE_MEM_KB=$(grep MemAvailable /proc/meminfo | awk '{print $2}')
 AVAILABLE_MEM_GB=$((AVAILABLE_MEM_KB / 1024 / 1024))
 
 echo "System memory:   ${AVAILABLE_MEM_GB}GB available"
-echo "Requested heap:  $MEMORY"
+echo "Requested heap:  $IMPORT_MEMORY"
 
 # Build JVM arguments with memory management optimizations
-JVM_ARGS="-Xmx$MEMORY -Xms$MEMORY"
+JVM_ARGS="-Xmx$IMPORT_MEMORY -Xms$IMPORT_MEMORY"
 JVM_ARGS="$JVM_ARGS -XX:+UseG1GC"
 JVM_ARGS="$JVM_ARGS -XX:MaxGCPauseMillis=200"
 JVM_ARGS="$JVM_ARGS -XX:+UnlockExperimentalVMOptions"
@@ -140,8 +140,8 @@ JVM_ARGS="$JVM_ARGS --add-opens=java.base/java.util=ALL-UNNAMED"
 JVM_ARGS="$JVM_ARGS --enable-native-access=ALL-UNNAMED"
 
 # Add thread configuration if specified
-if [ -n "$THREADS" ]; then
-    JVM_ARGS="$JVM_ARGS -Dpaikka.import.threads=$THREADS"
+if [ -n "$IMPORT_THREADS" ]; then
+    JVM_ARGS="$JVM_ARGS -Dpaikka.import.threads=$IMPORT_THREADS"
 fi
 
 # Run PAIKKA import with required JVM flags
@@ -160,7 +160,7 @@ elif [ $EXIT_CODE -eq 134 ]; then
     echo ""
     echo "✗ Import failed: Process was killed (likely out of memory)"
     echo "💡 Try reducing heap size or adding more RAM"
-    echo "   Current heap: $MEMORY, Available: ${AVAILABLE_MEM_GB}GB"
+    echo "   Current heap: $IMPORT_MEMORY, Available: ${AVAILABLE_MEM_GB}GB"
     exit 1
 else
     echo ""
