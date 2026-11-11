@@ -53,7 +53,15 @@ echo "Starting OSM PBF filtering for PAIKKA..."
 echo "Input file:  $INPUT_FILE"
 echo "Output file: $OUTPUT_FILE"
 echo ""
-osmium tags-filter "$INPUT_FILE" r/boundary=administrative  -o "$OUTPUT_FILE" --overwrite
+# Keep administrative boundaries, disputed country boundaries (e.g. Palestine),
+# and any relation carrying an ISO 3166-1 country code. The importer decides
+# which of these are usable as hierarchy nodes.
+osmium tags-filter "$INPUT_FILE" \
+  r/boundary=administrative \
+  r/boundary=disputed \
+  r/ISO3166-1 \
+  r/ISO3166-1:alpha2 \
+  -o "$OUTPUT_FILE" --overwrite
 
 if [ $? -eq 0 ]; then
     echo ""

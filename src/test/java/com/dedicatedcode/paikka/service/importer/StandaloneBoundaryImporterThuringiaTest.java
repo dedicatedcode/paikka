@@ -93,6 +93,7 @@ class StandaloneBoundaryImporterThuringiaTest {
         assertTrue(Files.exists(tempOutputDir.resolve("region_metadata")), "region_metadata directory should exist");
         assertTrue(Files.exists(tempOutputDir.resolve("region_geometry")), "region_geometry directory should exist");
         assertTrue(Files.exists(tempOutputDir.resolve("osm_names.tsv")), "osm_names.tsv should exist");
+        assertTrue(Files.exists(tempOutputDir.resolve("region_hierarchy.tsv")), "region_hierarchy.tsv should exist");
     }
 
     @Test
