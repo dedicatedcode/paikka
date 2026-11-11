@@ -58,10 +58,14 @@ chown -R paikka:paikka $STATS_DIR
 cd $DATA_DIR
 
 # Check if the first argument is a known script
-if [ "$1" = "prepare" ] || [ "$1" = "prepare-boundaries" ]; then
+if [ "$1" = "prepare" ]; then
     echo "Running script: $1"
     shift
     exec runuser -u paikka -- prepare "$@"
+elif [ "$1" = "prepare-boundaries" ]; then
+    echo "Running script: $1"
+    shift
+    exec runuser -u paikka -- prepare-boundaries "$@"
 elif [ "$1" = "import" ]; then
     echo "Running script: $1"
     shift

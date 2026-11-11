@@ -1,15 +1,14 @@
 #!/bin/bash
 
 # Project Paikka - Lite PBF Filter
-# Filters OSM PBF files to keep only POIs and Administrative Boundaries
+# Filters OSM PBF files to keep only Administrative Boundaries
 
 # Usage function
 usage() {
     echo "Usage: $0 <input_file> <output_file>"
     echo ""
     echo "Filters an OSM PBF file to keep only boundaries relevant for REITTI:"
-    echo "  - Points of Interest (amenity, shop, tourism, leisure, etc.)"
-    echo "  - Administrative boundaries"
+    echo "  - Administrative boundaries (incl. disputed ones, e.g. Palestine)"
     echo ""
     echo "Arguments:"
     echo "  input_file   Path to the input OSM PBF file"
@@ -53,14 +52,14 @@ echo "Starting OSM PBF filtering for PAIKKA..."
 echo "Input file:  $INPUT_FILE"
 echo "Output file: $OUTPUT_FILE"
 echo ""
-# Keep administrative boundaries, disputed country boundaries (e.g. Palestine),
-# and any relation carrying an ISO 3166-1 country code. The importer decides
-# which of these are usable as hierarchy nodes.
+# Keep administrative boundaries and disputed country boundaries (e.g. Palestine,
+# which carries boundary=disputed instead of the usual tags). Country codes such
+# as ISO3166-1 stay on the kept relations as tags; the importer reads them from
+# there. Bare-key expressions like r/ISO3166-1 must not be used here: they match
+# far too broadly and would blow up the output file size.
 osmium tags-filter "$INPUT_FILE" \
   r/boundary=administrative \
   r/boundary=disputed \
-  r/ISO3166-1 \
-  r/ISO3166-1:alpha2 \
   -o "$OUTPUT_FILE" --overwrite
 
 if [ $? -eq 0 ]; then
