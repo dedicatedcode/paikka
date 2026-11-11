@@ -48,6 +48,11 @@ import java.util.concurrent.atomic.AtomicLong;
  * - h3_to_osm: H3_CELL_ID (uint64) -> List[OSM_ID] (raw byte array)
  * - region_metadata: OSM_ID -> [total cell count (long), h3 resolution (int), admin_level (int)] (16 bytes)
  * - region_geometry: OSM_ID -> simplified WKB (bytes)
+ * <p>
+ * Additionally writes two PostgreSQL-COPY compatible side-car files:
+ * - osm_names.tsv: OSM_ID, type, all name:* tags as JSON
+ * - region_hierarchy.tsv: OSM_ID, parent OSM_ID, kind, admin_level, resolution, total_cells,
+ *   depth, child_count, continent code
  */
 @Service
 public class StandaloneBoundaryImporter {
@@ -84,6 +89,7 @@ public class StandaloneBoundaryImporter {
         Path regionMetaPath = out.resolve("region_metadata");
         Path regionGeomPath = out.resolve("region_geometry");
         Path nameSql = out.resolve("osm_names.tsv");
+        Path hierarchyTsv = out.resolve("region_hierarchy.tsv");
 
         Path tmpRegionMetaPath = tmp.resolve("tmp_region_metadata");
         Path tmpRegionGeomPath = tmp.resolve("tmp_region_geometry");
@@ -95,6 +101,7 @@ public class StandaloneBoundaryImporter {
         cleanup(regionGeomPath);
         cleanup(tmpRegionMetaPath);
         cleanup(tmpRegionGeomPath);
+        Files.deleteIfExists(hierarchyTsv);
 
         BlockBasedTableConfig tableCfg = new BlockBasedTableConfig()
                 .setBlockSize(64 * 1024)
@@ -154,6 +161,10 @@ public class StandaloneBoundaryImporter {
                     cleanup(threadH3Paths[t]);
                 }
 
+                // Hierarchy inputs accumulate across all PBF files
+                Map<Long, String> isoCodes = new HashMap<>();
+                Map<Long, List<Long>> subareaEdges = new HashMap<>();
+
                 for (String pbfPath : pbfPaths) {
                     stats.setCurrentPhase(1, BoundaryImportStatistics.PHASE_CACHING);
 
@@ -200,7 +211,14 @@ public class StandaloneBoundaryImporter {
                                 }
                                 if (isAdministrativeBoundary(r)) {
                                     stats.incrementRelationsFound();
-                                    stubs.add(buildRelationStub(r));
+                                    RelationStub stub = buildRelationStub(r);
+                                    if (stub.isoCode() != null) {
+                                        isoCodes.put(stub.osmId(), stub.isoCode());
+                                    }
+                                    if (!stub.subareaRelations().isEmpty()) {
+                                        subareaEdges.put(stub.osmId(), stub.subareaRelations());
+                                    }
+                                    stubs.add(stub);
                                 }
                             }
                         }
@@ -318,6 +336,9 @@ public class StandaloneBoundaryImporter {
                     }
                 }
 
+                stats.setCurrentPhase(3, BoundaryImportStatistics.PHASE_HIERARCHY);
+                new RegionHierarchyWriter().write(hierarchyTsv, tmpRegionMeta, tmpRegionGeom, h3ToOsm, h3, isoCodes, subareaEdges);
+
                 stats.setCurrentPhase(3, BoundaryImportStatistics.PHASE_COMPACTING);
                 // Copy from temporary DBs to final DBs in sorted order
                 copyDb(tmpRegionMeta, regionMeta);
@@ -334,7 +355,8 @@ public class StandaloneBoundaryImporter {
                 dirSize(h3ToOsmPath),
                 dirSize(regionMetaPath),
                 dirSize(regionGeomPath),
-                fileSize(nameSql)
+                fileSize(nameSql),
+                fileSize(hierarchyTsv)
         );
 
         stats.stop();
@@ -612,27 +634,40 @@ public class StandaloneBoundaryImporter {
 
     // ============================ OSM HELPERS ============================
 
-    private boolean isAdministrativeBoundary(OsmRelation r) {
-        boolean boundary = false, adminLevel = false;
+    boolean isAdministrativeBoundary(OsmRelation r) {
+        boolean boundary = false, adminLevel = false, isoCountry = false;
         for (int i = 0; i < r.getNumberOfTags(); i++) {
             OsmTag t = r.getTag(i);
-            if ("boundary".equals(t.getKey()) && "administrative".equals(t.getValue())) boundary = true;
+            if ("boundary".equals(t.getKey())
+                    && ("administrative".equals(t.getValue()) || "disputed".equals(t.getValue()))) {
+                boundary = true;
+            }
             if ("admin_level".equals(t.getKey())) adminLevel = true;
             if ("type".equals(t.getKey()) && "boundary".equals(t.getValue())) boundary = true;
+            if ("ISO3166-1".equals(t.getKey()) || "ISO3166-1:alpha2".equals(t.getKey())) isoCountry = true;
         }
-        return boundary && adminLevel;
+        // Country-level relations are sometimes tagged boundary=disputed (e.g. Palestine)
+        // and may omit admin_level. Keep them so their subareas can be linked.
+        return (boundary && adminLevel) || (boundary && isoCountry);
     }
 
-    private RelationStub buildRelationStub(OsmRelation r) {
+    RelationStub buildRelationStub(OsmRelation r) {
         List<Long> outer = new ArrayList<>();
         List<Long> inner = new ArrayList<>();
+        List<Long> subareas = new ArrayList<>();
         int level = 10;
+        boolean hasAdminLevel = false;
+        String isoCode = null;
+        String isoAlpha2 = null;
         for (int i = 0; i < r.getNumberOfMembers(); i++) {
             OsmRelationMember m = r.getMember(i);
+            String role = m.getRole();
             if (m.getType() == EntityType.Way) {
-                String role = m.getRole();
                 if ("outer".equals(role) || role == null || role.isEmpty()) outer.add(m.getId());
                 else if ("inner".equals(role)) inner.add(m.getId());
+            } else if (m.getType() == EntityType.Relation
+                    && ("subarea".equals(role) || role == null || role.isEmpty())) {
+                subareas.add(m.getId());
             }
         }
         for (int i = 0; i < r.getNumberOfTags(); i++) {
@@ -640,14 +675,37 @@ public class StandaloneBoundaryImporter {
             if ("admin_level".equals(t.getKey())) {
                 try {
                     level = Integer.parseInt(t.getValue());
+                    hasAdminLevel = true;
                 } catch (NumberFormatException ignored) {
                 }
+            } else if ("ISO3166-1".equals(t.getKey())) {
+                isoCode = normalizeIsoCode(t.getValue());
+            } else if ("ISO3166-1:alpha2".equals(t.getKey())) {
+                isoAlpha2 = normalizeIsoCode(t.getValue());
             }
         }
-        return new RelationStub(r.getId(), level, outer, inner);
+        String iso = isoAlpha2 != null ? isoAlpha2 : isoCode;
+        if (!hasAdminLevel && iso != null) {
+            level = 2;
+        }
+        return new RelationStub(r.getId(), level, iso, outer, inner, subareas);
     }
 
-    private record RelationStub(long osmId, int adminLevel, List<Long> outerWays, List<Long> innerWays) {
+    private String normalizeIsoCode(String value) {
+        if (value == null) {
+            return null;
+        }
+        for (String part : value.split("[;,]", -1)) {
+            String candidate = part.trim().toUpperCase(Locale.ROOT);
+            if (candidate.length() == 2 && candidate.chars().allMatch(Character::isLetter)) {
+                return candidate;
+            }
+        }
+        return null;
+    }
+
+    record RelationStub(long osmId, int adminLevel, String isoCode,
+                        List<Long> outerWays, List<Long> innerWays, List<Long> subareaRelations) {
     }
 
     private void cleanup(Path p) {

@@ -72,6 +72,14 @@ for dir in "${REQUIRED_DIRS[@]}"; do
     fi
 done
 
+REQUIRED_FILES=("osm_names.tsv" "region_hierarchy.tsv")
+for file in "${REQUIRED_FILES[@]}"; do
+    if [ ! -f "$DB_DIR_ABS/$file" ]; then
+        echo "Error: Required file '$file' not found inside $DB_DIR_ABS"
+        exit 1
+    fi
+done
+
 echo "=========================================="
 echo "Preparing H3 RocksDB Bundle"
 echo "Version:    $VERSION"
@@ -92,7 +100,7 @@ echo "Creating ZIP archive..."
 # -x "**/LOCK": IMPORTANT. Excludes RocksDB native file system locks which prevent startup on target systems.
 (
     cd "$DB_DIR_ABS"
-    zip -r -q "$ZIP_PATH" h3_to_osm region_metadata region_geometry osm_names.tsv -x "**/LOCK"
+    zip -r -q "$ZIP_PATH" h3_to_osm region_metadata region_geometry osm_names.tsv region_hierarchy.tsv -x "**/LOCK"
 )
 
 echo "Calculating bundle metadata..."

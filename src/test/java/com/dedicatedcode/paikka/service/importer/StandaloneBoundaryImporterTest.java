@@ -31,6 +31,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.Map;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -91,6 +92,7 @@ class StandaloneBoundaryImporterTest {
         assertTrue(Files.exists(tempOutputDir.resolve("region_metadata")), "region_metadata directory should exist");
         assertTrue(Files.exists(tempOutputDir.resolve("region_geometry")), "region_geometry directory should exist");
         assertTrue(Files.exists(tempOutputDir.resolve("osm_names.tsv")), "osm_names.tsv should exist");
+        assertTrue(Files.exists(tempOutputDir.resolve("region_hierarchy.tsv")), "region_hierarchy.tsv should exist");
     }
 
     @Test
@@ -228,6 +230,105 @@ class StandaloneBoundaryImporterTest {
         String firstLine = Files.readAllLines(namesPath).getFirst();
         assertTrue(firstLine.contains("\t"), "osm_names.tsv should be tab-separated");
         System.out.println("osm_names.tsv first line: " + firstLine);
+    }
+
+    @Test
+    void testRegionHierarchyFormat() throws IOException {
+        Path hierarchyPath = tempOutputDir.resolve("region_hierarchy.tsv");
+        assertTrue(Files.size(hierarchyPath) > 0, "region_hierarchy.tsv should not be empty");
+
+        Set<Long> ids = new HashSet<>();
+        for (String line : Files.readAllLines(hierarchyPath)) {
+            if (line.isBlank()) {
+                continue;
+            }
+            String[] columns = line.split("\t", -1);
+            assertEquals(9, columns.length, "Hierarchy rows must have 9 columns: " + line);
+
+            long osmId = Long.parseLong(columns[0]);
+            ids.add(osmId);
+            if (!columns[1].isEmpty()) {
+                Long.parseLong(columns[1]);
+            }
+            assertEquals("ADMIN", columns[2]);
+            assertTrue(Integer.parseInt(columns[3]) >= 1);
+            assertTrue(Integer.parseInt(columns[4]) >= 4);
+            assertTrue(Long.parseLong(columns[5]) > 0);
+            assertTrue(Integer.parseInt(columns[6]) >= 0);
+            assertTrue(Integer.parseInt(columns[7]) >= 0);
+            assertTrue(columns[8].matches("[A-Z]{2}"), "Unexpected continent code: " + columns[8]);
+        }
+        assertTrue(ids.size() >= 10, "Should contain at least 10 hierarchy rows, got: " + ids.size());
+    }
+
+    @Test
+    void testRegionHierarchyCoversAllMetadataEntries() throws Exception {
+        Set<Long> metadataIds = new HashSet<>();
+        try (Options opts = new Options().setCreateIfMissing(false);
+             RocksDB db = RocksDB.open(opts, tempOutputDir.resolve("region_metadata").toString())) {
+            var it = db.newIterator();
+            it.seekToFirst();
+            while (it.isValid()) {
+                metadataIds.add(ByteBuffer.wrap(it.key()).order(ByteOrder.BIG_ENDIAN).getLong());
+                it.next();
+            }
+        }
+
+        Set<Long> hierarchyIds = new HashSet<>();
+        for (String line : Files.readAllLines(tempOutputDir.resolve("region_hierarchy.tsv"))) {
+            if (!line.isBlank()) {
+                hierarchyIds.add(Long.parseLong(line.split("\t", -1)[0]));
+            }
+        }
+        assertEquals(metadataIds, hierarchyIds,
+                "Hierarchy must describe exactly the regions present in region_metadata");
+    }
+
+    @Test
+    void testRegionHierarchyTreeIsConsistent() throws IOException {
+        Map<Long, long[]> rows = new java.util.HashMap<>();
+        Map<Long, Long> parents = new java.util.HashMap<>();
+        Map<Long, Integer> childCounts = new java.util.HashMap<>();
+
+        for (String line : Files.readAllLines(tempOutputDir.resolve("region_hierarchy.tsv"))) {
+            if (line.isBlank()) {
+                continue;
+            }
+            String[] columns = line.split("\t", -1);
+            long osmId = Long.parseLong(columns[0]);
+            Long parentId = columns[1].isEmpty() ? null : Long.parseLong(columns[1]);
+            long adminLevel = Long.parseLong(columns[3]);
+            long depth = Long.parseLong(columns[6]);
+            int childCount = Integer.parseInt(columns[7]);
+            rows.put(osmId, new long[]{adminLevel, depth, childCount});
+            if (parentId != null) {
+                parents.put(osmId, parentId);
+                childCounts.merge(parentId, 1, Integer::sum);
+            }
+        }
+
+        assertFalse(rows.isEmpty(), "Hierarchy must not be empty");
+        for (Map.Entry<Long, Long> entry : parents.entrySet()) {
+            long[] child = rows.get(entry.getKey());
+            long[] parent = rows.get(entry.getValue());
+            assertNotNull(parent, "Parent " + entry.getValue() + " of " + entry.getKey() + " is missing");
+            assertTrue(parent[0] < child[0],
+                    "Parent admin level must be lower than the child level for " + entry.getKey());
+            assertEquals(parent[1] + 1, child[1],
+                    "Depth must increase by one from parent to child for " + entry.getKey());
+        }
+        for (Map.Entry<Long, long[]> entry : rows.entrySet()) {
+            assertEquals(entry.getValue()[2], childCounts.getOrDefault(entry.getKey(), 0).longValue(),
+                    "child_count mismatch for " + entry.getKey());
+        }
+
+        boolean hasContinent = false;
+        for (String line : Files.readAllLines(tempOutputDir.resolve("region_hierarchy.tsv"))) {
+            if (!line.isBlank()) {
+                hasContinent |= !line.split("\t", -1)[8].equals("XX");
+            }
+        }
+        assertTrue(hasContinent, "At least one region should be assigned to a continent");
     }
 
     @Test

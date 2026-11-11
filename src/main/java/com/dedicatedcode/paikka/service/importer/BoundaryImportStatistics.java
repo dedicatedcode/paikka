@@ -29,7 +29,8 @@ public class BoundaryImportStatistics {
     static final String PHASE_CACHING = "Phase 1: Caching Nodes & Ways";
     static final String PHASE_RELATIONS = "Phase 2: Processing Relations & H3";
     static final String PHASE_MERGING = "3.1: Merging H3 thread DBs";
-    static final String PHASE_COMPACTING = "3.2: Compacting Final Databases";
+    static final String PHASE_HIERARCHY = "3.2: Building Region Hierarchy";
+    static final String PHASE_COMPACTING = "3.3: Compacting Final Databases";
 
     public enum Stage {
         CACHING_NODES_WAYS("Caching Nodes & Ways"),
@@ -101,6 +102,7 @@ public class BoundaryImportStatistics {
     private volatile long regionMetaSizeBytes;
     private volatile long regionGeomSizeBytes;
     private volatile long osmNamesSizeBytes;
+    private volatile long regionHierarchySizeBytes;
 
     public long getNodesCached() {
         return nodesCached.get();
@@ -267,11 +269,13 @@ public class BoundaryImportStatistics {
         return String.format("%.1fG/%.1fG", usedBytes / (1024.0 * 1024.0 * 1024.0), maxBytes / (1024.0 * 1024.0 * 1024.0));
     }
 
-    public void setOutputSizes(long h3OsmBytes, long regionMetaBytes, long regionGeomBytes, long osmNamesBytes) {
+    public void setOutputSizes(long h3OsmBytes, long regionMetaBytes, long regionGeomBytes,
+                               long osmNamesBytes, long regionHierarchyBytes) {
         this.h3OsmSizeBytes = h3OsmBytes;
         this.regionMetaSizeBytes = regionMetaBytes;
         this.regionGeomSizeBytes = regionGeomBytes;
         this.osmNamesSizeBytes = osmNamesBytes;
+        this.regionHierarchySizeBytes = regionHierarchyBytes;
     }
 
     public void startProgressReporter() {
@@ -402,6 +406,7 @@ public class BoundaryImportStatistics {
             System.out.printf("  \033[36mregion_metadata:\033[0m  %s%n", formatSize(regionMetaSizeBytes));
             System.out.printf("  \033[36mregion_geometry:\033[0m  %s%n", formatSize(regionGeomSizeBytes));
             System.out.printf("  \033[36mosm_names.tsv:\033[0m    %s%n", formatSize(osmNamesSizeBytes));
+            System.out.printf("  \033[36mregion_hierarchy:\033[0m %s%n", formatSize(regionHierarchySizeBytes));
         }
 
         System.out.println();

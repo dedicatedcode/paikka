@@ -1,0 +1,16 @@
+# PAIKKA benchmark POIs
+#
+# Format: name,lat,lon
+# Names must not contain commas.
+#
+# Default set covers dense city, building/address, parking, station,
+# supermarket, a second city, coast, and sparse rural data.
+
+luebeck-kanalstr-84,53.867494,10.695337
+luebeck-p4,53.867609,10.695800
+luebeck-innenstadt,53.865600,10.686800
+luebeck-hbf,53.867400,10.669000
+luebeck-landwege,53.8682208,10.6955003
+kiel-hbf,54.322000,10.132000
+travemuende,53.963000,10.870000
+rural-ostholstein,54.100000,10.800000
