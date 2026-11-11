@@ -44,7 +44,7 @@ public class OsmNameStreamer implements AutoCloseable {
             String jsonString = jsonBuilder.toString();
 
             // Escape the finished JSON string specifically for PG Text-Mode COPY rules
-            String postgresSafeJson = PostgresCopyEscaper.escape(jsonString);
+            String postgresSafeJson = escapeSQL(jsonString);
 
             // Writes exactly 3 columns matching your schema: osm_id, osm_type, all_names
             this.writer.write(id + "\t" + type + "\t" + postgresSafeJson + "\n");
@@ -79,6 +79,22 @@ public class OsmNameStreamer implements AutoCloseable {
         }
         return sb.toString();
     }
+
+    private String escapeSQL(String text) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < text.length(); i++) {
+            char ch = text.charAt(i);
+            switch (ch) {
+                case '\\' -> sb.append("\\\\");
+                case '\t' -> sb.append("\\t");
+                case '\n' -> sb.append("\\n");
+                case '\r' -> sb.append("\\r");
+                default -> sb.append(ch);
+            }
+        }
+        return sb.toString();
+    }
+
 
     @Override
     public void close() throws IOException {
