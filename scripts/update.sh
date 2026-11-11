@@ -20,7 +20,9 @@ fi
 PBF_INPUT_FILE="planet-latest.osm.pbf"
 PBF_FILTERED_FILE="planet-filtered.pbf"
 IMPORT_DIR="import"
-DOCKER_IMAGE="${DOCKER_IMAGE:-dedicatedcode/paikka:latest}"
+DOCKER_IMAGE_DEFAULT="dedicatedcode/paikka:latest"
+DOCKER_IMAGE="${DOCKER_IMAGE:-$DOCKER_IMAGE_DEFAULT}"
+PULL_DOCKER_IMAGE="${PULL_DOCKER_IMAGE:-true}"
 
 DOWNLOAD_DIR="${DOWNLOAD_DIR:-$LOCAL_WORK_DIR}"
 IMPORT_DATA_DIR="${IMPORT_DATA_DIR:-$LOCAL_WORK_DIR/$IMPORT_DIR}"
@@ -95,6 +97,10 @@ Options:
   --memory SIZE               Memory for import (env: IMPORT_MEMORY, default: 16G)
   --threads NUM               Threads for import (env: IMPORT_THREADS, default: 10)
   --pbf-file PATH             Use a local PBF file instead of downloading the latest planet file
+  --docker-image IMAGE        Docker image used for filtering and importing
+                              (env: DOCKER_IMAGE, default: dedicatedcode/paikka:latest)
+  --no-pull                   Do not pull the Docker image before use; useful for local
+                              test builds (env: PULL_DOCKER_IMAGE=false)
 
 Cloudflare cache invalidation:
   --purge-cache               Purge the Cloudflare cache after a successful, verified update
@@ -128,6 +134,8 @@ Examples:
      --purge-cache --cloudflare-token CF_TOKEN --cloudflare-zone-id CF_ZONE_ID
   $0 --remote-user deploy --remote-host geo-direkt.dedicatedcode.com --api-token SECRET \\
      --pbf-file ./new-zealand.osm.pbf --memory 8G --threads 4
+  $0 --remote-user deploy --remote-host geo-direkt.dedicatedcode.com --api-token SECRET \\
+     --docker-image paikka:test --no-pull
   $0 --remote-user deploy --remote-host geo-direkt.dedicatedcode.com --api-token SECRET \\
      --post-stats --github-token GH_TOKEN --discussion-number 7
 EOF
@@ -226,6 +234,16 @@ parse_args_and_configure() {
             --threads=*)            IMPORT_THREADS="${1#*=}"; shift ;;
             --pbf-file)             require_flag_value "$1" "${2:-}"; PBF_INPUT_PATH="$2"; shift 2 ;;
             --pbf-file=*)           PBF_INPUT_PATH="${1#*=}"; shift ;;
+            --docker-image)         require_flag_value "$1" "${2:-}"; DOCKER_IMAGE="$2"; shift 2 ;;
+            --docker-image=*)       DOCKER_IMAGE="${1#*=}"; shift ;;
+            --no-pull)              PULL_DOCKER_IMAGE=false; shift ;;
+            --no-pull=*)
+                case "${1#*=}" in
+                    true)  PULL_DOCKER_IMAGE=true ;;
+                    false) PULL_DOCKER_IMAGE=false ;;
+                    *) echo "Error: Invalid value for --no-pull (expected true or false)"; print_usage; exit 1 ;;
+                esac
+                shift ;;
             --purge-cache)          PURGE_CLOUDFLARE_CACHE=true; shift ;;
             --purge-cache=*)
                 case "${1#*=}" in
@@ -317,6 +335,7 @@ parse_args_and_configure() {
     echo "  Import data directory: $IMPORT_DATA_DIR"
     echo "  Import memory: $IMPORT_MEMORY"
     echo "  Import threads: $IMPORT_THREADS"
+    echo "  Docker image: $DOCKER_IMAGE (pull: $PULL_DOCKER_IMAGE)"
     if [ -n "$PBF_INPUT_PATH" ]; then
         echo "  PBF input file: $PBF_INPUT_PATH"
     fi
@@ -393,8 +412,20 @@ local_download_planet_file() {
 # LOCAL: Pulls the latest version of the Paikka Docker image.
 ###
 local_pull_docker_image() {
-    log "LOCAL: Pulling latest Docker image: $DOCKER_IMAGE"
-    sudo docker pull "$DOCKER_IMAGE"
+    if [ "$PULL_DOCKER_IMAGE" != "true" ]; then
+        log "LOCAL: Skipping Docker image pull (--no-pull)"
+        return 0
+    fi
+
+    log "LOCAL: Pulling Docker image: $DOCKER_IMAGE"
+    if ! sudo docker pull "$DOCKER_IMAGE"; then
+        if [ "$DOCKER_IMAGE" != "$DOCKER_IMAGE_DEFAULT" ]; then
+            echo "WARNING: Could not pull '$DOCKER_IMAGE'; using the local image instead." >&2
+        else
+            echo "Error: Could not pull '$DOCKER_IMAGE'." >&2
+            return 1
+        fi
+    fi
 }
 
 ###

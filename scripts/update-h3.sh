@@ -32,6 +32,8 @@
 #   --pbf-file PATH       Use local PBF file instead of downloading
 #   --version STR         Bundle version (default: YYYY-MM-DD-v1)
 #   --output-dir PATH     Bundle output directory (default: ./dist)
+#   --docker-image IMAGE  Docker image for filtering/importing (default: dedicatedcode/paikka:latest)
+#   --no-pull             Do not pull the Docker image before use (for local test builds)
 #   --no-upload           Skip R2 upload (local bundle only)
 #   -h, --help            Show this help message
 # ==============================================================================
@@ -48,7 +50,9 @@ PLANET_URL="https://planet.osm.org/pbf/planet-latest.osm.pbf"
 LOCAL_WORK_DIR="$(pwd)"
 PBF_INPUT_FILE="planet-latest.osm.pbf"
 PBF_FILTERED_FILE="planet-boundaries-filtered.pbf"
-DOCKER_IMAGE="dedicatedcode/paikka:latest"
+DOCKER_IMAGE_DEFAULT="dedicatedcode/paikka:latest"
+DOCKER_IMAGE="${DOCKER_IMAGE:-$DOCKER_IMAGE_DEFAULT}"
+PULL_DOCKER_IMAGE="${PULL_DOCKER_IMAGE:-true}"
 
 # --- Local Paths ---
 DOWNLOAD_DIR="${DOWNLOAD_DIR:-$LOCAL_WORK_DIR}"
@@ -146,6 +150,14 @@ parse_args_and_configure() {
                 BUNDLE_OUTPUT_DIR="$2"
                 shift 2
                 ;;
+            --docker-image)
+                DOCKER_IMAGE="$2"
+                shift 2
+                ;;
+            --no-pull)
+                PULL_DOCKER_IMAGE=false
+                shift
+                ;;
             --no-upload)
                 NO_UPLOAD=true
                 shift
@@ -161,6 +173,8 @@ parse_args_and_configure() {
                 echo "  --pbf-file PATH       Use local PBF file instead of downloading"
                 echo "  --version STR         Bundle version (default: YYYY-MM-DD-v1)"
                 echo "  --output-dir PATH     Bundle output directory (default: ./dist)"
+                echo "  --docker-image IMAGE  Docker image for filtering/importing (default: dedicatedcode/paikka:latest)"
+                echo "  --no-pull             Do not pull the Docker image before use (for local test builds)"
                 echo "  --no-upload           Skip R2 upload (local bundle only)"
                 echo "  -h, --help            Show this help message"
                 exit 1
@@ -181,6 +195,8 @@ parse_args_and_configure() {
     IMPORT_THREADS="${IMPORT_THREADS:-10}"
     VERSION="${VERSION:-$(date +%Y-%m-%d)-v1}"
     BUNDLE_OUTPUT_DIR="${BUNDLE_OUTPUT_DIR:-$LOCAL_WORK_DIR/dist}"
+    DOCKER_IMAGE="${DOCKER_IMAGE:-$DOCKER_IMAGE_DEFAULT}"
+    PULL_DOCKER_IMAGE="${PULL_DOCKER_IMAGE:-true}"
 
     # Validate PBF input if provided
     if [ -n "$PBF_INPUT_PATH" ] && [ ! -f "$PBF_INPUT_PATH" ]; then
@@ -197,6 +213,7 @@ parse_args_and_configure() {
     echo "  Import threads:    $IMPORT_THREADS"
     echo "  Bundle version:    $VERSION"
     echo "  Bundle output:     $BUNDLE_OUTPUT_DIR"
+    echo "  Docker image:      $DOCKER_IMAGE (pull: $PULL_DOCKER_IMAGE)"
     echo "  Skip upload:       $NO_UPLOAD"
     if [ -n "$PBF_INPUT_PATH" ]; then
         echo "  PBF input:         $PBF_INPUT_PATH"
@@ -254,8 +271,20 @@ local_download_planet_file() {
 # LOCAL: Pulls the latest version of the Paikka Docker image.
 ###
 local_pull_docker_image() {
-    log "Step 2b: Pulling latest Docker image: $DOCKER_IMAGE"
-    sudo docker pull "$DOCKER_IMAGE"
+    if [ "$PULL_DOCKER_IMAGE" != "true" ]; then
+        log "Step 2b: Skipping Docker image pull (--no-pull)"
+        return 0
+    fi
+
+    log "Step 2b: Pulling Docker image: $DOCKER_IMAGE"
+    if ! sudo docker pull "$DOCKER_IMAGE"; then
+        if [ "$DOCKER_IMAGE" != "$DOCKER_IMAGE_DEFAULT" ]; then
+            echo "WARNING: Could not pull '$DOCKER_IMAGE'; using the local image instead." >&2
+        else
+            echo "Error: Could not pull '$DOCKER_IMAGE'." >&2
+            return 1
+        fi
+    fi
 }
 
 ###
