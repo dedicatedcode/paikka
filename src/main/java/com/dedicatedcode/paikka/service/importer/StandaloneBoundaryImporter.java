@@ -24,6 +24,7 @@ import de.topobyte.osm4j.pbf.seq.PbfIterator;
 import org.locationtech.jts.geom.*;
 import org.locationtech.jts.io.WKBWriter;
 import org.locationtech.jts.operation.polygonize.Polygonizer;
+import org.locationtech.jts.operation.union.UnaryUnionOp;
 import org.rocksdb.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -77,9 +78,18 @@ public class StandaloneBoundaryImporter {
     // ============================ PUBLIC API ============================
 
     public void importBoundaries(List<String> pbfPaths, String outputDir) throws Exception {
+        importBoundaries(pbfPaths, outputDir, null);
+    }
+
+    public void importBoundaries(List<String> pbfPaths, String outputDir, String scratchDir) throws Exception {
         RocksDB.loadLibrary();
         Path out = Paths.get(outputDir);
-        Path tmp = out.resolve("tmp");
+        Path tmp = (scratchDir == null || scratchDir.isBlank())
+                ? out.resolve("tmp")
+                : Paths.get(scratchDir).toAbsolutePath();
+        if (tmp.getParent() == null) {
+            throw new IllegalArgumentException("Refusing to use '" + tmp + "' as scratch directory");
+        }
         Files.createDirectories(out);
         Files.createDirectories(tmp);
 
@@ -305,6 +315,10 @@ public class StandaloneBoundaryImporter {
                                                     logger.debug("WKB written to tmpRegionGeom in {}ms for OSM ID: {}", System.currentTimeMillis() - startTime, stub.osmId());
                                                 }
                                             } catch (Exception e) {
+                                                if (isStorageFailure(e)) {
+                                                    throw new RuntimeException("Storage failure while processing relation " + stub.osmId()
+                                                                                       + "; aborting instead of writing an incomplete bundle", e);
+                                                }
                                                 stats.recordError(BoundaryImportStatistics.Stage.PROCESSING_RELATIONS, BoundaryImportStatistics.Kind.GEOMETRY, stub.osmId(), "process-relation", e);
                                             }
                                         }
@@ -410,83 +424,117 @@ public class StandaloneBoundaryImporter {
     // ============================ GEOMETRY STITCHING ============================
 
     /**
+     * Storage failures (RocksDB/IO) are not data problems: continuing would silently
+     * write an incomplete bundle and slow the run down. They abort the import instead.
+     */
+    private static boolean isStorageFailure(Throwable t) {
+        for (Throwable c = t; c != null; c = c.getCause()) {
+            if (c instanceof RocksDBException || c instanceof java.io.IOException) {
+                return true;
+            }
+            if (c.getCause() == c) {
+                break;
+            }
+        }
+        return false;
+    }
+
+    /**
      * Builds a JTS MultiPolygon from relation outer/inner way members.
      * Rings are stitched by coordinate continuation (same logic as ImportService.buildConnectedRings).
      */
     private Geometry buildMultiPolygon(RelationStub stub, RocksDB nodeCache, RocksDB wayCache) {
-        List<List<Coordinate>> outerRings = stitchRings(stub.outerWays(), nodeCache, wayCache);
-        List<List<Coordinate>> innerRings = stitchRings(stub.innerWays(), nodeCache, wayCache);
-        if (outerRings.isEmpty()) return null;
-
-        Polygonizer polygonizer = new Polygonizer();
-        for (List<Coordinate> outer : outerRings) {
-            try {
-                polygonizer.add(GEOMETRY_FACTORY.createLinearRing(outer.toArray(new Coordinate[0])));
-            } catch (Exception e) {
-                stats.recordError(BoundaryImportStatistics.Stage.PROCESSING_RELATIONS, BoundaryImportStatistics.Kind.GEOMETRY, stub.osmId(), "createLinearRing-outer", e);
-            }
+        List<Geometry> outerLines = new ArrayList<>(stub.outerWays().size());
+        collectWayLines(stub.outerWays(), nodeCache, wayCache, outerLines);
+        if (outerLines.isEmpty()) {
+            return null;
         }
-        for (List<Coordinate> inner : innerRings) {
-            try {
-                polygonizer.add(GEOMETRY_FACTORY.createLinearRing(inner.toArray(new Coordinate[0])));
-            } catch (Exception e) {
-                stats.recordError(BoundaryImportStatistics.Stage.PROCESSING_RELATIONS, BoundaryImportStatistics.Kind.GEOMETRY, stub.osmId(), "createLinearRing-inner", e);
-            }
-        }
-
-        @SuppressWarnings("unchecked")
-        Collection<Polygon> polygons = polygonizer.getPolygons();
-        if (polygons.isEmpty()) return null;
-        return polygons.size() == 1 ? polygons.iterator().next() : GEOMETRY_FACTORY.createMultiPolygon(polygons.toArray(new Polygon[0]));
+        List<Geometry> innerLines = new ArrayList<>(stub.innerWays().size());
+        collectWayLines(stub.innerWays(), nodeCache, wayCache, innerLines);
+        return assemble(outerLines, innerLines);
     }
 
-    private List<List<Coordinate>> stitchRings(List<Long> wayIds, RocksDB nodeCache, RocksDB wayCache) {
-        Map<Long, List<Coordinate>> wayCoords = new HashMap<>();
-        for (long wid : wayIds) {
-            try {
-                byte[] seq = wayCache.get(longToBytes(wid));
-                if (seq == null) continue;
-                long[] nodeIds = bytesToLongArray(seq);
-                List<Coordinate> coords = resolveCoordinates(nodeIds, nodeCache);
-                if (coords != null && coords.size() >= 2) wayCoords.put(wid, coords);
-            } catch (RocksDBException e) {
-                stats.recordError(BoundaryImportStatistics.Stage.CACHING_NODES_WAYS, BoundaryImportStatistics.Kind.STORE, wid, "stitchRings", e);
+    /**
+     * Builds the polygon geometry from boundary lines. Lines are noded before polygonizing so that
+     * separate rings which touch at a single point (e.g. Austria's exclave Jungholz) stay separate;
+     * hand-stitching them by endpoint matching merged them into one self-intersecting ring, which
+     * the polygonizer then discarded.
+     */
+    static Geometry assemble(Collection<? extends Geometry> outerLines, Collection<? extends Geometry> innerLines) {
+        Geometry outer = polygonize(outerLines);
+        if (outer == null || innerLines.isEmpty()) {
+            return outer;
+        }
+        Geometry inner = polygonize(innerLines);
+        if (inner == null) {
+            return outer;
+        }
+        return polygonalOnly(outer.difference(inner));
+    }
+
+    private static Geometry polygonalOnly(Geometry geometry) {
+        if (geometry == null || geometry.isEmpty()) {
+            return null;
+        }
+        if (geometry instanceof Polygon || geometry instanceof MultiPolygon) {
+            return geometry;
+        }
+        List<Polygon> polygons = new ArrayList<>();
+        for (int i = 0; i < geometry.getNumGeometries(); i++) {
+            Geometry part = geometry.getGeometryN(i);
+            if (part instanceof Polygon polygon) {
+                polygons.add(polygon);
+            } else if (part instanceof MultiPolygon multiPolygon) {
+                for (int j = 0; j < multiPolygon.getNumGeometries(); j++) {
+                    polygons.add((Polygon) multiPolygon.getGeometryN(j));
+                }
             }
         }
-        List<List<Coordinate>> rings = new ArrayList<>();
-        Set<Long> used = new HashSet<>();
-        while (used.size() < wayCoords.size()) {
-            Long start = wayCoords.keySet().stream().filter(id -> !used.contains(id)).findFirst().orElse(null);
-            if (start == null) break;
-            List<Coordinate> ring = new ArrayList<>(wayCoords.get(start));
-            used.add(start);
-            boolean extended;
-            do {
-                extended = false;
-                Coordinate end = ring.getLast();
-                for (Map.Entry<Long, List<Coordinate>> e : wayCoords.entrySet()) {
-                    if (used.contains(e.getKey())) continue;
-                    List<Coordinate> w = e.getValue();
-                    if (end.equals2D(w.getFirst())) {
-                        ring.addAll(w.subList(1, w.size()));
-                        used.add(e.getKey());
-                        extended = true;
-                        break;
-                    } else if (end.equals2D(w.getLast())) {
-                        List<Coordinate> rev = new ArrayList<>(w);
-                        Collections.reverse(rev);
-                        ring.addAll(rev.subList(1, rev.size()));
-                        used.add(e.getKey());
-                        extended = true;
-                        break;
-                    }
-                }
-            } while (extended);
-            if (ring.size() >= 3 && !ring.getFirst().equals2D(ring.getLast()))
-                ring.add(new Coordinate(ring.getFirst()));
-            if (ring.size() >= 4) rings.add(ring);
+        if (polygons.isEmpty()) {
+            return null;
         }
-        return rings;
+        return polygons.size() == 1
+                ? polygons.getFirst()
+                : GEOMETRY_FACTORY.createMultiPolygon(polygons.toArray(new Polygon[0]));
+    }
+
+    /**
+     * Polygonizes lines into the polygons they enclose (holes are handled by {@link #assemble}).
+     */
+    static Geometry polygonize(Collection<? extends Geometry> lines) {
+        Geometry noded = UnaryUnionOp.union(lines);
+        Polygonizer polygonizer = new Polygonizer();
+        polygonizer.add(noded);
+        @SuppressWarnings("unchecked")
+        Collection<Polygon> polygons = polygonizer.getPolygons();
+        if (polygons.isEmpty()) {
+            return null;
+        }
+        return polygons.size() == 1
+                ? polygons.iterator().next()
+                : GEOMETRY_FACTORY.createMultiPolygon(polygons.toArray(new Polygon[0]));
+    }
+
+    private int collectWayLines(List<Long> wayIds, RocksDB nodeCache, RocksDB wayCache, List<Geometry> target) {
+        int added = 0;
+        for (long wid : wayIds) {
+            byte[] seq;
+            try {
+                seq = wayCache.get(longToBytes(wid));
+            } catch (RocksDBException e) {
+                throw new RuntimeException("Failed to read way " + wid + " from the way cache", e);
+            }
+            if (seq == null) {
+                continue;
+            }
+            long[] nodeIds = bytesToLongArray(seq);
+            List<Coordinate> coords = resolveCoordinates(nodeIds, nodeCache);
+            if (coords != null && coords.size() >= 2) {
+                target.add(GEOMETRY_FACTORY.createLineString(coords.toArray(new Coordinate[0])));
+                added++;
+            }
+        }
+        return added;
     }
 
     private List<Coordinate> resolveCoordinates(long[] nodeIds, RocksDB nodeCache) {
@@ -505,8 +553,7 @@ public class StandaloneBoundaryImporter {
             }
             return coords;
         } catch (RocksDBException e) {
-            stats.recordError(BoundaryImportStatistics.Stage.CACHING_NODES_WAYS, BoundaryImportStatistics.Kind.STORE, null, "resolveCoordinates", e);
-            return null;
+            throw new RuntimeException("Failed to read node coordinates from the node cache", e);
         }
     }
 

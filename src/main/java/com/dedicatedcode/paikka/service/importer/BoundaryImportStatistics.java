@@ -16,6 +16,9 @@
 
 package com.dedicatedcode.paikka.service.importer;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
@@ -25,6 +28,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 public class BoundaryImportStatistics {
+
+    private static final Logger logger = LoggerFactory.getLogger(BoundaryImportStatistics.class);
+    private static final int LOGGED_ERROR_LIMIT = 10;
 
     static final String PHASE_CACHING = "Phase 1: Caching Nodes & Ways";
     static final String PHASE_RELATIONS = "Phase 2: Processing Relations & H3";
@@ -235,7 +241,14 @@ public class BoundaryImportStatistics {
     }
 
     public void recordError(Stage stage, Kind kind, Long osmId, String operation, Exception e) {
-        errorsTotal.incrementAndGet();
+        long total = errorsTotal.incrementAndGet();
+        if (total <= LOGGED_ERROR_LIMIT) {
+            logger.error("Import error #{} of {}: phase={} id={} op={} ex={} msg={}",
+                    total, getRelationsFound(), stage, osmId, operation,
+                    e.getClass().getName(), e.getMessage(), e);
+        } else if (total == LOGGED_ERROR_LIMIT + 1) {
+            logger.error("Further import errors are only counted and summarized at the end.");
+        }
 
         String safePhase = stage.toString();
         String safeKind = kind.toString();

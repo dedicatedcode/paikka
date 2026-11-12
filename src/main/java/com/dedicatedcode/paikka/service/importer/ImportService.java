@@ -97,28 +97,37 @@ public class ImportService {
     }
 
     public void importData(List<String> pbfFilePaths, String dataDir) throws Exception {
+        importData(pbfFilePaths, dataDir, null);
+    }
+
+    public void importData(List<String> pbfFilePaths, String dataDir, String scratchDir) throws Exception {
         long totalStartTime = System.currentTimeMillis();
         printHeader(pbfFilePaths, dataDir);
 
         List<Path> pbfPaths = pbfFilePaths.stream().map(Paths::get).toList();
         Path dataDirectory = Paths.get(dataDir);
-        Path tmpDirectory = dataDirectory.resolve("tmp");
+        Path tmpDirectory = (scratchDir == null || scratchDir.isBlank())
+                ? dataDirectory.resolve("tmp")
+                : Paths.get(scratchDir).toAbsolutePath();
+        if (tmpDirectory.getParent() == null) {
+            throw new IllegalArgumentException("Refusing to use '" + tmpDirectory + "' as scratch directory");
+        }
         dataDirectory.toFile().mkdirs();
         tmpDirectory.toFile().mkdirs();
 
         Path shardsDbPath = dataDirectory.resolve("poi_shards");
         Path boundariesDbPath = dataDirectory.resolve("boundaries");
         Path buildingsDbPath = dataDirectory.resolve("buildings_shards");
-        Path appendBuildingDbPath = dataDirectory.resolve("tmp/append_building");
-        Path gridIndexDbPath = dataDirectory.resolve("tmp/grid_index");
-        Path buildingGridIndexDbPath = dataDirectory.resolve("tmp/building_grid_index");
-        Path appendDbPath = dataDirectory.resolve("tmp/append_poi");
-        Path nodeCacheDbPath = dataDirectory.resolve("tmp/node_cache");
-        Path wayIndexDbPath = dataDirectory.resolve("tmp/way_index");
-        Path boundaryWayIndexDbPath = dataDirectory.resolve("tmp/boundary_way_index");
-        Path neededNodesDbPath = dataDirectory.resolve("tmp/needed_nodes");
-        Path relIndexDbPath = dataDirectory.resolve("tmp/rel_index");
-        Path poiIndexDbPath = dataDirectory.resolve("tmp/poi_index");
+        Path appendBuildingDbPath = tmpDirectory.resolve("append_building");
+        Path gridIndexDbPath = tmpDirectory.resolve("grid_index");
+        Path buildingGridIndexDbPath = tmpDirectory.resolve("building_grid_index");
+        Path appendDbPath = tmpDirectory.resolve("append_poi");
+        Path nodeCacheDbPath = tmpDirectory.resolve("node_cache");
+        Path wayIndexDbPath = tmpDirectory.resolve("way_index");
+        Path boundaryWayIndexDbPath = tmpDirectory.resolve("boundary_way_index");
+        Path neededNodesDbPath = tmpDirectory.resolve("needed_nodes");
+        Path relIndexDbPath = tmpDirectory.resolve("rel_index");
+        Path poiIndexDbPath = tmpDirectory.resolve("poi_index");
 
         cleanupDatabase(shardsDbPath);
         cleanupDatabase(boundariesDbPath);

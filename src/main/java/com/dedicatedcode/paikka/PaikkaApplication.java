@@ -93,6 +93,7 @@ public class PaikkaApplication implements CommandLineRunner {
         boolean isBoundaryImportMode = false;
         List<String> pbfFiles = new ArrayList<>();
         String dataDir = "./data";
+        String scratchDir = null;
         Set<Integer> usedArgIndices = new HashSet<>();
 
         // Process flags and their values first
@@ -114,6 +115,11 @@ public class PaikkaApplication implements CommandLineRunner {
                 dataDir = args[ i + 1];
                 usedArgIndices.add(i + 1);
                 i++; // Skip flag value
+            } else if ("--tmp-dir".equals(arg)) {
+                if (i + 1 >= args.length) { logger.error("Missing --tmp-dir value"); System.exit(1); }
+                scratchDir = args[ i + 1];
+                usedArgIndices.add(i + 1);
+                i++; // Skip flag value
             }
         }
 
@@ -132,7 +138,7 @@ public class PaikkaApplication implements CommandLineRunner {
                 System.exit(1);
             }
             try {
-                importService.importData(pbfFiles, dataDir);
+                importService.importData(pbfFiles, dataDir, scratchDir);
                 System.exit(0);
             } catch (Exception e) {
                 logger.error("Import failed", e);
@@ -145,7 +151,7 @@ public class PaikkaApplication implements CommandLineRunner {
                 System.exit(1);
             }
             try {
-                standaloneBoundaryImporter.importBoundaries(pbfFiles, dataDir);
+                standaloneBoundaryImporter.importBoundaries(pbfFiles, dataDir, scratchDir);
                 System.exit(0);
             } catch (Exception e) {
                 logger.error("Boundary import failed", e);
@@ -189,6 +195,8 @@ public class PaikkaApplication implements CommandLineRunner {
         System.out.println("                             • Comma-separated list: --pbf-file \"file1.pbf,file2.pbf\"");
         System.out.println("                             • Repeated flags: --pbf-file file1.pbf --pbf-file file2.pbf");
         System.out.println("  --data-dir <path>         Path to data directory (default: ./data)");
+        System.out.println("  --tmp-dir <path>          Scratch directory for RocksDB temp data (default: <data-dir>/tmp).");
+        System.out.println("                            Use a fast disk (e.g. NVMe) if the data dir lives on slower storage.");
         System.out.println("  Positional arguments (after all flags) are treated as PBF files in import modes");
 
         System.out.println("\nImport Examples:");

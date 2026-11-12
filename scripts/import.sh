@@ -15,6 +15,7 @@ usage() {
     echo "Options:"
     echo "  --jar-file PATH       Path to the PAIKKA jar file (auto-detected if not provided)"
     echo "  --data-dir PATH       Directory to store processed data (default: ./)"
+    echo "  --tmp-dir PATH        Scratch directory for RocksDB temp data (default: <data-dir>/tmp)"
     echo "  --memory SIZE         JVM heap size (default: 16g)"
     echo "  --threads NUM         Maximum number of import threads (default: half of CPU cores)"
     echo "  -h, --help            Show this help message"
@@ -35,6 +36,7 @@ usage() {
 # Default values
 JAR_FILE=""
 DATA_DIR="./"
+TMP_DIR="${TMP_DIR:-}"
 IMPORT_MEMORY="${IMPORT_MEMORY:-16g}"
 IMPORT_THREADS="${IMPORT_THREADS:-}"
 PBF_FILES=()
@@ -48,6 +50,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --data-dir)
             DATA_DIR="$2"
+            shift 2
+            ;;
+        --tmp-dir)
+            TMP_DIR="$2"
             shift 2
             ;;
         --memory)
@@ -108,6 +114,9 @@ fi
 echo "Starting PAIKKA import..."
 echo "PBF files:   ${PBF_FILES[*]}"
 echo "Data dir:    $DATA_DIR"
+if [ -n "$TMP_DIR" ]; then
+    echo "Scratch dir: $TMP_DIR"
+fi
 echo "Memory:      $IMPORT_MEMORY"
 echo "JAR file:    $JAR_FILE"
 if [ -n "$IMPORT_THREADS" ]; then
@@ -145,10 +154,17 @@ if [ -n "$IMPORT_THREADS" ]; then
 fi
 
 # Run PAIKKA import with required JVM flags
+TMP_ARGS=()
+if [ -n "$TMP_DIR" ]; then
+    mkdir -p "$TMP_DIR"
+    TMP_ARGS=(--tmp-dir "$TMP_DIR")
+fi
+
 java $JVM_ARGS \
   -jar "$JAR_FILE" \
   --import \
   --data-dir "$DATA_DIR" \
+  "${TMP_ARGS[@]}" \
   "${PBF_FILES[@]}"
 
 EXIT_CODE=$?

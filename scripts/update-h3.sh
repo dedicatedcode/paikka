@@ -26,7 +26,9 @@
 #
 # Options:
 #   --env-file PATH       Path to .env file (default: ./.env)
-#   --data-dir PATH       Directory for import data (default: ./data)
+#   --data-dir PATH       Directory for import data (default: ./)
+#   --tmp-dir PATH        Scratch dir for RocksDB temp data, e.g. an NVMe mount
+#                         (default: <data-dir>/tmp)
 #   --memory SIZE         JVM heap size (default: 16g)
 #   --threads NUM         Import threads (default: 10)
 #   --pbf-file PATH       Use local PBF file instead of downloading
@@ -57,6 +59,7 @@ PULL_DOCKER_IMAGE="${PULL_DOCKER_IMAGE:-true}"
 # --- Local Paths ---
 DOWNLOAD_DIR="${DOWNLOAD_DIR:-$LOCAL_WORK_DIR}"
 DATA_DIR="${DATA_DIR:-$LOCAL_WORK_DIR}"
+TMP_DIR="${TMP_DIR:-}"
 
 # --- Import Settings ---
 IMPORT_MEMORY="${IMPORT_MEMORY:-16g}"
@@ -130,6 +133,10 @@ parse_args_and_configure() {
                 DATA_DIR="$2"
                 shift 2
                 ;;
+            --tmp-dir)
+                TMP_DIR="$2"
+                shift 2
+                ;;
             --memory)
                 IMPORT_MEMORY="$2"
                 shift 2
@@ -167,7 +174,9 @@ parse_args_and_configure() {
                 echo ""
                 echo "Options:"
                 echo "  --env-file PATH       Path to .env file (default: ./.env)"
-                echo "  --data-dir PATH       Directory for import data (default: ./data)"
+                echo "  --data-dir PATH       Directory for import data (default: ./)"
+                echo "  --tmp-dir PATH        Scratch dir for RocksDB temp data, e.g. an NVMe mount"
+                echo "                        (default: <data-dir>/tmp)"
                 echo "  --memory SIZE         JVM heap size (default: 16g)"
                 echo "  --threads NUM         Import threads (default: 10)"
                 echo "  --pbf-file PATH       Use local PBF file instead of downloading"
@@ -197,6 +206,7 @@ parse_args_and_configure() {
     BUNDLE_OUTPUT_DIR="${BUNDLE_OUTPUT_DIR:-$LOCAL_WORK_DIR/dist}"
     DOCKER_IMAGE="${DOCKER_IMAGE:-$DOCKER_IMAGE_DEFAULT}"
     PULL_DOCKER_IMAGE="${PULL_DOCKER_IMAGE:-true}"
+    TMP_DIR="${TMP_DIR:-}"
 
     # Validate PBF input if provided
     if [ -n "$PBF_INPUT_PATH" ] && [ ! -f "$PBF_INPUT_PATH" ]; then
@@ -209,6 +219,7 @@ parse_args_and_configure() {
     echo "H3 Bundle Pipeline Configuration"
     echo "=========================================="
     echo "  Data directory:    $DATA_DIR"
+    echo "  Scratch directory: ${TMP_DIR:-$DATA_DIR/tmp}"
     echo "  Import memory:     $IMPORT_MEMORY"
     echo "  Import threads:    $IMPORT_THREADS"
     echo "  Bundle version:    $VERSION"
@@ -250,6 +261,9 @@ local_prepare_directories() {
     log "Step 1: Preparing directories"
     mkdir -p "$DOWNLOAD_DIR"
     mkdir -p "$DATA_DIR"
+    if [ -n "$TMP_DIR" ]; then
+        mkdir -p "$TMP_DIR"
+    fi
     mkdir -p "$BUNDLE_OUTPUT_DIR"
 }
 
@@ -308,15 +322,25 @@ local_filter_pbf() {
 local_import_h3() {
     log "Step 4: Running H3 import"
 
+    local scratch_args=()
+    local scratch_mount=()
+    if [ -n "$TMP_DIR" ]; then
+        mkdir -p "$TMP_DIR"
+        scratch_args=(--tmp-dir /scratch)
+        scratch_mount=(-v "$TMP_DIR":/scratch)
+    fi
+
     if [ -n "$PBF_INPUT_PATH" ]; then
         INPUT_DIR="$(dirname "$PBF_INPUT_PATH")"
         INPUT_FILE="$(basename "$PBF_INPUT_PATH")"
         sudo docker run --rm \
             -v "$INPUT_DIR":/input \
             -v "$DATA_DIR":/data \
+            "${scratch_mount[@]+"${scratch_mount[@]}"}" \
             "$DOCKER_IMAGE" \
             import-boundaries \
             --data-dir /data \
+            "${scratch_args[@]+"${scratch_args[@]}"}" \
             --memory "$IMPORT_MEMORY" \
             --threads "$IMPORT_THREADS" \
             "/input/$INPUT_FILE"
@@ -324,9 +348,11 @@ local_import_h3() {
         sudo docker run --rm \
             -v "$DOWNLOAD_DIR":/input \
             -v "$DATA_DIR":/data \
+            "${scratch_mount[@]+"${scratch_mount[@]}"}" \
             "$DOCKER_IMAGE" \
             import-boundaries \
             --data-dir /data \
+            "${scratch_args[@]+"${scratch_args[@]}"}" \
             --memory "$IMPORT_MEMORY" \
             --threads "$IMPORT_THREADS" \
             "/input/$PBF_FILTERED_FILE"

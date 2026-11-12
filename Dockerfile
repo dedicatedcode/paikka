@@ -54,6 +54,12 @@ chown -R paikka:paikka $DATA_DIR
 mkdir -p $STATS_DIR
 chown -R paikka:paikka $STATS_DIR
 
+# Optional scratch directory for RocksDB temp data (may live on faster storage)
+if [ -n "$SCRATCH_DIR" ]; then
+  mkdir -p $SCRATCH_DIR
+  chown -R paikka:paikka $SCRATCH_DIR
+fi
+
 # Switch to data directory
 cd $DATA_DIR
 
