@@ -62,6 +62,9 @@ public class StandaloneBoundaryImporter {
     private static final GeometryFactory GEOMETRY_FACTORY = new GeometryFactory();
     private static final double BUFFER_DISTANCE = 0.0001; // ~11m at equator, ensures border cells
     private static final long H3_THREAD_WRITE_BUFFER = 64L * 1024 * 1024; // per-thread RocksDB write buffer
+    // Regions smaller than one cell at their admin-level resolution (Monaco, San Marino,
+    // Liechtenstein, ...) yield no cells whose centre falls inside the polygon. Retry finer.
+    private static final int[] FALLBACK_RESOLUTIONS = {6, 9};
 
     private final GeometrySimplificationService geometrySimplificationService;
     private final PaikkaConfiguration paikkaConfiguration;
@@ -265,6 +268,7 @@ public class StandaloneBoundaryImporter {
                                             try {
                                                 Geometry geom = buildMultiPolygon(stub, nodeCache, wayCache);
                                                 if (geom == null || geom.isEmpty()) {
+                                                    logSkip(stub, "has no usable geometry (missing ways/nodes or open rings)");
                                                     continue;
                                                 }
 
@@ -298,7 +302,36 @@ public class StandaloneBoundaryImporter {
                                                     logger.debug("H3 Polyfill (Res {}) took {}ms for OSM ID: {}", resolution, System.currentTimeMillis() - startTime, stub.osmId());
                                                 }
                                                 long totalCells = cellCount.get();
-                                                if (totalCells == 0) continue;
+
+                                                if (totalCells == 0) {
+                                                    for (int fallbackResolution : FALLBACK_RESOLUTIONS) {
+                                                        if (fallbackResolution <= resolution) {
+                                                            continue;
+                                                        }
+                                                        cellCount.set(0);
+                                                        processCellsH3Stream(buffered, stub.osmId(), wo, threadH3, cellCount, fallbackResolution);
+                                                        totalCells = cellCount.get();
+                                                        if (totalCells > 0) {
+                                                            logger.info("Relation OSM ID: {} [Admin Level: {}] produced no cells at res {}; using res {} ({} cells)",
+                                                                    stub.osmId(), stub.adminLevel(), resolution, fallbackResolution, totalCells);
+                                                            resolution = fallbackResolution;
+                                                            break;
+                                                        }
+                                                    }
+                                                }
+                                                if (totalCells == 0) {
+                                                    int fallbackResolution = FALLBACK_RESOLUTIONS[FALLBACK_RESOLUTIONS.length - 1];
+                                                    totalCells = writeInteriorPointCell(buffered, stub.osmId(), wo, threadH3, fallbackResolution);
+                                                    if (totalCells > 0) {
+                                                        logger.warn("Relation OSM ID: {} [Admin Level: {}] produced no cells at any resolution; falling back to the res {} cell containing its interior point",
+                                                                stub.osmId(), stub.adminLevel(), fallbackResolution);
+                                                        resolution = fallbackResolution;
+                                                    }
+                                                }
+                                                if (totalCells == 0) {
+                                                    logSkip(stub, "produced no H3 cells");
+                                                    continue;
+                                                }
 
                                                 stats.incrementRelationsProcessed();
                                                 stats.addH3CellsGenerated(totalCells);
@@ -422,6 +455,19 @@ public class StandaloneBoundaryImporter {
     }
 
     // ============================ GEOMETRY STITCHING ============================
+
+    /**
+     * Skipped relations are the only way a region can silently disappear from the bundle.
+     * High-level regions (countries, states, counties) are logged at WARN so a broken
+     * hierarchy is visible in the build log; deeper levels stay at DEBUG to avoid noise.
+     */
+    private static void logSkip(RelationStub stub, String reason) {
+        if (stub.adminLevel() <= 6) {
+            logger.warn("Relation OSM ID: {} [Admin Level: {}] {}; skipping", stub.osmId(), stub.adminLevel(), reason);
+        } else {
+            logger.debug("Relation OSM ID: {} [Admin Level: {}] {}; skipping", stub.osmId(), stub.adminLevel(), reason);
+        }
+    }
 
     /**
      * Storage failures (RocksDB/IO) are not data problems: continuing would silently
@@ -598,6 +644,26 @@ public class StandaloneBoundaryImporter {
                 processH3Batch(batch, osmId, wo, threadH3ToOsm, cellCount);
             }
         }
+    }
+
+    /**
+     * Last-resort fallback for degenerate or sub-cell geometries: writes the single H3 cell
+     * that contains the geometry's interior point so the region still appears in the hierarchy.
+     */
+    private long writeInteriorPointCell(Geometry geometry, long osmId, WriteOptions wo, RocksDB threadH3ToOsm, int resolution) {
+        Point point;
+        try {
+            point = geometry.getInteriorPoint();
+        } catch (Exception e) {
+            point = geometry.getCentroid();
+        }
+        if (point == null || point.isEmpty()) {
+            return 0;
+        }
+        long cell = h3.latLngToCell(point.getY(), point.getX(), resolution);
+        AtomicLong written = new AtomicLong(0);
+        processH3Batch(List.of(cell), osmId, wo, threadH3ToOsm, written);
+        return written.get();
     }
 
     /**

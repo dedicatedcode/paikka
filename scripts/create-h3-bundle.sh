@@ -80,6 +80,79 @@ for file in "${REQUIRED_FILES[@]}"; do
     fi
 done
 
+# ---------------------------------------------------------------------------
+# Hierarchy sanity check
+#
+# A broken parent chain is invisible in the bundle itself but pushes regions to
+# the continent level in Reitti (e.g. every Hungarian county showing up directly
+# under Europe). Fail the build instead of publishing a broken bundle.
+# ---------------------------------------------------------------------------
+HIERARCHY_FILE="$DB_DIR_ABS/region_hierarchy.tsv"
+MAX_NON_COUNTRY_ROOTS="${MAX_NON_COUNTRY_ROOTS:-10}"
+MIN_COUNTRIES="${MIN_COUNTRIES:-200}"
+
+if [ "${SKIP_HIERARCHY_CHECK:-false}" = "true" ]; then
+    echo "Skipping region hierarchy validation (SKIP_HIERARCHY_CHECK=true)"
+else
+echo "Validating region hierarchy..."
+TOTAL_ROWS=$(awk -F'\t' 'END{print NR}' "$HIERARCHY_FILE")
+ROOT_ROWS=$(awk -F'\t' '$2==""{c++} END{print c+0}' "$HIERARCHY_FILE")
+COUNTRY_ROWS=$(awk -F'\t' '$4==2{c++} END{print c+0}' "$HIERARCHY_FILE")
+NON_COUNTRY_ROOTS=$(awk -F'\t' '$2=="" && $4>2{c++} END{print c+0}' "$HIERARCHY_FILE")
+MISSING_PARENTS=$(awk -F'\t' 'NR==FNR{ids[$1]=1; next} $2!="" && !($2 in ids){c++} END{print c+0}' "$HIERARCHY_FILE" "$HIERARCHY_FILE")
+
+echo "  rows:              $TOTAL_ROWS"
+echo "  roots:             $ROOT_ROWS"
+echo "  countries:         $COUNTRY_ROWS"
+echo "  non-country roots: $NON_COUNTRY_ROOTS (max $MAX_NON_COUNTRY_ROOTS)"
+echo "  missing parents:   $MISSING_PARENTS"
+
+if [ "$MISSING_PARENTS" -gt 0 ]; then
+    echo "Error: $MISSING_PARENTS regions reference a parent that is not in the hierarchy"
+    exit 1
+fi
+
+if [ "$COUNTRY_ROWS" -lt "$MIN_COUNTRIES" ]; then
+    echo "Error: only $COUNTRY_ROWS admin-level-2 regions found (expected at least $MIN_COUNTRIES)"
+    exit 1
+fi
+
+if [ "$NON_COUNTRY_ROOTS" -gt "$MAX_NON_COUNTRY_ROOTS" ]; then
+    echo "Error: $NON_COUNTRY_ROOTS regions above admin level 2 have no parent; the hierarchy is broken"
+    exit 1
+fi
+
+# Regression guard for countries that were silently dropped before the sub-cell
+# fallback existed. OSM relation IDs are stable for countries.
+KNOWN_COUNTRIES=(
+    "21335:Hungary"
+    "214885:Croatia"
+    "1155955:Liechtenstein"
+    "54624:San Marino"
+    "1124039:Monaco"
+    "16239:Austria"
+    "2202162:France"
+    "365331:Italy"
+    "51477:Germany"
+    "148838:United States"
+)
+MISSING_COUNTRIES=()
+for entry in "${KNOWN_COUNTRIES[@]}"; do
+    id="${entry%%:*}"
+    name="${entry#*:}"
+    if ! awk -F'\t' -v id="$id" '$1==id{found=1} END{exit !found}' "$HIERARCHY_FILE"; then
+        MISSING_COUNTRIES+=("$name ($id)")
+    fi
+done
+
+if [ ${#MISSING_COUNTRIES[@]} -gt 0 ]; then
+    echo "Error: known countries missing from the hierarchy: ${MISSING_COUNTRIES[*]}"
+    exit 1
+fi
+
+echo "Hierarchy validation passed."
+fi
+
 echo "=========================================="
 echo "Preparing H3 RocksDB Bundle"
 echo "Version:    $VERSION"
