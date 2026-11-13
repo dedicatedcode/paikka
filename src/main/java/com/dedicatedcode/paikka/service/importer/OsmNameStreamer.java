@@ -2,14 +2,34 @@ package com.dedicatedcode.paikka.service.importer;
 import de.topobyte.osm4j.core.model.iface.OsmEntity;
 import de.topobyte.osm4j.core.model.iface.OsmTag;
 import java.io.BufferedWriter;
-import java.io.FileWriter;
 import java.io.IOException;
+import java.io.OutputStream;
+import java.io.OutputStreamWriter;
+import java.nio.charset.CharsetEncoder;
+import java.nio.charset.CodingErrorAction;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.nio.file.StandardOpenOption;
 
 public class OsmNameStreamer implements AutoCloseable {
     private final BufferedWriter writer;
+    private boolean closed;
 
     public OsmNameStreamer(String outputPath) throws IOException {
-        this.writer = new BufferedWriter(new FileWriter(outputPath));
+        // Explicit UTF-8 encoder that replaces malformed input instead of throwing: a single
+        // unencodable character (e.g. an unpaired surrogate from a broken PBF string) must not
+        // kill the encoder and thereby silently truncate the rest of the names file.
+        Path path = Paths.get(outputPath);
+        if (path.getParent() != null) {
+            Files.createDirectories(path.getParent());
+        }
+        OutputStream out = Files.newOutputStream(path, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
+        CharsetEncoder encoder = StandardCharsets.UTF_8.newEncoder()
+                .onMalformedInput(CodingErrorAction.REPLACE)
+                .onUnmappableCharacter(CodingErrorAction.REPLACE);
+        this.writer = new BufferedWriter(new OutputStreamWriter(out, encoder));
     }
 
     public void processEntity(OsmEntity entity, String type) throws IOException {
@@ -52,7 +72,8 @@ public class OsmNameStreamer implements AutoCloseable {
     }
 
     /**
-     * Step 1: Encodes values to safely fit inside a JSON string property
+     * Step 1: Encodes values to safely fit inside a JSON string property. Unpaired UTF-16
+     * surrogates are replaced with the replacement character so the value is always encodable.
      */
     private String escapeJson(String value) {
         StringBuilder sb = new StringBuilder();
@@ -67,7 +88,15 @@ public class OsmNameStreamer implements AutoCloseable {
                 case '\r': sb.append("\\r"); break;
                 case '\t': sb.append("\\t"); break;
                 default:
-                    if (ch < ' ') {
+                    if (Character.isSurrogate(ch)) {
+                        if (Character.isHighSurrogate(ch) && i + 1 < value.length()
+                                && Character.isLowSurrogate(value.charAt(i + 1))) {
+                            sb.append(ch).append(value.charAt(i + 1));
+                            i++;
+                        } else {
+                            sb.append('\uFFFD');
+                        }
+                    } else if (ch < ' ') {
                         String ss = Integer.toHexString(ch);
                         sb.append("\\u");
                         sb.repeat("0", 4 - ss.length());
@@ -98,6 +127,10 @@ public class OsmNameStreamer implements AutoCloseable {
 
     @Override
     public void close() throws IOException {
+        if (closed) {
+            return;
+        }
+        closed = true;
         writer.flush();
         writer.close();
     }

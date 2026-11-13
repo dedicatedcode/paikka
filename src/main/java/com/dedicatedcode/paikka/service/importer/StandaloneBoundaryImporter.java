@@ -229,11 +229,7 @@ public class StandaloneBoundaryImporter {
                                 }
                             } else if (c.getType() == EntityType.Relation) {
                                 OsmRelation r = (OsmRelation) c.getEntity();
-                                try {
-                                    nameStreamer.processEntity(r, "R");
-                                } catch (IOException e) {
-                                    logger.warn("Failed to stream name for relation ID: {}", r.getId(), e);
-                                }
+                                nameStreamer.processEntity(r, "R");
                                 if (isAdministrativeBoundary(r)) {
                                     stats.incrementRelationsFound();
                                     RelationStub stub = buildRelationStub(r);
@@ -270,6 +266,7 @@ public class StandaloneBoundaryImporter {
                         wayBatch.close();
                     }
 
+                    nameStreamer.close();
                     // ------ Process Relations via partitioned thread pool ------
                     stats.setCurrentPhase(2, BoundaryImportStatistics.PHASE_RELATIONS);
                     stats.setWorkerThreads(threads);
@@ -415,6 +412,8 @@ public class StandaloneBoundaryImporter {
                 fileSize(hierarchyTsv)
         );
 
+        validateNameFile(nameSql);
+
         stats.stop();
         stats.setTotalTime(stats.getElapsedMillis());
         stats.printFinalStatistics();
@@ -422,6 +421,48 @@ public class StandaloneBoundaryImporter {
 
         // Cleanup tmp
         cleanup(tmp);
+    }
+
+    /**
+     * The names file is ingested via Postgres COPY on the consumer side; a single malformed
+     * line (e.g. from a truncated write) makes that ingest fail with an opaque error. Validate
+     * it here so a broken file fails the import instead of being published in a bundle.
+     */
+    private void validateNameFile(Path nameSql) {
+        Path path = nameSql;
+        if (!Files.isRegularFile(path)) {
+            logger.warn("No osm_names.tsv was produced; region names will be unavailable.");
+            return;
+        }
+        long bad = 0;
+        long total = 0;
+        try (java.io.BufferedReader reader = Files.newBufferedReader(path)) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                total++;
+                int firstTab = line.indexOf('\t');
+                int secondTab = line.indexOf('\t', firstTab + 1);
+                if (firstTab < 0 || secondTab < 0) {
+                    bad++;
+                    continue;
+                }
+                String json = line.substring(secondTab + 1);
+                String trimmed = json.trim();
+                if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) {
+                    bad++;
+                    if (bad <= 5) {
+                        logger.error("Malformed line in osm_names.tsv: {}", line.substring(0, Math.min(line.length(), 120)));
+                    }
+                }
+            }
+        } catch (IOException e) {
+            throw new RuntimeException("Failed to validate osm_names.tsv", e);
+        }
+        if (bad > 0) {
+            throw new RuntimeException("osm_names.tsv contains " + bad + " of " + total
+                    + " malformed lines; the import produced an incomplete names file. Aborting.");
+        }
+        logger.info("Validated {} lines in osm_names.tsv.", total);
     }
 
     private void copyDb(RocksDB source, RocksDB target) throws RocksDBException {

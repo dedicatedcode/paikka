@@ -216,6 +216,24 @@ fi
 echo "Hierarchy validation passed."
 fi
 
+# Validate osm_names.tsv: every line must have exactly 3 tab-separated fields and the
+# third field must be a complete JSON object. A truncated names file would make the
+# Postgres COPY ingest on the consumer side fail with an opaque error.
+NAMES_FILE="$DB_DIR_ABS/osm_names.tsv"
+if [ -f "$NAMES_FILE" ]; then
+    echo "Validating osm_names.tsv..."
+    BAD_LINES=$(awk -F'\t' 'NF != 3 || $3 !~ /^\{.*\}$/ {print NR": "$0}' "$NAMES_FILE" | head -5)
+    BAD_COUNT=$(awk -F'\t' 'NF != 3 || $3 !~ /^\{.*\}$/{c++} END{print c+0}' "$NAMES_FILE")
+    if [ "$BAD_COUNT" -gt 0 ]; then
+        echo "Error: osm_names.tsv contains $BAD_COUNT malformed line(s) (expected 3 tab-separated fields with a JSON object in field 3):"
+        echo "$BAD_LINES"
+        echo "This usually means the name streamer failed mid-write during the import."
+        echo "Re-run the boundary import before creating a bundle."
+        exit 1
+    fi
+    echo "osm_names.tsv validation passed."
+fi
+
 echo "=========================================="
 echo "Preparing H3 RocksDB Bundle"
 echo "Version:    $VERSION"
