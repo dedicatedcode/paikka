@@ -36,6 +36,7 @@ public class BoundaryImportStatistics {
     static final String PHASE_RELATIONS = "Phase 2: Processing Relations & H3";
     static final String PHASE_MERGING = "3.1: Merging H3 thread DBs";
     static final String PHASE_HIERARCHY = "3.2: Building Region Hierarchy";
+    static final String PHASE_PRUNING = "3.2b: Removing Unassigned Regions";
     static final String PHASE_COMPACTING = "3.3: Compacting Final Databases";
 
     public enum Stage {
@@ -91,11 +92,31 @@ public class BoundaryImportStatistics {
     private final AtomicLong mergedThreadDatabasesProcessed = new AtomicLong(0);
     private final AtomicLong mergedEntriesProcessed = new AtomicLong(0);
 
+    private final AtomicLong skippedRelations = new AtomicLong(0);
+    private final ConcurrentHashMap<Integer, AtomicLong> skippedRelationsByLevel = new ConcurrentHashMap<>();
+    private final AtomicLong resolutionFallbacks = new AtomicLong(0);
+    private final AtomicLong interiorPointFallbacks = new AtomicLong(0);
+
+    private final AtomicLong hierarchyRegionsTotal = new AtomicLong(0);
+    private final AtomicLong hierarchyRegionsProcessed = new AtomicLong(0);
+    private final AtomicLong hierarchyRoots = new AtomicLong(0);
+    private final AtomicLong hierarchyRegionsPublished = new AtomicLong(0);
+    private final AtomicLong hierarchySpatialParents = new AtomicLong(0);
+    private final AtomicLong hierarchyFallbackContinents = new AtomicLong(0);
+    private final AtomicLong activeThreads = new AtomicLong(0);
+    private volatile int workerThreads;
+
     private volatile String currentPhase = "Initializing";
     private volatile boolean running = true;
-    private final long startTime = System.currentTimeMillis();
-    private volatile long phaseStartTime = System.currentTimeMillis();
+    private final long startNanos = System.nanoTime();
+    private volatile long phaseStartNanos = System.nanoTime();
     private long totalTime;
+
+    private long lastSampleNanos = System.nanoTime();
+    private long lastRelationsProcessed;
+    private long lastH3CellsGenerated;
+    private long lastMergedEntriesProcessed;
+    private long lastHierarchyRegionsProcessed;
 
     private final int TOTAL_STEPS = 3;
     private volatile int currentStep = 0;
@@ -174,25 +195,121 @@ public class BoundaryImportStatistics {
         mergedEntriesProcessed.incrementAndGet();
     }
 
+    public void incrementActiveThreads() {
+        activeThreads.incrementAndGet();
+    }
+
+    public void decrementActiveThreads() {
+        activeThreads.decrementAndGet();
+    }
+
+    public long getActiveThreads() {
+        return activeThreads.get();
+    }
+
+    public void setWorkerThreads(int workerThreads) {
+        this.workerThreads = Math.max(0, workerThreads);
+    }
+
+    public int getWorkerThreads() {
+        return workerThreads;
+    }
+
+    public void incrementSkippedRelations(int adminLevel) {
+        skippedRelations.incrementAndGet();
+        skippedRelationsByLevel.computeIfAbsent(adminLevel, ignored -> new AtomicLong(0)).incrementAndGet();
+    }
+
+    public long getSkippedRelations() {
+        return skippedRelations.get();
+    }
+
+    public Map<Integer, Long> getSkippedRelationsByLevel() {
+        Map<Integer, Long> result = new LinkedHashMap<>();
+        skippedRelationsByLevel.entrySet().stream()
+                .sorted(Map.Entry.comparingByKey())
+                .forEach(entry -> result.put(entry.getKey(), entry.getValue().get()));
+        return result;
+    }
+
+    public void incrementResolutionFallback() {
+        resolutionFallbacks.incrementAndGet();
+    }
+
+    public long getResolutionFallbacks() {
+        return resolutionFallbacks.get();
+    }
+
+    public void incrementInteriorPointFallback() {
+        interiorPointFallbacks.incrementAndGet();
+    }
+
+    public long getInteriorPointFallbacks() {
+        return interiorPointFallbacks.get();
+    }
+
+    public void startHierarchy(long totalRegions) {
+        hierarchyRegionsTotal.set(totalRegions);
+        hierarchyRegionsProcessed.set(0);
+    }
+
+    public void incrementHierarchyRegionsProcessed() {
+        hierarchyRegionsProcessed.incrementAndGet();
+    }
+
+    public long getHierarchyRegionsTotal() {
+        return hierarchyRegionsTotal.get();
+    }
+
+    public long getHierarchyRegionsProcessed() {
+        return hierarchyRegionsProcessed.get();
+    }
+
+    public void setHierarchyResults(long roots, long spatialParents, long fallbackContinents) {
+        hierarchyRoots.set(roots);
+        hierarchySpatialParents.set(spatialParents);
+        hierarchyFallbackContinents.set(fallbackContinents);
+    }
+
+    public long getHierarchyRoots() {
+        return hierarchyRoots.get();
+    }
+
+    public void setHierarchyPublished(long count) {
+        hierarchyRegionsPublished.set(count);
+    }
+
+    public long getHierarchyRegionsPublished() {
+        return hierarchyRegionsPublished.get();
+    }
+
+    public long getHierarchySpatialParents() {
+        return hierarchySpatialParents.get();
+    }
+
+    public long getHierarchyFallbackContinents() {
+        return hierarchyFallbackContinents.get();
+    }
+
     public String getCurrentPhase() {
         return currentPhase;
     }
 
     public void setCurrentPhase(int step, String phase) {
-        long now = System.currentTimeMillis();
+        long now = System.nanoTime();
         synchronized (phaseLock) {
             if (currentPhase != null && !"Initializing".equals(currentPhase) && !phaseClosed) {
-                phaseDurations.merge(currentPhase, Math.max(0L, now - phaseStartTime), Long::sum);
+                phaseDurations.merge(currentPhase, Math.max(0L, (now - phaseStartNanos) / 1_000_000L), Long::sum);
             }
             this.currentPhase = phase;
-            this.phaseStartTime = now;
+            this.phaseStartNanos = now;
             this.currentStep = step;
             this.phaseClosed = false;
         }
     }
 
-    public long getPhaseStartTime() {
-        return phaseStartTime;
+    public long getPhaseElapsedMillis() {
+        return Math.max(0L, (System.nanoTime() - phaseStartNanos) / 1_000_000L);
     }
 
     /**
@@ -203,7 +320,7 @@ public class BoundaryImportStatistics {
         synchronized (phaseLock) {
             long recorded = phaseDurations.getOrDefault(phase, 0L);
             if (phase.equals(currentPhase) && !phaseClosed) {
-                recorded += Math.max(0L, System.currentTimeMillis() - phaseStartTime);
+                recorded += Math.max(0L, (System.nanoTime() - phaseStartNanos) / 1_000_000L);
             }
             return recorded;
         }
@@ -221,15 +338,15 @@ public class BoundaryImportStatistics {
     public void stop() {
         synchronized (phaseLock) {
             if (!phaseClosed && currentPhase != null && !"Initializing".equals(currentPhase)) {
-                phaseDurations.merge(currentPhase, Math.max(0L, System.currentTimeMillis() - phaseStartTime), Long::sum);
+                phaseDurations.merge(currentPhase, Math.max(0L, (System.nanoTime() - phaseStartNanos) / 1_000_000L), Long::sum);
                 phaseClosed = true;
             }
         }
         this.running = false;
     }
 
-    public long getStartTime() {
-        return startTime;
+    public long getElapsedMillis() {
+        return Math.max(0L, (System.nanoTime() - startNanos) / 1_000_000L);
     }
 
     public long getTotalTime() {
@@ -297,9 +414,30 @@ public class BoundaryImportStatistics {
 
         Thread.ofPlatform().daemon().start(() -> {
             while (isRunning()) {
-                long elapsed = System.currentTimeMillis() - getStartTime();
-                long phaseElapsed = System.currentTimeMillis() - getPhaseStartTime();
+                long elapsed = getElapsedMillis();
+                long phaseElapsed = getPhaseElapsedMillis();
                 double phaseSeconds = phaseElapsed / 1000.0;
+
+                long nowNanos = System.nanoTime();
+                long sampleNanos = Math.max(1L, nowNanos - lastSampleNanos);
+                double sampleSeconds = sampleNanos / 1_000_000_000.0;
+                long relationsNow = getRelationsProcessed();
+                long h3CellsNow = getH3CellsGenerated();
+                long mergedNow = getMergedEntriesProcessed();
+                long hierarchyNow = getHierarchyRegionsProcessed();
+
+                long recentRelationsRate = relationsNow >= lastRelationsProcessed
+                        ? (long) ((relationsNow - lastRelationsProcessed) / sampleSeconds) : 0;
+                long recentMergedRate = mergedNow >= lastMergedEntriesProcessed
+                        ? (long) ((mergedNow - lastMergedEntriesProcessed) / sampleSeconds) : 0;
+                long recentHierarchyRate = hierarchyNow >= lastHierarchyRegionsProcessed
+                        ? (long) ((hierarchyNow - lastHierarchyRegionsProcessed) / sampleSeconds) : 0;
+
+                lastSampleNanos = nowNanos;
+                lastRelationsProcessed = relationsNow;
+                lastH3CellsGenerated = h3CellsNow;
+                lastMergedEntriesProcessed = mergedNow;
+                lastHierarchyRegionsProcessed = hierarchyNow;
 
                 String phase = getCurrentPhase();
                 StringBuilder sb = new StringBuilder();
@@ -320,8 +458,10 @@ public class BoundaryImportStatistics {
                     long relsPerSec = phaseSeconds > 0 ? (long) (getRelationsProcessed() / phaseSeconds) : 0;
                     double percentage = getRelationsFound() > 0 ? (double) getRelationsProcessed() / getRelationsFound() * 100.0 : 0.0;
                     sb.append(String.format("\033[1;36m[%s]\033[0m \033[1mProcessing Relations & H3\033[0m", formatTime(elapsed)));
-                    sb.append(String.format(" │ \033[32mRelations:\033[0m %s/%s \033[33m(%s/s)\033[0m",
-                                            formatCompactNumber(getRelationsProcessed()), formatCompactNumber(getRelationsFound()), formatCompactRate(relsPerSec)));
+                    sb.append(String.format(" │ \033[32mRelations:\033[0m %s/%s \033[33m(%s/s now, %s/s avg, %d/%d threads)\033[0m",
+                                            formatCompactNumber(getRelationsProcessed()), formatCompactNumber(getRelationsFound()),
+                                            formatCompactRate(recentRelationsRate), formatCompactRate(relsPerSec),
+                                            getActiveThreads(), getWorkerThreads()));
                     sb.append(String.format(" │ \033[35mProgress:\033[0m %.2f%%", percentage));
                     sb.append(String.format(" │ \033[36mH3 Cells:\033[0m %s", formatCompactNumber(getH3CellsGenerated())));
                     if (getErrorsTotal() > 0) {
@@ -334,10 +474,20 @@ public class BoundaryImportStatistics {
                     long entriesPerSec = phaseSeconds > 0 ? (long) (entriesProcessed / phaseSeconds) : 0;
                     sb.append(String.format("\033[1;36m[%s]\033[0m \033[1mMerging H3 thread DBs\033[0m", formatTime(elapsed)));
                     sb.append(String.format(" │ \033[32mDBs:\033[0m %d/%d", dbsProcessed, dbsTotal));
-                    sb.append(String.format(" │ \033[36mEntries:\033[0m %s \033[33m(%s/s)\033[0m",
-                            formatCompactNumber(entriesProcessed), formatCompactRate(entriesPerSec)));
+                    sb.append(String.format(" │ \033[36mEntries:\033[0m %s \033[33m(%s/s now, %s/s avg)\033[0m",
+                            formatCompactNumber(entriesProcessed), formatCompactRate(recentMergedRate), formatCompactRate(entriesPerSec)));
+                } else if (phase.contains("Hierarchy")) {
+                    long processed = getHierarchyRegionsProcessed();
+                    long total = getHierarchyRegionsTotal();
+                    long boundariesPerSec = phaseSeconds > 0 ? (long) (processed / phaseSeconds) : 0;
+                    sb.append(String.format("\033[1;36m[%s]\033[0m \033[1m%s\033[0m",
+                            formatTime(elapsed), cleanPhaseName(phase)));
+                    sb.append(String.format(" │ \033[32mBoundaries:\033[0m %s/%s \033[33m(%s/s now, %s/s avg)\033[0m",
+                            formatCompactNumber(processed), formatCompactNumber(total),
+                            formatCompactRate(recentHierarchyRate), formatCompactRate(boundariesPerSec)));
                 } else {
-                    sb.append(String.format("\033[1;36m[%s]\033[0m %s", formatTime(elapsed), phase));
+                    sb.append(String.format("\033[1;36m[%s]\033[0m \033[1m%s\033[0m",
+                            formatTime(elapsed), cleanPhaseName(phase)));
                 }
 
                 sb.append(String.format(" │ \033[31mHeap:\033[0m %s", getMemoryStats()));
@@ -390,7 +540,7 @@ public class BoundaryImportStatistics {
                 phaseTotalMs += duration;
             }
             if (!phaseClosed && currentPhase != null && !"Initializing".equals(currentPhase)) {
-                phaseTotalMs += Math.max(0L, System.currentTimeMillis() - phaseStartTime);
+                phaseTotalMs += Math.max(0L, (System.nanoTime() - phaseStartNanos) / 1_000_000L);
             }
         }
         long postProcessingMs = Math.max(0L, getTotalTime() - phaseTotalMs);
@@ -404,7 +554,7 @@ public class BoundaryImportStatistics {
                 printTimingRow(cleanPhaseName(entry.getKey()), entry.getValue(), totalTime);
             }
             if (!phaseClosed && currentPhase != null && !"Initializing".equals(currentPhase)) {
-                long running = Math.max(0L, System.currentTimeMillis() - phaseStartTime);
+                long running = Math.max(0L, (System.nanoTime() - phaseStartNanos) / 1_000_000L);
                 printTimingRow(cleanPhaseName(currentPhase), running, totalTime);
             }
         }
@@ -412,6 +562,29 @@ public class BoundaryImportStatistics {
             printTimingRow("Setup / compaction / metadata", postProcessingMs, totalTime);
         }
         System.out.println("└──────────────────────────────────────┴──────────────┴────────┘");
+
+        if (getHierarchyRegionsTotal() > 0) {
+            System.out.println("\n\033[1;37mHierarchy:\033[0m");
+            System.out.printf("  \033[36mregions published:\033[0m %s%n", formatCompactNumber(getHierarchyRegionsPublished()));
+            System.out.printf("  \033[36mroots:\033[0m             %s%n", formatCompactNumber(getHierarchyRoots()));
+            System.out.printf("  \033[36mspatial parents:\033[0m   %s%n", formatCompactNumber(getHierarchySpatialParents()));
+            System.out.printf("  \033[36mcontinent fallbacks:\033[0m %s%n", formatCompactNumber(getHierarchyFallbackContinents()));
+            if (getSkippedRelations() > 0) {
+                StringBuilder levels = new StringBuilder();
+                getSkippedRelationsByLevel().forEach((level, count) -> {
+                    if (!levels.isEmpty()) levels.append(", ");
+                    levels.append("L").append(level).append("=").append(formatCompactNumber(count));
+                });
+                System.out.printf("  \033[36mskipped relations:\033[0m %s (%s)%n",
+                        formatCompactNumber(getSkippedRelations()), levels);
+            }
+            if (getResolutionFallbacks() > 0) {
+                System.out.printf("  \033[36mH3 resolution fallbacks:\033[0m %s%n", formatCompactNumber(getResolutionFallbacks()));
+            }
+            if (getInteriorPointFallbacks() > 0) {
+                System.out.printf("  \033[36minterior-point fallbacks:\033[0m %s%n", formatCompactNumber(getInteriorPointFallbacks()));
+            }
+        }
 
         if (h3OsmSizeBytes > 0) {
             System.out.println("\n\033[1;37mOutput Database Sizes:\033[0m");

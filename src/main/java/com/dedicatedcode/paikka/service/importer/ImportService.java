@@ -1688,19 +1688,24 @@ public class ImportService {
     }
 
     private boolean isAdministrativeBoundary(OsmRelation relation) {
-        boolean hasBoundaryTag = false, hasAdminLevel = false;
-        String typeValue = null;
+        boolean area = false, hasAdminLevel = false, isoCountry = false, linear = false;
         for (int i = 0; i < relation.getNumberOfTags(); i++) {
             OsmTag tag = relation.getTag(i);
-            if ("boundary".equals(tag.getKey()) && "administrative".equals(tag.getValue())) hasBoundaryTag = true;
-            if ("admin_level".equals(tag.getKey())) hasAdminLevel = true;
-            if ("type".equals(tag.getKey())) {
-                typeValue = tag.getValue();
-                if ("boundary".equals(typeValue) || "multipolygon".equals(typeValue)) hasBoundaryTag = true;
+            if ("boundary".equals(tag.getKey())
+                    && ("administrative".equals(tag.getValue()) || "disputed".equals(tag.getValue()))) {
+                area = true;
             }
+            if ("admin_level".equals(tag.getKey())) hasAdminLevel = true;
+            if ("type".equals(tag.getKey())
+                    && ("multilinestring".equals(tag.getValue())
+                        || "linestring".equals(tag.getValue())
+                        || "route".equals(tag.getValue()))) {
+                linear = true;
+            }
+            if ("ISO3166-1".equals(tag.getKey()) || "ISO3166-1:alpha2".equals(tag.getKey())) isoCountry = true;
         }
-        if ("multilinestring".equals(typeValue) || "route".equals(typeValue)) return false;
-        return hasBoundaryTag && hasAdminLevel;
+        if (linear) return false;
+        return area && (hasAdminLevel || isoCountry);
     }
 
     private List<List<Coordinate>> buildConnectedRings(List<Long> wayIds, RocksDB nodeCache, RocksDB wayIndexDb) {

@@ -67,23 +67,89 @@ public class RegionHierarchyWriter {
         }
     };
 
-    public int write(Path output,
-                     RocksDB tmpRegionMeta,
-                     RocksDB tmpRegionGeom,
-                     RocksDB h3ToOsm,
-                     H3Core h3,
-                     Map<Long, String> isoCodes,
-                     Map<Long, List<Long>> subareaEdges) throws IOException, RocksDBException {
+    public HierarchyResult write(Path output,
+                                 RocksDB tmpRegionMeta,
+                                 RocksDB tmpRegionGeom,
+                                 RocksDB h3ToOsm,
+                                 H3Core h3,
+                                 Map<Long, String> isoCodes,
+                                 Map<Long, List<Long>> subareaEdges,
+                                 Map<Long, StandaloneBoundaryImporter.CountryHints> countryHints,
+                                 Map<String, Long> regionByIso3166_2,
+                                 Map<String, String> countryIsoByName,
+                                 Map<Long, StandaloneBoundaryImporter.CountryStub> countryStubs,
+                                 BoundaryImportStatistics stats) throws IOException, RocksDBException {
         Map<Long, RegionInfo> regions = readRegions(tmpRegionMeta);
-        Map<Long, Long> parentByChild = resolveParents(regions, subareaEdges, tmpRegionGeom, h3ToOsm, h3);
-        Map<Long, Integer> childCounts = countChildren(parentByChild);
+        Set<Long> placeholderCountries = new HashSet<>();
+        for (StandaloneBoundaryImporter.CountryStub country : countryStubs.values()) {
+            if (!regions.containsKey(country.osmId())) {
+                regions.put(country.osmId(), new RegionInfo(country.osmId(), 2, 0, 0));
+                placeholderCountries.add(country.osmId());
+                tmpRegionMeta.put(longToBytes(country.osmId()),
+                        ByteBuffer.allocate(16).order(ByteOrder.BIG_ENDIAN)
+                                .putLong(0L).putInt(0).putInt(2).array());
+            }
+        }
+        stats.startHierarchy(regions.size());
+        Map<Long, Long> parentByChild = resolveParents(regions, subareaEdges, tmpRegionGeom, h3ToOsm, h3, stats);
+
+        Map<String, Long> countryRootByIso = new HashMap<>();
+        Map<Long, String> countryByRegion = new HashMap<>();
+        for (RegionInfo region : regions.values()) {
+            String iso = isoCodes.get(region.osmId());
+            if (region.adminLevel() == 2 && iso != null) {
+                countryRootByIso.put(iso, region.osmId());
+                countryByRegion.put(region.osmId(), iso);
+            }
+        }
+
+        // Hints must be visible before the inheritance pass. Otherwise a region whose country comes
+        // from a hint (for example a federal subject without a resolvable parent) cannot pass that
+        // country on to its children, and the whole subtree is dropped even though it was assigned.
+        Map<Long, String> hintedCountries = new HashMap<>();
+        for (RegionInfo region : regions.values()) {
+            if (countryByRegion.containsKey(region.osmId())) {
+                continue;
+            }
+            String iso = countryFromHints(countryHints.get(region.osmId()), countryRootByIso, countryIsoByName);
+            if (iso != null) {
+                hintedCountries.put(region.osmId(), iso);
+            }
+        }
+
+        inheritCountries(regions.values(), parentByChild, countryByRegion, hintedCountries);
+        for (Map.Entry<Long, String> hint : hintedCountries.entrySet()) {
+            countryByRegion.putIfAbsent(hint.getKey(), hint.getValue());
+        }
+
+        // Last resort: if the tree cannot prove a country but the region's interior point lies in a
+        // country polygon we do have, keep the region instead of silently dropping it.
+        int geometryCountryFallbacks = assignCountriesByGeometry(regions.values(), countryByRegion,
+                                                                 tmpRegionGeom, countryRootByIso);
+        if (geometryCountryFallbacks > 0) {
+            // Descendants of a region assigned by geometry may still be missing a country.
+            inheritCountries(regions.values(), parentByChild, countryByRegion, Map.of());
+        }
+        if (!hintedCountries.isEmpty() || geometryCountryFallbacks > 0) {
+            log.info("Country assignment: {} hinted regions, {} geometry fallbacks",
+                     hintedCountries.size(), geometryCountryFallbacks);
+        }
+
+        Map<Long, Long> repairedParents = repairParents(regions, parentByChild, countryByRegion,
+                                                        countryRootByIso, countryHints, regionByIso3166_2);
+        Set<Long> unassigned = new HashSet<>(regions.keySet());
+        unassigned.removeAll(countryByRegion.keySet());
+
+        Map<Long, Integer> childCounts = countChildren(repairedParents);
         Map<Long, Integer> depths = new HashMap<>(regions.size());
         Map<Long, String> continents = new HashMap<>(regions.size());
         int fallbackContinents = 0;
-
         for (RegionInfo region : regions.values()) {
-            depth(region.osmId(), parentByChild, depths);
-            Continent continent = resolveContinent(region.osmId(), parentByChild, isoCodes, tmpRegionGeom);
+            if (!countryByRegion.containsKey(region.osmId())) {
+                continue;
+            }
+            depth(region.osmId(), repairedParents, depths);
+            Continent continent = resolveContinent(region.osmId(), repairedParents, isoCodes, tmpRegionGeom);
             if (continent.fromGeometry()) {
                 fallbackContinents++;
             }
@@ -92,10 +158,16 @@ public class RegionHierarchyWriter {
 
         List<RegionInfo> sorted = new ArrayList<>(regions.values());
         sorted.sort(Comparator.comparingLong(RegionInfo::osmId));
-
+        int roots = 0;
         try (BufferedWriter writer = Files.newBufferedWriter(output, StandardCharsets.UTF_8)) {
             for (RegionInfo region : sorted) {
-                Long parentId = parentByChild.get(region.osmId());
+                if (!countryByRegion.containsKey(region.osmId())) {
+                    continue;
+                }
+                Long parentId = repairedParents.get(region.osmId());
+                if (parentId == null) {
+                    roots++;
+                }
                 writer.write(Long.toString(region.osmId()));
                 writer.write('\t');
                 if (parentId != null) {
@@ -118,9 +190,202 @@ public class RegionHierarchyWriter {
             }
         }
 
-        log.info("Wrote hierarchy for {} regions ({} roots, {} continent assignments via geometry fallback)",
-                regions.size(), regions.size() - parentByChild.size(), fallbackContinents);
-        return regions.size();
+        writeUnassignedDiagnostics(output.resolveSibling("region_unassigned.tsv"), regions, unassigned, parentByChild);
+        stats.setHierarchyResults(roots, stats.getHierarchySpatialParents(), fallbackContinents);
+        return new HierarchyResult(regions.size() - unassigned.size(), roots, unassigned,
+                                   countryByRegion, placeholderCountries);
+    }
+
+    static void inheritCountries(Iterable<RegionInfo> regions,
+                                 Map<Long, Long> parentByChild,
+                                 Map<Long, String> countryByRegion,
+                                 Map<Long, String> hintedCountries) {
+        for (RegionInfo region : regions) {
+            if (countryByRegion.containsKey(region.osmId())) {
+                continue;
+            }
+            String inherited = inheritedCountry(region.osmId(), parentByChild, countryByRegion, hintedCountries);
+            if (inherited != null) {
+                countryByRegion.put(region.osmId(), inherited);
+            }
+        }
+    }
+
+    private static String inheritedCountry(long osmId,
+                                           Map<Long, Long> parentByChild,
+                                           Map<Long, String> countryByRegion,
+                                           Map<Long, String> hintedCountries) {
+        Set<Long> visited = new HashSet<>();
+        Long current = parentByChild.get(osmId);
+        while (current != null && visited.add(current)) {
+            String country = countryByRegion.get(current);
+            if (country == null) {
+                country = hintedCountries.get(current);
+            }
+            if (country != null) {
+                return country;
+            }
+            current = parentByChild.get(current);
+        }
+        return null;
+    }
+
+    /**
+     * Assigns otherwise unassigned regions to the country polygon that contains their interior
+     * point. This is the fallback for regions whose parent chain is broken because the source
+     * extract clipped a boundary; without it such regions are dropped even though they are plainly
+     * inside a country.
+     */
+    int assignCountriesByGeometry(Iterable<RegionInfo> regions,
+                                          Map<Long, String> countryByRegion,
+                                          RocksDB tmpRegionGeom,
+                                          Map<String, Long> countryRootByIso) {
+        List<Map.Entry<String, Geometry>> countryGeometries = new ArrayList<>();
+        for (Map.Entry<String, Long> country : countryRootByIso.entrySet()) {
+            Geometry geometry = geometry(country.getValue(), tmpRegionGeom);
+            if (geometry != null) {
+                countryGeometries.add(Map.entry(country.getKey(), geometry));
+            }
+        }
+        if (countryGeometries.isEmpty()) {
+            return 0;
+        }
+
+        int assigned = 0;
+        for (RegionInfo region : regions) {
+            if (countryByRegion.containsKey(region.osmId())) {
+                continue;
+            }
+            Geometry geometry = geometry(region.osmId(), tmpRegionGeom);
+            Point point = interiorPoint(geometry);
+            if (point == null) {
+                continue;
+            }
+            for (Map.Entry<String, Geometry> country : countryGeometries) {
+                if (!country.getValue().getEnvelopeInternal().contains(point.getCoordinate())) {
+                    continue;
+                }
+                if (country.getValue().covers(point)) {
+                    countryByRegion.put(region.osmId(), country.getKey());
+                    assigned++;
+                    break;
+                }
+            }
+        }
+        return assigned;
+    }
+
+    private static Point interiorPoint(Geometry geometry) {
+        if (geometry == null) {
+            return null;
+        }
+        Point point;
+        try {
+            point = geometry.getInteriorPoint();
+        } catch (Exception e) {
+            point = geometry.getCentroid();
+        }
+        return point == null || point.isEmpty() ? null : point;
+    }
+
+    private String countryFromHints(StandaloneBoundaryImporter.CountryHints hints,
+                                    Map<String, Long> countryRootByIso,
+                                    Map<String, String> countryIsoByName) {
+        if (hints == null) {
+            return null;
+        }
+        String iso = null;
+        if (hints.iso3166_2() != null) {
+            int separator = hints.iso3166_2().indexOf('-');
+            if (separator > 0) {
+                iso = hints.iso3166_2().substring(0, separator).toUpperCase(java.util.Locale.ROOT);
+            }
+        }
+        if (iso == null && hints.countryCode() != null) {
+            iso = hints.countryCode();
+        }
+        if (iso == null && hints.countryName() != null) {
+            iso = countryIsoByName.get(normalizeCountryName(hints.countryName()));
+        }
+        if (iso == null && hints.countryNameEn() != null) {
+            iso = countryIsoByName.get(normalizeCountryName(hints.countryNameEn()));
+        }
+        return iso != null && countryRootByIso.containsKey(iso) ? iso : null;
+    }
+
+    private static String normalizeCountryName(String value) {
+        return value == null ? null : value.trim().toLowerCase(java.util.Locale.ROOT);
+    }
+
+    private Map<Long, Long> repairParents(Map<Long, RegionInfo> regions,
+                                          Map<Long, Long> parentByChild,
+                                          Map<Long, String> countryByRegion,
+                                          Map<String, Long> countryRootByIso,
+                                          Map<Long, StandaloneBoundaryImporter.CountryHints> countryHints,
+                                          Map<String, Long> regionByIso3166_2) {
+        Map<Long, Long> repaired = new HashMap<>(parentByChild);
+        for (RegionInfo region : regions.values()) {
+            String country = countryByRegion.get(region.osmId());
+            if (country == null) {
+                continue;
+            }
+            if (region.adminLevel() == 2) {
+                repaired.remove(region.osmId());
+                continue;
+            }
+            Long parent = repaired.get(region.osmId());
+            String parentCountry = parent == null ? null : countryByRegion.get(parent);
+            boolean parentValid = parent != null
+                    && country.equals(parentCountry)
+                    && regions.get(parent).adminLevel() < region.adminLevel();
+            if (parentValid) {
+                continue;
+            }
+
+            Long isoParent = null;
+            StandaloneBoundaryImporter.CountryHints hints = countryHints.get(region.osmId());
+            if (hints != null && hints.iso3166_2() != null) {
+                Long candidate = regionByIso3166_2.get(hints.iso3166_2());
+                if (candidate != null && !candidate.equals(region.osmId())) {
+                    RegionInfo candidateRegion = regions.get(candidate);
+                    if (candidateRegion != null
+                            && candidateRegion.adminLevel() < region.adminLevel()
+                            && country.equals(countryByRegion.get(candidate))) {
+                        isoParent = candidate;
+                    }
+                }
+            }
+            Long target = isoParent != null ? isoParent : countryRootByIso.get(country);
+            if (target != null && !target.equals(region.osmId())
+                    && regions.get(target).adminLevel() < region.adminLevel()) {
+                repaired.put(region.osmId(), target);
+            } else {
+                repaired.remove(region.osmId());
+                countryByRegion.remove(region.osmId());
+            }
+        }
+        return repaired;
+    }
+
+    private void writeUnassignedDiagnostics(Path output,
+                                            Map<Long, RegionInfo> regions,
+                                            Set<Long> unassigned,
+                                            Map<Long, Long> parentByChild) throws IOException {
+        try (BufferedWriter writer = Files.newBufferedWriter(output, StandardCharsets.UTF_8)) {
+            for (Long osmId : unassigned.stream().sorted().toList()) {
+                RegionInfo region = regions.get(osmId);
+                writer.write(Long.toString(osmId));
+                writer.write('\t');
+                writer.write(Integer.toString(region.adminLevel()));
+                writer.write('\t');
+                writer.write(parentByChild.containsKey(osmId) ? "no-country-in-ancestors" : "no-parent");
+                writer.write('\n');
+            }
+        }
+    }
+
+    public record HierarchyResult(int regionsWritten, int roots, Set<Long> unassignedIds,
+                                  Map<Long, String> countryByRegion, Set<Long> placeholderCountryIds) {
     }
 
     private Map<Long, RegionInfo> readRegions(RocksDB tmpRegionMeta) throws RocksDBException {
@@ -151,7 +416,8 @@ public class RegionHierarchyWriter {
                                            Map<Long, List<Long>> subareaEdges,
                                            RocksDB tmpRegionGeom,
                                            RocksDB h3ToOsm,
-                                           H3Core h3) throws RocksDBException {
+                                           H3Core h3,
+                                           BoundaryImportStatistics stats) throws RocksDBException {
         Map<Long, List<Long>> candidatesByChild = new HashMap<>();
         for (Map.Entry<Long, List<Long>> entry : subareaEdges.entrySet()) {
             Long parentId = entry.getKey();
@@ -179,18 +445,16 @@ public class RegionHierarchyWriter {
 
         int spatialParents = 0;
         for (RegionInfo region : regions.values()) {
-            if (parentByChild.containsKey(region.osmId())) {
-                continue;
+            if (!parentByChild.containsKey(region.osmId())) {
+                Long parentId = findSpatialParent(region, regions, tmpRegionGeom, h3ToOsm, h3);
+                if (parentId != null) {
+                    parentByChild.put(region.osmId(), parentId);
+                    spatialParents++;
+                }
             }
-            Long parentId = findSpatialParent(region, regions, tmpRegionGeom, h3ToOsm, h3);
-            if (parentId != null) {
-                parentByChild.put(region.osmId(), parentId);
-                spatialParents++;
-            }
+            stats.incrementHierarchyRegionsProcessed();
         }
-        if (spatialParents > 0) {
-            log.info("Resolved {} region parents spatially (missing OSM subarea membership)", spatialParents);
-        }
+        stats.setHierarchyResults(regions.size() - parentByChild.size(), spatialParents, 0);
         return parentByChild;
     }
 
@@ -200,19 +464,10 @@ public class RegionHierarchyWriter {
                                    RocksDB h3ToOsm,
                                    H3Core h3) throws RocksDBException {
         Geometry geometry = geometry(region.osmId(), tmpRegionGeom);
-        if (geometry == null) {
+        Point point = interiorPoint(geometry);
+        if (point == null) {
             return null;
         }
-        Point interior;
-        try {
-            interior = geometry.getInteriorPoint();
-        } catch (Exception e) {
-            interior = geometry.getCentroid();
-        }
-        if (interior == null || interior.isEmpty()) {
-            return null;
-        }
-        final Point point = interior;
 
         Long parentId = selectParent(region, regions, tmpRegionGeom, h3ToOsm, h3, point, 1);
         if (parentId == null && region.adminLevel() >= 6) {
@@ -337,7 +592,7 @@ public class RegionHierarchyWriter {
         return ContinentReference.continentForPoint(point);
     }
 
-    private record RegionInfo(long osmId, int adminLevel, int resolution, long totalCells) {
+    record RegionInfo(long osmId, int adminLevel, int resolution, long totalCells) {
     }
 
     private record Continent(String code, boolean fromGeometry) {

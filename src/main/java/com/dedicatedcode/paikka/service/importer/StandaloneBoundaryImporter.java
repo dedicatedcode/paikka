@@ -25,21 +25,25 @@ import org.locationtech.jts.geom.*;
 import org.locationtech.jts.io.WKBWriter;
 import org.locationtech.jts.operation.polygonize.Polygonizer;
 import org.locationtech.jts.operation.union.UnaryUnionOp;
+import org.locationtech.jts.geom.util.GeometryFixer;
 import org.rocksdb.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
+import java.io.BufferedWriter;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Standalone H3-based administrative boundary importer for Paikka.
@@ -70,6 +74,8 @@ public class StandaloneBoundaryImporter {
     private final PaikkaConfiguration paikkaConfiguration;
     private final H3Core h3;
     private final BoundaryImportStatistics stats;
+    private final Map<Long, String> skippedRelationReasons = new ConcurrentHashMap<>();
+    private final Set<Long> importedRelationIds = ConcurrentHashMap.newKeySet();
 
     public StandaloneBoundaryImporter(GeometrySimplificationService geometrySimplificationService, PaikkaConfiguration paikkaConfiguration) throws Exception {
         this.geometrySimplificationService = geometrySimplificationService;
@@ -95,6 +101,8 @@ public class StandaloneBoundaryImporter {
         }
         Files.createDirectories(out);
         Files.createDirectories(tmp);
+        skippedRelationReasons.clear();
+        importedRelationIds.clear();
 
         Path nodeCachePath = tmp.resolve("node_cache");
         Path wayCachePath = tmp.resolve("way_cache");
@@ -177,6 +185,10 @@ public class StandaloneBoundaryImporter {
                 // Hierarchy inputs accumulate across all PBF files
                 Map<Long, String> isoCodes = new HashMap<>();
                 Map<Long, List<Long>> subareaEdges = new HashMap<>();
+                Map<Long, CountryStub> countryStubs = new LinkedHashMap<>();
+                Map<Long, CountryHints> countryHints = new HashMap<>();
+                Map<String, Long> regionByIso3166_2 = new HashMap<>();
+                Map<String, String> countryIsoByName = new HashMap<>();
 
                 for (String pbfPath : pbfPaths) {
                     stats.setCurrentPhase(1, BoundaryImportStatistics.PHASE_CACHING);
@@ -228,6 +240,23 @@ public class StandaloneBoundaryImporter {
                                     if (stub.isoCode() != null) {
                                         isoCodes.put(stub.osmId(), stub.isoCode());
                                     }
+                                    CountryHints hints = new CountryHints(stub.iso3166_2(), stub.countryCode(),
+                                                                          stub.countryName(), stub.nameEn());
+                                    if (hints.hasAny()) {
+                                        countryHints.put(stub.osmId(), hints);
+                                    }
+                                    if (stub.iso3166_2() != null) {
+                                        regionByIso3166_2.put(stub.iso3166_2(), stub.osmId());
+                                    }
+                                    if (stub.adminLevel() == 2 && stub.isoCode() != null) {
+                                        countryStubs.put(stub.osmId(), new CountryStub(stub.osmId(), stub.isoCode(), stub.name()));
+                                        if (stub.name() != null) {
+                                            countryIsoByName.put(normalizeCountryName(stub.name()), stub.isoCode());
+                                        }
+                                        if (stub.nameEn() != null) {
+                                            countryIsoByName.put(normalizeCountryName(stub.nameEn()), stub.isoCode());
+                                        }
+                                    }
                                     if (!stub.subareaRelations().isEmpty()) {
                                         subareaEdges.put(stub.osmId(), stub.subareaRelations());
                                     }
@@ -243,130 +272,95 @@ public class StandaloneBoundaryImporter {
 
                     // ------ Process Relations via partitioned thread pool ------
                     stats.setCurrentPhase(2, BoundaryImportStatistics.PHASE_RELATIONS);
+                    stats.setWorkerThreads(threads);
 
                     if (!stubs.isEmpty()) {
+                        // Longest-processing-time first: large regions start early so they
+                        // do not become a one-thread tail at the end of the phase.
+                        stubs.sort(Comparator
+                                .comparingInt(RelationStub::adminLevel)
+                                .thenComparing(Comparator.comparingInt((RelationStub s) -> s.outerWays().size()).reversed())
+                                .thenComparing(Comparator.comparingInt((RelationStub s) -> s.innerWays().size()).reversed()));
+
                         ExecutorService executor = Executors.newFixedThreadPool(threads);
                         List<Future<?>> futures = new ArrayList<>();
-                        int partitionSize = (stubs.size() + threads - 1) / threads;
+                        BlockingQueue<List<RelationStub>> queue = new LinkedBlockingQueue<>(Math.max(2, threads * 2));
+                        AtomicReference<Throwable> fatalFailure = new AtomicReference<>();
+                        int batchSize = 100;
+
+                        Thread producer = Thread.ofPlatform().daemon().start(() -> {
+                            try {
+                                for (int from = 0; from < stubs.size(); from += batchSize) {
+                                    if (fatalFailure.get() != null) break;
+                                    int to = Math.min(from + batchSize, stubs.size());
+                                    queue.put(new ArrayList<>(stubs.subList(from, to)));
+                                }
+                                for (int i = 0; i < threads; i++) {
+                                    queue.put(Collections.emptyList());
+                                }
+                            } catch (InterruptedException e) {
+                                Thread.currentThread().interrupt();
+                            }
+                        });
 
                         for (int t = 0; t < threads; t++) {
-                            int from = t * partitionSize;
-                            int to = Math.min(from + partitionSize, stubs.size());
-                            if (from >= to) break;
-
-                            List<RelationStub> partition = stubs.subList(from, to);
                             final int threadIndex = t;
 
                             futures.add(executor.submit(() -> {
+                                stats.incrementActiveThreads();
                                 try {
                                     try (RocksDB threadH3 = RocksDB.open(threadH3Opts, threadH3Paths[threadIndex].toString());
                                          WriteOptions wo = new WriteOptions().setDisableWAL(true)) {
-                                        for (RelationStub stub : partition) {
-                                            if (stub.adminLevel() <= 3) {
-                                                logger.debug("Processing relation OSM ID: {} [Admin Level: {}]", stub.osmId(), stub.adminLevel());
-                                            }
+                                        while (true) {
+                                            List<RelationStub> batch;
                                             try {
-                                                Geometry geom = buildMultiPolygon(stub, nodeCache, wayCache);
-                                                if (geom == null || geom.isEmpty()) {
-                                                    logSkip(stub, "has no usable geometry (missing ways/nodes or open rings)");
-                                                    continue;
+                                                batch = queue.take();
+                                            } catch (InterruptedException e) {
+                                                Thread.currentThread().interrupt();
+                                                break;
+                                            }
+                                            if (batch.isEmpty()) {
+                                                break;
+                                            }
+                                            for (RelationStub stub : batch) {
+                                                if (fatalFailure.get() != null) {
+                                                    break;
                                                 }
-
-                                                // Repair invalid geometries using buffer(0)
-                                                if (!geom.isValid()) {
-                                                    logger.debug("Relation OSM ID: {} [Admin Level: {}] Geometry is invalid, attempting repair", stub.osmId(), stub.adminLevel());
-                                                    geom = geom.buffer(0);
-                                                    if (geom == null || geom.isEmpty() || !geom.isValid()) {
-                                                        logger.error("Relation OSM ID: {} [Admin Level: {}] Geometry repair failed", stub.osmId(), stub.adminLevel());
-                                                        continue;
-                                                    }
-                                                }
-                                                // Simplify first to reduce H3 cell count, then buffer
-                                                Geometry simplified = geometrySimplificationService.simplifyByAdminLevel(geom, stub.adminLevel());
-                                                if (simplified == null || simplified.isEmpty()) {
-                                                    simplified = geom;
-                                                }
-                                                // Buffer to include border-touching cells
-                                                Geometry buffered = simplified.buffer(BUFFER_DISTANCE);
-                                                if (stub.adminLevel() <= 3) {
-                                                    logger.debug("Simplified Geometry: {} points for OSM ID: {}", simplified.getNumPoints(), stub.osmId());
-                                                }
-
-                                                int resolution = getResolutionForAdminLevel(stub.adminLevel());
-
-                                                // ---- H3 Polyfill ----
-                                                AtomicLong cellCount = new AtomicLong(0);
-                                                long startTime = System.currentTimeMillis();
-                                                processCellsH3Stream(buffered, stub.osmId(), wo, threadH3, cellCount, resolution);
-                                                if (stub.adminLevel() <= 3) {
-                                                    logger.debug("H3 Polyfill (Res {}) took {}ms for OSM ID: {}", resolution, System.currentTimeMillis() - startTime, stub.osmId());
-                                                }
-                                                long totalCells = cellCount.get();
-
-                                                if (totalCells == 0) {
-                                                    for (int fallbackResolution : FALLBACK_RESOLUTIONS) {
-                                                        if (fallbackResolution <= resolution) {
-                                                            continue;
+                                                try {
+                                                    processRelationStub(stub, nodeCache, wayCache, threadH3, wo, tmpRegionMeta, tmpRegionGeom);
+                                                } catch (Exception e) {
+                                                    if (isStorageFailure(e)) {
+                                                        fatalFailure.compareAndSet(null, e);
+                                                        queue.clear();
+                                                        for (int i = 0; i < threads; i++) {
+                                                            queue.offer(Collections.emptyList());
                                                         }
-                                                        cellCount.set(0);
-                                                        processCellsH3Stream(buffered, stub.osmId(), wo, threadH3, cellCount, fallbackResolution);
-                                                        totalCells = cellCount.get();
-                                                        if (totalCells > 0) {
-                                                            logger.info("Relation OSM ID: {} [Admin Level: {}] produced no cells at res {}; using res {} ({} cells)",
-                                                                    stub.osmId(), stub.adminLevel(), resolution, fallbackResolution, totalCells);
-                                                            resolution = fallbackResolution;
-                                                            break;
-                                                        }
+                                                        break;
                                                     }
+                                                    stats.recordError(BoundaryImportStatistics.Stage.PROCESSING_RELATIONS,
+                                                            BoundaryImportStatistics.Kind.GEOMETRY, stub.osmId(), "process-relation", e);
                                                 }
-                                                if (totalCells == 0) {
-                                                    int fallbackResolution = FALLBACK_RESOLUTIONS[FALLBACK_RESOLUTIONS.length - 1];
-                                                    totalCells = writeInteriorPointCell(buffered, stub.osmId(), wo, threadH3, fallbackResolution);
-                                                    if (totalCells > 0) {
-                                                        logger.warn("Relation OSM ID: {} [Admin Level: {}] produced no cells at any resolution; falling back to the res {} cell containing its interior point",
-                                                                stub.osmId(), stub.adminLevel(), fallbackResolution);
-                                                        resolution = fallbackResolution;
-                                                    }
-                                                }
-                                                if (totalCells == 0) {
-                                                    logSkip(stub, "produced no H3 cells");
-                                                    continue;
-                                                }
-
-                                                stats.incrementRelationsProcessed();
-                                                stats.addH3CellsGenerated(totalCells);
-
-                                                startTime = System.currentTimeMillis();
-                                                tmpRegionMeta.put(wo, longToBytes(stub.osmId()), cellMetaToBytes(totalCells, resolution, stub.adminLevel()));
-                                                if (stub.adminLevel() <= 3) {
-                                                    logger.debug("H3 Cells written to tmpRegionMeta in {}ms for OSM ID: {}", System.currentTimeMillis() - startTime, stub.osmId());
-                                                }
-                                                startTime = System.currentTimeMillis();
-                                                byte[] wkb = new WKBWriter().write(simplified);
-                                                tmpRegionGeom.put(wo, longToBytes(stub.osmId()), wkb);
-                                                if (stub.adminLevel() <= 3) {
-                                                    logger.debug("WKB written to tmpRegionGeom in {}ms for OSM ID: {}", System.currentTimeMillis() - startTime, stub.osmId());
-                                                }
-                                            } catch (Exception e) {
-                                                if (isStorageFailure(e)) {
-                                                    throw new RuntimeException("Storage failure while processing relation " + stub.osmId()
-                                                                                       + "; aborting instead of writing an incomplete bundle", e);
-                                                }
-                                                stats.recordError(BoundaryImportStatistics.Stage.PROCESSING_RELATIONS, BoundaryImportStatistics.Kind.GEOMETRY, stub.osmId(), "process-relation", e);
                                             }
                                         }
                                     }
                                 } catch (RocksDBException e) {
-                                    throw new RuntimeException("Failed to open per-thread H3 DB", e);
+                                    fatalFailure.compareAndSet(null, e);
+                                } finally {
+                                    stats.decrementActiveThreads();
                                 }
                             }));
                         }
 
+                        producer.join();
                         for (Future<?> f : futures) {
                             f.get();
                         }
                         executor.shutdown();
                         executor.awaitTermination(Long.MAX_VALUE, TimeUnit.NANOSECONDS);
+
+                        if (fatalFailure.get() != null) {
+                            throw new RuntimeException("Import failed while processing relations", fatalFailure.get());
+                        }
 
                         // Merge per-thread H3 DBs into the final h3_to_osm
                         stats.setCurrentPhase(3, BoundaryImportStatistics.PHASE_MERGING);
@@ -381,10 +375,25 @@ public class StandaloneBoundaryImporter {
                             }
                         }
                     }
+
                 }
 
                 stats.setCurrentPhase(3, BoundaryImportStatistics.PHASE_HIERARCHY);
-                new RegionHierarchyWriter().write(hierarchyTsv, tmpRegionMeta, tmpRegionGeom, h3ToOsm, h3, isoCodes, subareaEdges);
+                RegionHierarchyWriter.HierarchyResult hierarchyResult =
+                        new RegionHierarchyWriter().write(hierarchyTsv, tmpRegionMeta, tmpRegionGeom, h3ToOsm, h3,
+                                                         isoCodes, subareaEdges, countryHints,
+                                                         regionByIso3166_2, countryIsoByName,
+                                                         countryStubs, stats);
+                stats.setHierarchyPublished(hierarchyResult.regionsWritten());
+                writeCountrySidecar(out.resolve("region_countries.tsv"), countryStubs,
+                                    importedRelationIds, skippedRelationReasons,
+                                    hierarchyResult.placeholderCountryIds());
+
+                if (!hierarchyResult.unassignedIds().isEmpty()) {
+                    stats.setCurrentPhase(3, BoundaryImportStatistics.PHASE_PRUNING);
+                    pruneUnassigned(hierarchyResult.unassignedIds(), tmpRegionMeta, tmpRegionGeom, h3ToOsm,
+                                    nameSql, stats);
+                }
 
                 stats.setCurrentPhase(3, BoundaryImportStatistics.PHASE_COMPACTING);
                 // Copy from temporary DBs to final DBs in sorted order
@@ -407,7 +416,7 @@ public class StandaloneBoundaryImporter {
         );
 
         stats.stop();
-        stats.setTotalTime(System.currentTimeMillis() - stats.getStartTime());
+        stats.setTotalTime(stats.getElapsedMillis());
         stats.printFinalStatistics();
         stats.printOutcomeAndErrors();
 
@@ -456,17 +465,115 @@ public class StandaloneBoundaryImporter {
 
     // ============================ GEOMETRY STITCHING ============================
 
-    /**
-     * Skipped relations are the only way a region can silently disappear from the bundle.
-     * High-level regions (countries, states, counties) are logged at WARN so a broken
-     * hierarchy is visible in the build log; deeper levels stay at DEBUG to avoid noise.
-     */
-    private static void logSkip(RelationStub stub, String reason) {
-        if (stub.adminLevel() <= 6) {
-            logger.warn("Relation OSM ID: {} [Admin Level: {}] {}; skipping", stub.osmId(), stub.adminLevel(), reason);
-        } else {
-            logger.debug("Relation OSM ID: {} [Admin Level: {}] {}; skipping", stub.osmId(), stub.adminLevel(), reason);
+    private void processRelationStub(RelationStub stub,
+                                     RocksDB nodeCache,
+                                     RocksDB wayCache,
+                                     RocksDB threadH3,
+                                     WriteOptions wo,
+                                     RocksDB tmpRegionMeta,
+                                     RocksDB tmpRegionGeom) {
+        if (stub.adminLevel() <= 3) {
+            logger.debug("Processing relation OSM ID: {} [Admin Level: {}]", stub.osmId(), stub.adminLevel());
         }
+        try {
+            Geometry geom = buildMultiPolygon(stub, nodeCache, wayCache);
+            if (geom == null || geom.isEmpty()) {
+                logSkip(stub, "has no usable geometry (missing ways/nodes or open rings)");
+                return;
+            }
+
+            if (!geom.isValid()) {
+                logger.debug("Relation OSM ID: {} [Admin Level: {}] Geometry is invalid, attempting repair", stub.osmId(), stub.adminLevel());
+                geom = geom.buffer(0);
+                if (geom == null || geom.isEmpty() || !geom.isValid()) {
+                    logger.error("Relation OSM ID: {} [Admin Level: {}] Geometry repair failed", stub.osmId(), stub.adminLevel());
+                    skippedRelationReasons.put(stub.osmId(), "geometry repair failed");
+                    stats.incrementSkippedRelations(stub.adminLevel());
+                    return;
+                }
+            }
+
+            Geometry simplified = geometrySimplificationService.simplifyByAdminLevel(geom, stub.adminLevel());
+            if (simplified == null || simplified.isEmpty()) {
+                simplified = geom;
+            }
+            Geometry buffered = simplified.buffer(BUFFER_DISTANCE);
+            if (stub.adminLevel() <= 3) {
+                logger.debug("Simplified Geometry: {} points for OSM ID: {}", simplified.getNumPoints(), stub.osmId());
+            }
+
+            int resolution = getResolutionForAdminLevel(stub.adminLevel());
+            AtomicLong cellCount = new AtomicLong(0);
+            long startTime = System.currentTimeMillis();
+            processCellsH3Stream(buffered, stub.osmId(), wo, threadH3, cellCount, resolution);
+            if (stub.adminLevel() <= 3) {
+                logger.debug("H3 Polyfill (Res {}) took {}ms for OSM ID: {}", resolution, System.currentTimeMillis() - startTime, stub.osmId());
+            }
+            long totalCells = cellCount.get();
+
+            if (totalCells == 0) {
+                for (int fallbackResolution : FALLBACK_RESOLUTIONS) {
+                    if (fallbackResolution <= resolution) {
+                        continue;
+                    }
+                    cellCount.set(0);
+                    processCellsH3Stream(buffered, stub.osmId(), wo, threadH3, cellCount, fallbackResolution);
+                    totalCells = cellCount.get();
+                    if (totalCells > 0) {
+                        stats.incrementResolutionFallback();
+                        resolution = fallbackResolution;
+                        break;
+                    }
+                }
+            }
+            if (totalCells == 0) {
+                int fallbackResolution = FALLBACK_RESOLUTIONS[FALLBACK_RESOLUTIONS.length - 1];
+                totalCells = writeInteriorPointCell(buffered, stub.osmId(), wo, threadH3, fallbackResolution);
+                if (totalCells > 0) {
+                    stats.incrementInteriorPointFallback();
+                    resolution = fallbackResolution;
+                }
+            }
+            if (totalCells == 0) {
+                logSkip(stub, "produced no H3 cells");
+                return;
+            }
+
+            stats.incrementRelationsProcessed();
+            importedRelationIds.add(stub.osmId());
+            stats.addH3CellsGenerated(totalCells);
+
+            startTime = System.currentTimeMillis();
+            tmpRegionMeta.put(wo, longToBytes(stub.osmId()), cellMetaToBytes(totalCells, resolution, stub.adminLevel()));
+            if (stub.adminLevel() <= 3) {
+                logger.debug("H3 Cells written to tmpRegionMeta in {}ms for OSM ID: {}", System.currentTimeMillis() - startTime, stub.osmId());
+            }
+            startTime = System.currentTimeMillis();
+            byte[] wkb = new WKBWriter().write(simplified);
+            tmpRegionGeom.put(wo, longToBytes(stub.osmId()), wkb);
+            if (stub.adminLevel() <= 3) {
+                logger.debug("WKB written to tmpRegionGeom in {}ms for OSM ID: {}", System.currentTimeMillis() - startTime, stub.osmId());
+            }
+        } catch (Exception e) {
+            if (isStorageFailure(e)) {
+                throw new RuntimeException("Storage failure while processing relation " + stub.osmId()
+                                                   + "; aborting instead of writing an incomplete bundle", e);
+            }
+            stats.recordError(BoundaryImportStatistics.Stage.PROCESSING_RELATIONS,
+                              BoundaryImportStatistics.Kind.GEOMETRY, stub.osmId(), "process-relation", e);
+            if (!importedRelationIds.contains(stub.osmId())) {
+                logSkip(stub, "geometry processing failed: " + e.getMessage());
+            }
+        }
+    }
+
+    /**
+     * Skipped relations are counted in the statistics output instead of being logged
+     * line by line; the final report includes a breakdown by admin level.
+     */
+    private void logSkip(RelationStub stub, String reason) {
+        skippedRelationReasons.put(stub.osmId(), reason);
+        stats.incrementSkippedRelations(stub.adminLevel());
     }
 
     /**
@@ -508,14 +615,35 @@ public class StandaloneBoundaryImporter {
      */
     static Geometry assemble(Collection<? extends Geometry> outerLines, Collection<? extends Geometry> innerLines) {
         Geometry outer = polygonize(outerLines);
-        if (outer == null || innerLines.isEmpty()) {
+        if (outer == null) {
+            return null;
+        }
+        if (innerLines.isEmpty()) {
             return outer;
         }
         Geometry inner = polygonize(innerLines);
         if (inner == null) {
             return outer;
         }
-        return polygonalOnly(outer.difference(inner));
+
+        try {
+            Geometry result = outer.difference(inner);
+            if (result != null && !result.isValid()) {
+                result = GeometryFixer.fix(result);
+            }
+            return polygonalOnly(result);
+        } catch (TopologyException firstFailure) {
+            // Polygonizer can produce an invalid polygon when rings touch or overlap at a
+            // single node. Repairing is expensive, so only do it when the overlay actually
+            // fails instead of paying that cost for every relation.
+            Geometry fixedOuter = outer.isValid() ? outer : GeometryFixer.fix(outer);
+            Geometry fixedInner = inner.isValid() ? inner : GeometryFixer.fix(inner);
+            Geometry result = fixedOuter.difference(fixedInner);
+            if (result != null && !result.isValid()) {
+                result = GeometryFixer.fix(result);
+            }
+            return polygonalOnly(result);
+        }
     }
 
     private static Geometry polygonalOnly(Geometry geometry) {
@@ -748,20 +876,28 @@ public class StandaloneBoundaryImporter {
     // ============================ OSM HELPERS ============================
 
     boolean isAdministrativeBoundary(OsmRelation r) {
-        boolean boundary = false, adminLevel = false, isoCountry = false;
+        boolean area = false, adminLevel = false, isoCountry = false, linear = false;
         for (int i = 0; i < r.getNumberOfTags(); i++) {
             OsmTag t = r.getTag(i);
             if ("boundary".equals(t.getKey())
                     && ("administrative".equals(t.getValue()) || "disputed".equals(t.getValue()))) {
-                boundary = true;
+                area = true;
             }
             if ("admin_level".equals(t.getKey())) adminLevel = true;
-            if ("type".equals(t.getKey()) && "boundary".equals(t.getValue())) boundary = true;
+            if ("type".equals(t.getKey())
+                    && ("multilinestring".equals(t.getValue())
+                        || "linestring".equals(t.getValue())
+                        || "route".equals(t.getValue()))) {
+                linear = true;
+            }
             if ("ISO3166-1".equals(t.getKey()) || "ISO3166-1:alpha2".equals(t.getKey())) isoCountry = true;
+        }
+        if (linear) {
+            return false;
         }
         // Country-level relations are sometimes tagged boundary=disputed (e.g. Palestine)
         // and may omit admin_level. Keep them so their subareas can be linked.
-        return (boundary && adminLevel) || (boundary && isoCountry);
+        return area && (adminLevel || isoCountry);
     }
 
     RelationStub buildRelationStub(OsmRelation r) {
@@ -772,6 +908,11 @@ public class StandaloneBoundaryImporter {
         boolean hasAdminLevel = false;
         String isoCode = null;
         String isoAlpha2 = null;
+        String name = null;
+        String nameEn = null;
+        String iso3166_2 = null;
+        String countryCode = null;
+        String countryName = null;
         for (int i = 0; i < r.getNumberOfMembers(); i++) {
             OsmRelationMember m = r.getMember(i);
             String role = m.getRole();
@@ -795,13 +936,35 @@ public class StandaloneBoundaryImporter {
                 isoCode = normalizeIsoCode(t.getValue());
             } else if ("ISO3166-1:alpha2".equals(t.getKey())) {
                 isoAlpha2 = normalizeIsoCode(t.getValue());
+            } else if ("name".equals(t.getKey())) {
+                name = t.getValue();
+            } else if ("name:en".equals(t.getKey())) {
+                nameEn = t.getValue();
+            } else if ("ISO3166-2".equals(t.getKey())) {
+                iso3166_2 = t.getValue();
+            } else if ("addr:country".equals(t.getKey())) {
+                countryCode = normalizeCountryCode(t.getValue());
+            } else if ("is_in:country_code".equals(t.getKey())) {
+                if (countryCode == null) countryCode = normalizeCountryCode(t.getValue());
+            } else if ("is_in:country".equals(t.getKey())) {
+                countryName = t.getValue();
             }
         }
         String iso = isoAlpha2 != null ? isoAlpha2 : isoCode;
         if (!hasAdminLevel && iso != null) {
             level = 2;
         }
-        return new RelationStub(r.getId(), level, iso, outer, inner, subareas);
+        return new RelationStub(r.getId(), level, iso, name, nameEn, iso3166_2, countryCode, countryName, outer, inner, subareas);
+    }
+
+    private static String normalizeCountryName(String value) {
+        return value == null ? null : value.trim().toLowerCase(Locale.ROOT);
+    }
+
+    private String normalizeCountryCode(String value) {
+        if (value == null) return null;
+        String candidate = value.trim().toUpperCase(Locale.ROOT);
+        return candidate.length() == 2 && candidate.chars().allMatch(Character::isLetter) ? candidate : null;
     }
 
     private String normalizeIsoCode(String value) {
@@ -817,8 +980,136 @@ public class StandaloneBoundaryImporter {
         return null;
     }
 
-    record RelationStub(long osmId, int adminLevel, String isoCode,
+    record RelationStub(long osmId, int adminLevel, String isoCode, String name, String nameEn,
+                        String iso3166_2, String countryCode, String countryName,
                         List<Long> outerWays, List<Long> innerWays, List<Long> subareaRelations) {
+    }
+
+    record CountryStub(long osmId, String isoCode, String name) {
+    }
+
+    record CountryHints(String iso3166_2, String countryCode, String countryName, String countryNameEn) {
+        boolean hasAny() {
+            return iso3166_2 != null || countryCode != null || countryName != null || countryNameEn != null;
+        }
+    }
+
+    private void pruneUnassigned(Set<Long> unassigned, RocksDB tmpRegionMeta, RocksDB tmpRegionGeom,
+                                   RocksDB h3ToOsm, Path osmNames, BoundaryImportStatistics stats) throws Exception {
+        try (WriteBatch batch = new WriteBatch(); WriteOptions wo = new WriteOptions().setDisableWAL(true)) {
+            for (Long osmId : unassigned) {
+                batch.delete(longToBytes(osmId));
+            }
+            tmpRegionMeta.write(wo, batch);
+            tmpRegionGeom.write(wo, batch);
+        }
+        removeOsmIdsFromH3(h3ToOsm, unassigned, stats);
+        filterOsmNames(osmNames, unassigned);
+    }
+
+    private void removeOsmIdsFromH3(RocksDB h3ToOsm, Set<Long> unassigned,
+                                    BoundaryImportStatistics stats) throws RocksDBException {
+        try (RocksIterator iterator = h3ToOsm.newIterator();
+             WriteBatch batch = new WriteBatch();
+             WriteOptions wo = new WriteOptions().setDisableWAL(true)) {
+            iterator.seekToFirst();
+            int pending = 0;
+            while (iterator.isValid()) {
+                ByteBuffer buffer = ByteBuffer.wrap(iterator.value()).order(ByteOrder.BIG_ENDIAN);
+                List<Long> keep = new ArrayList<>();
+                boolean changed = false;
+                while (buffer.hasRemaining()) {
+                    long osmId = buffer.getLong();
+                    if (unassigned.contains(osmId)) {
+                        changed = true;
+                    } else {
+                        keep.add(osmId);
+                    }
+                }
+                if (changed) {
+                    byte[] key = iterator.key().clone();
+                    if (keep.isEmpty()) {
+                        batch.delete(key);
+                    } else {
+                        ByteBuffer value = ByteBuffer.allocate(keep.size() * Long.BYTES).order(ByteOrder.BIG_ENDIAN);
+                        for (Long osmId : keep) {
+                            value.putLong(osmId);
+                        }
+                        batch.put(key, value.array());
+                    }
+                    pending++;
+                    if (pending >= 10_000) {
+                        h3ToOsm.write(wo, batch);
+                        batch.clear();
+                        pending = 0;
+                    }
+                }
+                iterator.next();
+            }
+            h3ToOsm.write(wo, batch);
+        }
+    }
+
+    private void filterOsmNames(Path osmNames, Set<Long> unassigned) throws IOException {
+        if (unassigned.isEmpty() || !Files.exists(osmNames)) {
+            return;
+        }
+        Path filtered = osmNames.resolveSibling(osmNames.getFileName() + ".filtered");
+        try (var reader = Files.newBufferedReader(osmNames, StandardCharsets.UTF_8);
+             BufferedWriter writer = Files.newBufferedWriter(filtered, StandardCharsets.UTF_8)) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                int tab = line.indexOf('\t');
+                if (tab < 0) {
+                    writer.write(line);
+                    writer.newLine();
+                    continue;
+                }
+                try {
+                    long osmId = Long.parseLong(line.substring(0, tab));
+                    if (unassigned.contains(osmId)) {
+                        continue;
+                    }
+                } catch (NumberFormatException ignored) {
+                    // keep malformed lines; they are not our concern here
+                }
+                writer.write(line);
+                writer.newLine();
+            }
+        }
+        Files.move(filtered, osmNames, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+    }
+
+    private void writeCountrySidecar(Path output,
+                                     Map<Long, CountryStub> countryStubs,
+                                     Set<Long> importedRelationIds,
+                                     Map<Long, String> skipReasons,
+                                     Set<Long> placeholderCountryIds) throws IOException {
+        try (BufferedWriter writer = Files.newBufferedWriter(output, StandardCharsets.UTF_8)) {
+            for (CountryStub country : countryStubs.values()) {
+                String status;
+                if (importedRelationIds.contains(country.osmId())) {
+                    status = "imported";
+                } else if (placeholderCountryIds.contains(country.osmId())) {
+                    status = "placeholder";
+                } else {
+                    status = "skipped";
+                }
+                String reason = status.equals("skipped")
+                        ? skipReasons.getOrDefault(country.osmId(), "unknown")
+                        : "";
+                writer.write(Long.toString(country.osmId()));
+                writer.write('\t');
+                writer.write(country.isoCode() == null ? "" : country.isoCode());
+                writer.write('\t');
+                writer.write(country.name() == null ? "" : country.name());
+                writer.write('\t');
+                writer.write(status);
+                writer.write('\t');
+                writer.write(reason);
+                writer.write('\n');
+            }
+        }
     }
 
     private void cleanup(Path p) {

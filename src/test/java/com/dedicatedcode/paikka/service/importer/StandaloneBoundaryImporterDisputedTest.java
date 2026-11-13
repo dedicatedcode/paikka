@@ -87,4 +87,34 @@ class StandaloneBoundaryImporterDisputedTest {
 
         assertFalse(importer.isAdministrativeBoundary(relation));
     }
+
+    @Test
+    void rejectsMultilinestringBorderRelation() {
+        Relation relation = new Relation(17511L, List.of(),
+                List.of(new Tag("boundary", "administrative"),
+                        new Tag("admin_level", "2"),
+                        new Tag("type", "multilinestring")));
+
+        assertFalse(importer.isAdministrativeBoundary(relation));
+    }
+
+    @Test
+    void rejectsLandAreaRelation() {
+        Relation relation = new Relation(6358272L, List.of(),
+                List.of(new Tag("boundary", "land_area"),
+                        new Tag("admin_level", "2"),
+                        new Tag("type", "boundary")));
+
+        assertFalse(importer.isAdministrativeBoundary(relation));
+    }
+
+    @Test
+    void rejectsMaritimeRelation() {
+        Relation relation = new Relation(21054136L, List.of(),
+                List.of(new Tag("boundary", "maritime"),
+                        new Tag("admin_level", "2"),
+                        new Tag("type", "boundary")));
+
+        assertFalse(importer.isAdministrativeBoundary(relation));
+    }
 }

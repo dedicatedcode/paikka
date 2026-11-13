@@ -22,7 +22,7 @@
 # Single command to download, filter, import, zip, and upload H3 bundles.
 #
 # Usage:
-#   ./scripts/build-h3-bundle.sh [OPTIONS]
+#   ./scripts/update-h3.sh [OPTIONS]
 #
 # Options:
 #   --env-file PATH       Path to .env file (default: ./.env)
@@ -37,6 +37,8 @@
 #   --docker-image IMAGE  Docker image for filtering/importing (default: dedicatedcode/paikka:latest)
 #   --no-pull             Do not pull the Docker image before use (for local test builds)
 #   --no-upload           Skip R2 upload (local bundle only)
+#   --clean               Remove the downloaded and filtered PBF files after a successful
+#                         run (they are kept by default so filter/import can be re-run)
 #   -h, --help            Show this help message
 # ==============================================================================
 
@@ -63,6 +65,7 @@ TMP_DIR="${TMP_DIR:-}"
 
 # --- Import Settings ---
 IMPORT_MEMORY="${IMPORT_MEMORY:-16g}"
+IMPORT_INITIAL_MEMORY="${IMPORT_INITIAL_MEMORY:-2g}"
 IMPORT_THREADS="${IMPORT_THREADS:-10}"
 
 # --- Bundle Settings ---
@@ -80,6 +83,7 @@ R2_PATH="${R2_PATH:-}"
 # --- Script Flags ---
 PBF_INPUT_PATH=""
 NO_UPLOAD=false
+CLEAN_PBF="${CLEAN_PBF:-false}"
 
 # ==============================================================================
 # HELPER FUNCTIONS
@@ -169,6 +173,10 @@ parse_args_and_configure() {
                 NO_UPLOAD=true
                 shift
                 ;;
+            --clean)
+                CLEAN_PBF=true
+                shift
+                ;;
             -h|--help)
                 echo "Usage: $0 [OPTIONS]"
                 echo ""
@@ -185,6 +193,8 @@ parse_args_and_configure() {
                 echo "  --docker-image IMAGE  Docker image for filtering/importing (default: dedicatedcode/paikka:latest)"
                 echo "  --no-pull             Do not pull the Docker image before use (for local test builds)"
                 echo "  --no-upload           Skip R2 upload (local bundle only)"
+                echo "  --clean               Remove the downloaded and filtered PBF files after a"
+                echo "                        successful run (kept by default so the import can be re-run)"
                 echo "  -h, --help            Show this help message"
                 exit 1
                 ;;
@@ -201,6 +211,7 @@ parse_args_and_configure() {
     DOWNLOAD_DIR="${DOWNLOAD_DIR:-$LOCAL_WORK_DIR}"
     DATA_DIR="${DATA_DIR:-$LOCAL_WORK_DIR}"
     IMPORT_MEMORY="${IMPORT_MEMORY:-16g}"
+    IMPORT_INITIAL_MEMORY="${IMPORT_INITIAL_MEMORY:-2g}"
     IMPORT_THREADS="${IMPORT_THREADS:-10}"
     VERSION="${VERSION:-$(date +%Y-%m-%d)-v1}"
     BUNDLE_OUTPUT_DIR="${BUNDLE_OUTPUT_DIR:-$LOCAL_WORK_DIR/dist}"
@@ -220,12 +231,14 @@ parse_args_and_configure() {
     echo "=========================================="
     echo "  Data directory:    $DATA_DIR"
     echo "  Scratch directory: ${TMP_DIR:-$DATA_DIR/tmp}"
-    echo "  Import memory:     $IMPORT_MEMORY"
+    echo "  Import max memory: $IMPORT_MEMORY"
+    echo "  Import init memory: $IMPORT_INITIAL_MEMORY"
     echo "  Import threads:    $IMPORT_THREADS"
     echo "  Bundle version:    $VERSION"
     echo "  Bundle output:     $BUNDLE_OUTPUT_DIR"
     echo "  Docker image:      $DOCKER_IMAGE (pull: $PULL_DOCKER_IMAGE)"
     echo "  Skip upload:       $NO_UPLOAD"
+    echo "  Clean PBF files:   $CLEAN_PBF"
     if [ -n "$PBF_INPUT_PATH" ]; then
         echo "  PBF input:         $PBF_INPUT_PATH"
     else
@@ -342,6 +355,7 @@ local_import_h3() {
             --data-dir /data \
             "${scratch_args[@]+"${scratch_args[@]}"}" \
             --memory "$IMPORT_MEMORY" \
+            --initial-memory "$IMPORT_INITIAL_MEMORY" \
             --threads "$IMPORT_THREADS" \
             "/input/$INPUT_FILE"
     else
@@ -354,14 +368,20 @@ local_import_h3() {
             --data-dir /data \
             "${scratch_args[@]+"${scratch_args[@]}"}" \
             --memory "$IMPORT_MEMORY" \
+            --initial-memory "$IMPORT_INITIAL_MEMORY" \
             --threads "$IMPORT_THREADS" \
             "/input/$PBF_FILTERED_FILE"
     fi
 }
 ###
-# LOCAL: Removes intermediate PBF files.
+# LOCAL: Removes intermediate PBF files when --clean is given.
 ###
 local_cleanup_pbf() {
+    if [ "$CLEAN_PBF" != "true" ]; then
+        log "Step 5: Keeping intermediate PBF files (use --clean to remove them)"
+        return 0
+    fi
+
     log "Step 5: Cleaning up intermediate PBF files"
 
     if [ -n "$PBF_INPUT_PATH" ]; then

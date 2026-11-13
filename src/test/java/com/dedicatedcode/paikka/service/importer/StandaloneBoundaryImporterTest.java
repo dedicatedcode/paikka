@@ -180,10 +180,13 @@ class StandaloneBoundaryImporterTest {
                 int resolution = bb.getInt();
                 int adminLevel = bb.getInt();
 
-                assertTrue(cellCount > 0,
-                        "Cell count should be positive for entry " + checked);
-                assertTrue(resolution >= 4 && resolution <= 9,
-                        "Resolution should be 4-9 for entry " + checked + ", got: " + resolution);
+                if (cellCount == 0) {
+                    assertEquals(2, adminLevel, "Only placeholder country roots may have zero cells");
+                    assertEquals(0, resolution, "Placeholder country roots have no H3 resolution");
+                } else {
+                    assertTrue(resolution >= 4 && resolution <= 9,
+                            "Resolution should be 4-9 for entry " + checked + ", got: " + resolution);
+                }
                 assertTrue(adminLevel >= 1 && adminLevel <= 11,
                         "Admin level should be 2-11 for entry " + checked + ", got: " + adminLevel);
 
@@ -251,9 +254,16 @@ class StandaloneBoundaryImporterTest {
                 Long.parseLong(columns[1]);
             }
             assertEquals("ADMIN", columns[2]);
-            assertTrue(Integer.parseInt(columns[3]) >= 1);
-            assertTrue(Integer.parseInt(columns[4]) >= 4);
-            assertTrue(Long.parseLong(columns[5]) > 0);
+            int adminLevel = Integer.parseInt(columns[3]);
+            int resolution = Integer.parseInt(columns[4]);
+            long totalCells = Long.parseLong(columns[5]);
+            assertTrue(adminLevel >= 1);
+            if (totalCells > 0) {
+                assertTrue(resolution >= 4);
+            } else {
+                assertEquals(2, adminLevel, "Only placeholder country roots may have zero cells");
+                assertEquals(0, resolution, "Placeholder country roots have no cells");
+            }
             assertTrue(Integer.parseInt(columns[6]) >= 0);
             assertTrue(Integer.parseInt(columns[7]) >= 0);
             assertTrue(columns[8].matches("[A-Z]{2}"), "Unexpected continent code: " + columns[8]);
@@ -407,8 +417,24 @@ class StandaloneBoundaryImporterTest {
             }
         }
 
-        assertEquals(metadataOsmIds, geometryOsmIds,
-                "Same OSM IDs should exist in region_metadata and region_geometry");
+        Set<Long> placeholderIds = new HashSet<>();
+        try (Options opts = new Options().setCreateIfMissing(false);
+             RocksDB db = RocksDB.open(opts, tempOutputDir.resolve("region_metadata").toString())) {
+            var it = db.newIterator();
+            it.seekToFirst();
+            while (it.isValid()) {
+                ByteBuffer bb = ByteBuffer.wrap(it.value()).order(ByteOrder.BIG_ENDIAN);
+                long cellCount = bb.getLong();
+                if (cellCount == 0) {
+                    placeholderIds.add(ByteBuffer.wrap(it.key()).order(ByteOrder.BIG_ENDIAN).getLong());
+                }
+                it.next();
+            }
+        }
+        Set<Long> expectedGeometryIds = new HashSet<>(metadataOsmIds);
+        expectedGeometryIds.removeAll(placeholderIds);
+        assertEquals(expectedGeometryIds, geometryOsmIds,
+                "Geometry must exist for every region except geometry-less placeholder countries");
     }
 
     @Test

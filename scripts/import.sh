@@ -16,7 +16,8 @@ usage() {
     echo "  --jar-file PATH       Path to the PAIKKA jar file (auto-detected if not provided)"
     echo "  --data-dir PATH       Directory to store processed data (default: ./)"
     echo "  --tmp-dir PATH        Scratch directory for RocksDB temp data (default: <data-dir>/tmp)"
-    echo "  --memory SIZE         JVM heap size (default: 16g)"
+    echo "  --memory SIZE         JVM maximum heap size (default: 16g)"
+    echo "  --initial-memory SIZE JVM initial heap size (default: 2g)"
     echo "  --threads NUM         Maximum number of import threads (default: half of CPU cores)"
     echo "  -h, --help            Show this help message"
     echo ""
@@ -38,6 +39,7 @@ JAR_FILE=""
 DATA_DIR="./"
 TMP_DIR="${TMP_DIR:-}"
 IMPORT_MEMORY="${IMPORT_MEMORY:-16g}"
+IMPORT_INITIAL_MEMORY="${IMPORT_INITIAL_MEMORY:-2g}"
 IMPORT_THREADS="${IMPORT_THREADS:-}"
 PBF_FILES=()
 
@@ -58,6 +60,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --memory)
             IMPORT_MEMORY="$2"
+            shift 2
+            ;;
+        --initial-memory)
+            IMPORT_INITIAL_MEMORY="$2"
             shift 2
             ;;
         --threads)
@@ -117,7 +123,8 @@ echo "Data dir:    $DATA_DIR"
 if [ -n "$TMP_DIR" ]; then
     echo "Scratch dir: $TMP_DIR"
 fi
-echo "Memory:      $IMPORT_MEMORY"
+echo "Max memory:  $IMPORT_MEMORY"
+echo "Init memory: $IMPORT_INITIAL_MEMORY"
 echo "JAR file:    $JAR_FILE"
 if [ -n "$IMPORT_THREADS" ]; then
     echo "Threads:     $IMPORT_THREADS"
@@ -132,7 +139,7 @@ echo "System memory:   ${AVAILABLE_MEM_GB}GB available"
 echo "Requested heap:  $IMPORT_MEMORY"
 
 # Build JVM arguments with memory management optimizations
-JVM_ARGS="-Xmx$IMPORT_MEMORY -Xms$IMPORT_MEMORY"
+JVM_ARGS="-Xms$IMPORT_INITIAL_MEMORY -Xmx$IMPORT_MEMORY"
 JVM_ARGS="$JVM_ARGS -XX:+UseG1GC"
 JVM_ARGS="$JVM_ARGS -XX:MaxGCPauseMillis=200"
 JVM_ARGS="$JVM_ARGS -XX:+UnlockExperimentalVMOptions"

@@ -83,13 +83,12 @@ done
 # ---------------------------------------------------------------------------
 # Hierarchy sanity check
 #
-# A broken parent chain is invisible in the bundle itself but pushes regions to
-# the continent level in Reitti (e.g. every Hungarian county showing up directly
-# under Europe). Fail the build instead of publishing a broken bundle.
+# Fail only on structural problems. Root counts are reported, not thresholded:
+# regional extracts legitimately contain regions whose parent relation was
+# clipped away, while a planet build should have complete country coverage.
 # ---------------------------------------------------------------------------
 HIERARCHY_FILE="$DB_DIR_ABS/region_hierarchy.tsv"
-MAX_NON_COUNTRY_ROOTS="${MAX_NON_COUNTRY_ROOTS:-10}"
-MIN_COUNTRIES="${MIN_COUNTRIES:-200}"
+COUNTRIES_FILE="$DB_DIR_ABS/region_countries.tsv"
 
 if [ "${SKIP_HIERARCHY_CHECK:-false}" = "true" ]; then
     echo "Skipping region hierarchy validation (SKIP_HIERARCHY_CHECK=true)"
@@ -97,33 +96,28 @@ else
 echo "Validating region hierarchy..."
 TOTAL_ROWS=$(awk -F'\t' 'END{print NR}' "$HIERARCHY_FILE")
 ROOT_ROWS=$(awk -F'\t' '$2==""{c++} END{print c+0}' "$HIERARCHY_FILE")
-COUNTRY_ROWS=$(awk -F'\t' '$4==2{c++} END{print c+0}' "$HIERARCHY_FILE")
-NON_COUNTRY_ROOTS=$(awk -F'\t' '$2=="" && $4>2{c++} END{print c+0}' "$HIERARCHY_FILE")
+HIGH_LEVEL_ROOTS=$(awk -F'\t' '$2=="" && $4>2{c++} END{print c+0}' "$HIERARCHY_FILE")
 MISSING_PARENTS=$(awk -F'\t' 'NR==FNR{ids[$1]=1; next} $2!="" && !($2 in ids){c++} END{print c+0}' "$HIERARCHY_FILE" "$HIERARCHY_FILE")
+DUPLICATE_IDS=$(awk -F'\t' '{c[$1]++} END{for (id in c) if(c[id]>1) d++; print d+0}' "$HIERARCHY_FILE")
 
-echo "  rows:              $TOTAL_ROWS"
-echo "  roots:             $ROOT_ROWS"
-echo "  countries:         $COUNTRY_ROWS"
-echo "  non-country roots: $NON_COUNTRY_ROOTS (max $MAX_NON_COUNTRY_ROOTS)"
-echo "  missing parents:   $MISSING_PARENTS"
+echo "  rows:               $TOTAL_ROWS"
+echo "  roots:              $ROOT_ROWS"
+echo "  roots above level 2: $HIGH_LEVEL_ROOTS"
+echo "  missing parents:    $MISSING_PARENTS"
+echo "  duplicate IDs:      $DUPLICATE_IDS"
 
 if [ "$MISSING_PARENTS" -gt 0 ]; then
     echo "Error: $MISSING_PARENTS regions reference a parent that is not in the hierarchy"
     exit 1
 fi
-
-if [ "$COUNTRY_ROWS" -lt "$MIN_COUNTRIES" ]; then
-    echo "Error: only $COUNTRY_ROWS admin-level-2 regions found (expected at least $MIN_COUNTRIES)"
+if [ "$DUPLICATE_IDS" -gt 0 ]; then
+    echo "Error: $DUPLICATE_IDS region IDs appear more than once in the hierarchy"
     exit 1
 fi
 
-if [ "$NON_COUNTRY_ROOTS" -gt "$MAX_NON_COUNTRY_ROOTS" ]; then
-    echo "Error: $NON_COUNTRY_ROOTS regions above admin level 2 have no parent; the hierarchy is broken"
-    exit 1
-fi
-
-# Regression guard for countries that were silently dropped before the sub-cell
-# fallback existed. OSM relation IDs are stable for countries.
+# OSM relation IDs for countries that regressed before the sub-cell fallback
+# existed. Only enforce this when the relation is actually present in the
+# imported extract; a regional extract is not expected to contain all of them.
 KNOWN_COUNTRIES=(
     "21335:Hungary"
     "214885:Croatia"
@@ -136,19 +130,88 @@ KNOWN_COUNTRIES=(
     "51477:Germany"
     "148838:United States"
 )
-MISSING_COUNTRIES=()
-for entry in "${KNOWN_COUNTRIES[@]}"; do
-    id="${entry%%:*}"
-    name="${entry#*:}"
-    if ! awk -F'\t' -v id="$id" '$1==id{found=1} END{exit !found}' "$HIERARCHY_FILE"; then
-        MISSING_COUNTRIES+=("$name ($id)")
-    fi
-done
 
-if [ ${#MISSING_COUNTRIES[@]} -gt 0 ]; then
-    echo "Error: known countries missing from the hierarchy: ${MISSING_COUNTRIES[*]}"
+if [ ! -f "$COUNTRIES_FILE" ]; then
+    echo "Error: $COUNTRIES_FILE not found; cannot validate country roots."
+    echo "       Re-run the boundary import with the current importer."
     exit 1
 fi
+
+    IMPORTED_COUNTRIES=$(awk -F'\t' '$4=="imported"{c++} END{print c+0}' "$COUNTRIES_FILE")
+    PLACEHOLDER_COUNTRIES=$(awk -F'\t' '$4=="placeholder"{c++} END{print c+0}' "$COUNTRIES_FILE")
+    SKIPPED_COUNTRIES=$(awk -F'\t' '$4=="skipped"{c++} END{print c+0}' "$COUNTRIES_FILE")
+    COUNTRY_ROOTS=$(awk -F'\t' '
+        NR==FNR { if ($4=="imported" || $4=="placeholder") country[$1]=1; next }
+        ($1 in country) && $2=="" { c++ }
+        END { print c+0 }
+    ' "$COUNTRIES_FILE" "$HIERARCHY_FILE")
+    NON_COUNTRY_LEVEL2_ROOTS=$(awk -F'\t' '
+        NR==FNR { if ($4=="imported" || $4=="placeholder") country[$1]=1; next }
+        $2=="" && $4==2 && !($1 in country) { c++ }
+        END { print c+0 }
+    ' "$COUNTRIES_FILE" "$HIERARCHY_FILE")
+    CONTINENT_COUNTS=$(awk -F'\t' '
+        NR==FNR { if ($4=="imported" || $4=="placeholder") country[$1]=1; next }
+        ($1 in country) && $2=="" { c[$9]++ }
+        END { for (k in c) printf "%s=%d ", k, c[k] }
+    ' "$COUNTRIES_FILE" "$HIERARCHY_FILE")
+
+    echo "  country relations:  $IMPORTED_COUNTRIES imported, $PLACEHOLDER_COUNTRIES placeholder, $SKIPPED_COUNTRIES skipped"
+    echo "  country roots:      $COUNTRY_ROOTS"
+    [ -n "$CONTINENT_COUNTS" ] && echo "  by continent:       $CONTINENT_COUNTS"
+    echo "  non-country level-2 roots: $NON_COUNTRY_LEVEL2_ROOTS"
+
+    if [ "$ROOT_ROWS" -ne "$COUNTRY_ROOTS" ]; then
+        echo "Error: hierarchy has $ROOT_ROWS roots but only $COUNTRY_ROOTS country roots; non-country roots are not allowed"
+        exit 1
+    fi
+    if [ "$HIGH_LEVEL_ROOTS" -gt 0 ]; then
+        echo "Error: hierarchy still contains $HIGH_LEVEL_ROOTS roots above admin level 2"
+        exit 1
+    fi
+    if [ "$NON_COUNTRY_LEVEL2_ROOTS" -gt 0 ]; then
+        echo "Error: hierarchy still contains $NON_COUNTRY_LEVEL2_ROOTS non-country level-2 roots"
+        exit 1
+    fi
+
+    MISSING_COUNTRY_ROOTS=$(awk -F'\t' '
+        NR==FNR { if ($4=="imported" || $4=="placeholder") country[$1]=1; next }
+        ($1 in country) && $2=="" { roots[$1]=1 }
+        END { for (id in country) if (!(id in roots)) c++; print c+0 }
+    ' "$COUNTRIES_FILE" "$HIERARCHY_FILE")
+
+    if [ "$MISSING_COUNTRY_ROOTS" -gt 0 ]; then
+        echo "Error: $MISSING_COUNTRY_ROOTS country relations were imported but are not roots in the hierarchy"
+        awk -F'\t' '
+            NR==FNR { if ($4=="imported" || $4=="placeholder") country[$1]=1; next }
+            ($1 in country) && $2=="" { roots[$1]=1 }
+            END { for (id in country) if (!(id in roots)) print "  " id }
+        ' "$COUNTRIES_FILE" "$HIERARCHY_FILE"
+        exit 1
+    fi
+
+    if [ "$SKIPPED_COUNTRIES" -gt 0 ]; then
+        echo "Warning: $SKIPPED_COUNTRIES country relations could not be imported (incomplete geometry in this extract):"
+        awk -F'\t' '$4=="skipped"{printf "  %s %s (%s)\n", $2, $3, $5}' "$COUNTRIES_FILE"
+    fi
+
+    MISSING_COUNTRIES=()
+    for entry in "${KNOWN_COUNTRIES[@]}"; do
+        id="${entry%%:*}"
+        name="${entry#*:}"
+        status=$(awk -F'\t' -v id="$id" '$1==id{print $4; exit}' "$COUNTRIES_FILE")
+        [ -n "$status" ] || continue
+        if [ "$status" != "imported" ] && [ "$status" != "placeholder" ]; then
+            MISSING_COUNTRIES+=("$name ($id): $status")
+        elif ! awk -F'\t' -v id="$id" '$1==id && $2==""{found=1} END{exit !found}' "$HIERARCHY_FILE"; then
+            MISSING_COUNTRIES+=("$name ($id): not a root")
+        fi
+    done
+
+    if [ ${#MISSING_COUNTRIES[@]} -gt 0 ]; then
+        echo "Error: known country relations are broken: ${MISSING_COUNTRIES[*]}"
+        exit 1
+    fi
 
 echo "Hierarchy validation passed."
 fi
@@ -173,7 +236,9 @@ echo "Creating ZIP archive..."
 # -x "**/LOCK": IMPORTANT. Excludes RocksDB native file system locks which prevent startup on target systems.
 (
     cd "$DB_DIR_ABS"
-    zip -r -q "$ZIP_PATH" h3_to_osm region_metadata region_geometry osm_names.tsv region_hierarchy.tsv -x "**/LOCK"
+    ZIP_ENTRIES=(h3_to_osm region_metadata region_geometry osm_names.tsv region_hierarchy.tsv)
+    [ -f region_countries.tsv ] && ZIP_ENTRIES+=(region_countries.tsv)
+    zip -r -q "$ZIP_PATH" "${ZIP_ENTRIES[@]}" -x "**/LOCK"
 )
 
 echo "Calculating bundle metadata..."

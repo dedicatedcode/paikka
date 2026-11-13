@@ -27,6 +27,7 @@ PULL_DOCKER_IMAGE="${PULL_DOCKER_IMAGE:-true}"
 DOWNLOAD_DIR="${DOWNLOAD_DIR:-$LOCAL_WORK_DIR}"
 IMPORT_DATA_DIR="${IMPORT_DATA_DIR:-$LOCAL_WORK_DIR/$IMPORT_DIR}"
 IMPORT_MEMORY="${IMPORT_MEMORY:-16G}"
+IMPORT_INITIAL_MEMORY="${IMPORT_INITIAL_MEMORY:-2g}"
 IMPORT_THREADS="${IMPORT_THREADS:-10}"
 
 # --- Remote Machine Settings ---
@@ -66,6 +67,7 @@ REMOTE_USER="${REMOTE_USER:-}"
 REMOTE_HOST="${REMOTE_HOST:-}"
 GEOCODER_API_TOKEN="${GEOCODER_API_TOKEN:-}"
 PBF_INPUT_PATH="${PBF_INPUT_PATH:-}"
+CLEAN_PBF="${CLEAN_PBF:-false}"
 
 # ==============================================================================
 # HELPER FUNCTIONS
@@ -94,13 +96,16 @@ Options:
   --api-token TOKEN           Admin API token of the geocoder (env: GEOCODER_API_TOKEN)
   --download-dir DIR          Where to download PBF files (env: DOWNLOAD_DIR, default: current directory)
   --import-data-dir DIR       Where to store import data (env: IMPORT_DATA_DIR, default: ./import)
-  --memory SIZE               Memory for import (env: IMPORT_MEMORY, default: 16G)
+  --memory SIZE               Max memory for import (env: IMPORT_MEMORY, default: 16G)
   --threads NUM               Threads for import (env: IMPORT_THREADS, default: 10)
   --pbf-file PATH             Use a local PBF file instead of downloading the latest planet file
   --docker-image IMAGE        Docker image used for filtering and importing
                               (env: DOCKER_IMAGE, default: dedicatedcode/paikka:latest)
   --no-pull                   Do not pull the Docker image before use; useful for local
                               test builds (env: PULL_DOCKER_IMAGE=false)
+  --clean                     Remove the downloaded and filtered PBF files after a
+                              successful run (env: CLEAN_PBF=true; files are kept by
+                              default so the filter/import can be re-run)
 
 Cloudflare cache invalidation:
   --purge-cache               Purge the Cloudflare cache after a successful, verified update
@@ -242,6 +247,14 @@ parse_args_and_configure() {
                     true)  PULL_DOCKER_IMAGE=true ;;
                     false) PULL_DOCKER_IMAGE=false ;;
                     *) echo "Error: Invalid value for --no-pull (expected true or false)"; print_usage; exit 1 ;;
+                esac
+                shift ;;
+            --clean)                CLEAN_PBF=true; shift ;;
+            --clean=*)
+                case "${1#*=}" in
+                    true)  CLEAN_PBF=true ;;
+                    false) CLEAN_PBF=false ;;
+                    *) echo "Error: Invalid value for --clean (expected true or false)"; print_usage; exit 1 ;;
                 esac
                 shift ;;
             --purge-cache)          PURGE_CLOUDFLARE_CACHE=true; shift ;;
@@ -464,6 +477,7 @@ local_create_import_bundle() {
     log "LOCAL: Creating import bundle with $IMPORT_MEMORY memory and $IMPORT_THREADS threads"
         sudo docker run --rm -v "$DOWNLOAD_DIR":/download -v "$IMPORT_DATA_DIR":/import "$DOCKER_IMAGE" import \
           --memory "$IMPORT_MEMORY" \
+          --initial-memory "$IMPORT_INITIAL_MEMORY" \
           --threads "$IMPORT_THREADS" \
           --data-dir "/import/" \
           "/download/$PBF_FILTERED_FILE" 2>&1 | tee "$DOWNLOAD_DIR/$IMPORT_LOG_FILE_NAME"
@@ -472,10 +486,21 @@ local_create_import_bundle() {
 }
 
 ###
-# LOCAL: Removes the large, intermediate PBF files.
+# LOCAL: Removes the large, intermediate PBF files when --clean is given.
 ###
 local_cleanup_pbf() {
+    if [ "$CLEAN_PBF" != "true" ]; then
+        log "LOCAL: Keeping intermediate PBF files in $DOWNLOAD_DIR (use --clean to remove them)"
+        return 0
+    fi
+
     log "LOCAL: Cleaning up intermediate PBF files from $DOWNLOAD_DIR"
+
+    if [ -n "$PBF_INPUT_PATH" ]; then
+        echo "No downloaded PBF to clean up (user-provided PBF)"
+        return 0
+    fi
+
     cd "$DOWNLOAD_DIR"
     rm -f "$PBF_FILTERED_FILE" "$PBF_INPUT_FILE"
     echo "Deleted '$DOWNLOAD_DIR/$PBF_FILTERED_FILE' and '$DOWNLOAD_DIR/$PBF_INPUT_FILE'"

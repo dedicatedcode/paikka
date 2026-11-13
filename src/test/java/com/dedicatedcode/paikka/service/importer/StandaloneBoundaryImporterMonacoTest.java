@@ -110,6 +110,25 @@ class StandaloneBoundaryImporterMonacoTest {
                 "Monaco municipality must be parented to the country relation");
     }
 
+
+    @Test
+    void writesCountrySidecarWithIsoCode() throws IOException {
+        Path countries = tempOutputDir.resolve("region_countries.tsv");
+        assertTrue(Files.exists(countries), "region_countries.tsv must be written");
+
+        boolean found = false;
+        for (String line : Files.readAllLines(countries)) {
+            String[] columns = line.split("\t", -1);
+            if (columns.length >= 4 && Long.parseLong(columns[0]) == MONACO_COUNTRY) {
+                assertEquals("MC", columns[1], "Monaco must carry its ISO country code");
+                assertEquals("imported", columns[3], "Monaco must be marked as imported");
+                found = true;
+                break;
+            }
+        }
+        assertTrue(found, "Monaco must appear in region_countries.tsv");
+    }
+
     private static Map<Long, String[]> readHierarchy() throws IOException {
         Map<Long, String[]> rows = new HashMap<>();
         for (String line : Files.readAllLines(tempOutputDir.resolve("region_hierarchy.tsv"))) {
