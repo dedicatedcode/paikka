@@ -24,6 +24,8 @@ import de.topobyte.osm4j.pbf.seq.PbfIterator;
 import org.locationtech.jts.geom.*;
 import org.locationtech.jts.io.WKBWriter;
 import org.locationtech.jts.operation.polygonize.Polygonizer;
+import org.locationtech.jts.algorithm.Orientation;
+import org.locationtech.jts.geom.CoordinateArrays;
 import org.locationtech.jts.operation.union.UnaryUnionOp;
 import org.locationtech.jts.geom.util.GeometryFixer;
 import org.rocksdb.*;
@@ -645,7 +647,7 @@ public class StandaloneBoundaryImporter {
         }
         List<Geometry> innerLines = new ArrayList<>(stub.innerWays().size());
         collectWayLines(stub.innerWays(), nodeCache, wayCache, innerLines);
-        return assemble(outerLines, innerLines);
+        return normalizeWinding(assemble(outerLines, innerLines));
     }
 
     /**
@@ -685,6 +687,28 @@ public class StandaloneBoundaryImporter {
             }
             return polygonalOnly(result);
         }
+    }
+
+    /**
+     * Normalizes ring orientation to RFC 7946 (exterior counterclockwise, holes clockwise) so
+     * GeoJSON consumers render the polygons correctly.
+     */
+    static Geometry normalizeWinding(Geometry geometry) {
+        if (geometry == null) {
+            return null;
+        }
+        for (int i = 0; i < geometry.getNumGeometries(); i++) {
+            Polygon p = (Polygon) geometry.getGeometryN(i);
+            if (!Orientation.isCCW(p.getExteriorRing().getCoordinates())) {
+                CoordinateArrays.reverse(p.getExteriorRing().getCoordinates());
+            }
+            for (int h = 0; h < p.getNumInteriorRing(); h++) {
+                if (Orientation.isCCW(p.getInteriorRingN(h).getCoordinates())) {
+                    CoordinateArrays.reverse(p.getInteriorRingN(h).getCoordinates());
+                }
+            }
+        }
+        return geometry;
     }
 
     private static Geometry polygonalOnly(Geometry geometry) {
