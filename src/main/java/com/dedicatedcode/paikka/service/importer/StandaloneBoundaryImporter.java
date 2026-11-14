@@ -697,18 +697,26 @@ public class StandaloneBoundaryImporter {
         if (geometry == null) {
             return null;
         }
-        for (int i = 0; i < geometry.getNumGeometries(); i++) {
+        GeometryFactory factory = geometry.getFactory();
+        Polygon[] polygons = new Polygon[geometry.getNumGeometries()];
+        for (int i = 0; i < polygons.length; i++) {
             Polygon p = (Polygon) geometry.getGeometryN(i);
-            if (!Orientation.isCCW(p.getExteriorRing().getCoordinates())) {
-                CoordinateArrays.reverse(p.getExteriorRing().getCoordinates());
+            LinearRing[] holes = new LinearRing[p.getNumInteriorRing()];
+            for (int h = 0; h < holes.length; h++) {
+                holes[h] = orient(p.getInteriorRingN(h), false);
             }
-            for (int h = 0; h < p.getNumInteriorRing(); h++) {
-                if (Orientation.isCCW(p.getInteriorRingN(h).getCoordinates())) {
-                    CoordinateArrays.reverse(p.getInteriorRingN(h).getCoordinates());
-                }
-            }
+            polygons[i] = factory.createPolygon(orient(p.getExteriorRing(), true), holes);
         }
-        return geometry;
+        return geometry instanceof Polygon ? polygons[0] : factory.createMultiPolygon(polygons);
+    }
+
+    private static LinearRing orient(LinearRing ring, boolean counterclockwise) {
+        if (Orientation.isCCW(ring.getCoordinates()) == counterclockwise) {
+            return ring;
+        }
+        Coordinate[] reversed = ring.getCoordinates();
+        CoordinateArrays.reverse(reversed);
+        return ring.getFactory().createLinearRing(reversed);
     }
 
     private static Geometry polygonalOnly(Geometry geometry) {
