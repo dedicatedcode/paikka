@@ -68,6 +68,7 @@ public class StandaloneBoundaryImporter {
     private static final GeometryFactory GEOMETRY_FACTORY = new GeometryFactory();
     private static final double BUFFER_DISTANCE = 0.0001; // ~11m at equator, ensures border cells
     private static final long H3_THREAD_WRITE_BUFFER = 64L * 1024 * 1024; // per-thread RocksDB write buffer
+    private static final int H3_MERGE_BATCH_SIZE = 10_000;
     // Regions smaller than one cell at their admin-level resolution (Monaco, San Marino,
     // Liechtenstein, ...) yield no cells whose centre falls inside the polygon. Retry finer.
     private static final int[] FALLBACK_RESOLUTIONS = {6, 9};
@@ -363,13 +364,9 @@ public class StandaloneBoundaryImporter {
 
                         // Merge per-thread H3 DBs into the final h3_to_osm
                         stats.setCurrentPhase(3, BoundaryImportStatistics.PHASE_MERGING);
-                        stats.setMergedThreadCount(threads);
+                        mergeH3Dbs(Arrays.asList(threadH3Paths), h3ToOsm, cacheOpts);
                         for (int t = 0; t < threads; t++) {
                             if (Files.exists(threadH3Paths[t])) {
-                                try (RocksDB threadDb = RocksDB.open(cacheOpts, threadH3Paths[t].toString())) {
-                                    copyH3Db(threadDb, h3ToOsm);
-                                }
-                                stats.incrementMergedThreadDatabasesProcessed();
                                 cleanup(threadH3Paths[t]);
                             }
                         }
@@ -391,7 +388,7 @@ public class StandaloneBoundaryImporter {
                 if (!hierarchyResult.unassignedIds().isEmpty()) {
                     stats.setCurrentPhase(3, BoundaryImportStatistics.PHASE_PRUNING);
                     pruneUnassigned(hierarchyResult.unassignedIds(), tmpRegionMeta, tmpRegionGeom, h3ToOsm,
-                                    nameSql, stats);
+                                    nameSql);
                 }
 
                 stats.setCurrentPhase(3, BoundaryImportStatistics.PHASE_COMPACTING);
@@ -430,8 +427,7 @@ public class StandaloneBoundaryImporter {
      * line (e.g. from a truncated write) makes that ingest fail with an opaque error. Validate
      * it here so a broken file fails the import instead of being published in a bundle.
      */
-    private void validateNameFile(Path nameSql) {
-        Path path = nameSql;
+    private void validateNameFile(Path path) {
         if (!Files.isRegularFile(path)) {
             logger.warn("No osm_names.tsv was produced; region names will be unavailable.");
             return;
@@ -477,33 +473,160 @@ public class StandaloneBoundaryImporter {
         }
     }
 
-    private void copyH3Db(RocksDB source, RocksDB target) throws RocksDBException {
-        try (RocksIterator it = source.newIterator(); WriteOptions wo = new WriteOptions().setDisableWAL(true)) {
-            it.seekToFirst();
-            while (it.isValid()) {
-                byte[] key = it.key();
-                byte[] newVal = it.value();
-                byte[] existing = target.get(key);
-                if (existing == null) {
-                    target.put(wo, key, newVal);
-                } else {
-                    byte[] merged = mergeOsmIdArrays(existing, newVal);
-                    target.put(wo, key, merged);
+    /**
+     * Merges the sorted per-thread H3 databases with a k-way merge. Each cell key is read from all
+     * thread DBs that contain it, the OSM IDs are unioned, and the result is written exactly once.
+     * This avoids the random target reads of the previous read-modify-write loop.
+     */
+    void mergeH3Dbs(List<Path> threadH3Paths, RocksDB target, Options readOptions) throws RocksDBException {
+        List<RocksDB> sources = new ArrayList<>();
+        List<RocksIterator> iterators = new ArrayList<>();
+        PriorityQueue<H3MergeCursor> queue = new PriorityQueue<>(
+                (left, right) -> compareH3Keys(left.key(), right.key()));
+        try {
+            int opened = 0;
+            for (Path path : threadH3Paths) {
+                if (!Files.exists(path)) {
+                    continue;
                 }
-                it.next();
-                this.stats.incrementMergedEntriesProcessed();
+                RocksDB source = RocksDB.openReadOnly(readOptions, path.toString());
+                sources.add(source);
+                RocksIterator iterator = source.newIterator();
+                iterators.add(iterator);
+                H3MergeCursor cursor = H3MergeCursor.open(iterator, true);
+                if (cursor == null) {
+                    stats.incrementMergedThreadDatabasesProcessed();
+                } else {
+                    queue.add(cursor);
+                }
+                opened++;
+            }
+            stats.setMergedThreadCount(opened);
+
+            // A multi-PBF import already has data in the target. Including it as one more sorted
+            // source keeps the merge correct without falling back to random read-modify-write.
+            RocksIterator targetIterator = target.newIterator();
+            iterators.add(targetIterator);
+            H3MergeCursor targetCursor = H3MergeCursor.open(targetIterator, false);
+            if (targetCursor != null) {
+                queue.add(targetCursor);
+            }
+
+            try (WriteOptions writeOptions = new WriteOptions().setDisableWAL(true);
+                 WriteBatch batch = new WriteBatch()) {
+                TreeSet<Long> osmIds = new TreeSet<>();
+                int pendingPuts = 0;
+                while (!queue.isEmpty()) {
+                    byte[] key = queue.peek().key();
+                    osmIds.clear();
+                    while (!queue.isEmpty() && compareH3Keys(queue.peek().key(), key) == 0) {
+                        H3MergeCursor cursor = queue.poll();
+                        collectOsmIds(osmIds, cursor.value());
+                        if (cursor.countAsThreadDb()) {
+                            stats.incrementMergedEntriesProcessed();
+                        }
+                        if (cursor.next()) {
+                            queue.add(cursor);
+                        } else if (cursor.countAsThreadDb()) {
+                            stats.incrementMergedThreadDatabasesProcessed();
+                        }
+                    }
+                    batch.put(key, osmIdsToBytes(osmIds));
+                    pendingPuts++;
+                    if (pendingPuts >= H3_MERGE_BATCH_SIZE) {
+                        target.write(writeOptions, batch);
+                        batch.clear();
+                        pendingPuts = 0;
+                    }
+                }
+                if (pendingPuts > 0) {
+                    target.write(writeOptions, batch);
+                }
+            }
+        } finally {
+            for (RocksIterator iterator : iterators) {
+                iterator.close();
+            }
+            for (RocksDB source : sources) {
+                source.close();
             }
         }
     }
 
-    private byte[] mergeOsmIdArrays(byte[] existing, byte[] newVal) {
-        ByteBuffer bb = ByteBuffer.wrap(newVal).order(ByteOrder.BIG_ENDIAN);
-        byte[] current = existing;
-        while (bb.hasRemaining()) {
-            long osmId = bb.getLong();
-            current = appendOsmIdToArray(current, osmId);
+    private static void collectOsmIds(TreeSet<Long> osmIds, byte[] value) {
+        ByteBuffer buffer = ByteBuffer.wrap(value).order(ByteOrder.BIG_ENDIAN);
+        while (buffer.remaining() >= Long.BYTES) {
+            osmIds.add(buffer.getLong());
         }
-        return current;
+    }
+
+    private static byte[] osmIdsToBytes(TreeSet<Long> osmIds) {
+        ByteBuffer buffer = ByteBuffer.allocate(osmIds.size() * Long.BYTES).order(ByteOrder.BIG_ENDIAN);
+        for (long osmId : osmIds) {
+            buffer.putLong(osmId);
+        }
+        return buffer.array();
+    }
+
+    private static int compareH3Keys(byte[] left, byte[] right) {
+        int length = Math.min(left.length, right.length);
+        for (int i = 0; i < length; i++) {
+            int comparison = Integer.compare(left[i] & 0xFF, right[i] & 0xFF);
+            if (comparison != 0) {
+                return comparison;
+            }
+        }
+        return Integer.compare(left.length, right.length);
+    }
+
+    private static final class H3MergeCursor {
+        private final RocksIterator iterator;
+        private final boolean countAsThreadDb;
+        private byte[] key;
+        private byte[] value;
+
+        private H3MergeCursor(RocksIterator iterator, boolean countAsThreadDb) {
+            this.iterator = iterator;
+            this.countAsThreadDb = countAsThreadDb;
+        }
+
+        static H3MergeCursor open(RocksIterator iterator, boolean countAsThreadDb) {
+            iterator.seekToFirst();
+            if (!iterator.isValid()) {
+                return null;
+            }
+            H3MergeCursor cursor = new H3MergeCursor(iterator, countAsThreadDb);
+            cursor.read();
+            return cursor;
+        }
+
+        byte[] key() {
+            return key;
+        }
+
+        byte[] value() {
+            return value;
+        }
+
+        boolean countAsThreadDb() {
+            return countAsThreadDb;
+        }
+
+        boolean next() {
+            iterator.next();
+            if (!iterator.isValid()) {
+                key = null;
+                value = null;
+                return false;
+            }
+            read();
+            return true;
+        }
+
+        private void read() {
+            key = iterator.key().clone();
+            value = iterator.value().clone();
+        }
     }
 
     // ============================ GEOMETRY STITCHING ============================
@@ -1068,7 +1191,7 @@ public class StandaloneBoundaryImporter {
     }
 
     private void pruneUnassigned(Set<Long> unassigned, RocksDB tmpRegionMeta, RocksDB tmpRegionGeom,
-                                   RocksDB h3ToOsm, Path osmNames, BoundaryImportStatistics stats) throws Exception {
+                                   RocksDB h3ToOsm, Path osmNames) throws Exception {
         try (WriteBatch batch = new WriteBatch(); WriteOptions wo = new WriteOptions().setDisableWAL(true)) {
             for (Long osmId : unassigned) {
                 batch.delete(longToBytes(osmId));
@@ -1076,12 +1199,11 @@ public class StandaloneBoundaryImporter {
             tmpRegionMeta.write(wo, batch);
             tmpRegionGeom.write(wo, batch);
         }
-        removeOsmIdsFromH3(h3ToOsm, unassigned, stats);
+        removeOsmIdsFromH3(h3ToOsm, unassigned);
         filterOsmNames(osmNames, unassigned);
     }
 
-    private void removeOsmIdsFromH3(RocksDB h3ToOsm, Set<Long> unassigned,
-                                    BoundaryImportStatistics stats) throws RocksDBException {
+    private void removeOsmIdsFromH3(RocksDB h3ToOsm, Set<Long> unassigned) throws RocksDBException {
         try (RocksIterator iterator = h3ToOsm.newIterator();
              WriteBatch batch = new WriteBatch();
              WriteOptions wo = new WriteOptions().setDisableWAL(true)) {
