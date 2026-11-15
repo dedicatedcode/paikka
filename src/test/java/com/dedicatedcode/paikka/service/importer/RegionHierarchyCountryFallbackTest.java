@@ -91,6 +91,28 @@ class RegionHierarchyCountryFallbackTest {
         }
     }
 
+    @Test
+    void doesNotAssignLevel2RegionsWithoutCountryIdentityByGeometry() throws Exception {
+        long countryId = 1L;
+        long disputedId = 2L;
+
+        try (Options options = new Options().setCreateIfMissing(true);
+             RocksDB db = RocksDB.open(options, tempDir.toString())) {
+            put(db, countryId, square(0, 10, 0, 10));
+            put(db, disputedId, square(1, 2, 1, 2));
+
+            Map<Long, String> countries = new HashMap<>();
+            int assigned = new RegionHierarchyWriter().assignCountriesByGeometry(
+                    List.of(new RegionHierarchyWriter.RegionInfo(disputedId, 2, 4, 11)),
+                    countries,
+                    db,
+                    Map.of("XX", countryId));
+
+            assertEquals(0, assigned);
+            assertFalse(countries.containsKey(disputedId));
+        }
+    }
+
     private static Geometry square(double minX, double maxX, double minY, double maxY) {
         return GEOMETRY_FACTORY.toGeometry(new Envelope(minX, maxX, minY, maxY));
     }

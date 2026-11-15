@@ -256,6 +256,13 @@ public class RegionHierarchyWriter {
             if (countryByRegion.containsKey(region.osmId())) {
                 continue;
             }
+            // Only ISO-coded country relations may be level-2. A level-2 region without a country
+            // identity (for example an OSM boundary=disputed area) must not be promoted to a second
+            // root by the geometry fallback. Leaving it unassigned lets pruneUnassigned() remove it
+            // together with its H3 cells.
+            if (region.adminLevel() == 2) {
+                continue;
+            }
             Geometry geometry = geometry(region.osmId(), tmpRegionGeom);
             Point point = interiorPoint(geometry);
             if (point == null) {
