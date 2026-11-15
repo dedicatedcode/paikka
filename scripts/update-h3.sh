@@ -425,7 +425,7 @@ local_upload_bundle() {
         upload_args+=(--env-file "$ENV_FILE")
     fi
 
-    ./scripts/upload-h3-bundle.sh "${upload_args}"
+    ./scripts/upload-h3-bundle.sh "${upload_args[@]}"
 }
 # ==============================================================================
 # MAIN ORCHESTRATION FUNCTION

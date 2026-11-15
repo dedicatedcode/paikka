@@ -6,6 +6,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE=""  # No default - must be provided or use environment variables
 DIST_DIR="$SCRIPT_DIR/dist"
+KEEP_COUNT="${KEEP_COUNT:-2}"
 
 # Show help/usage instructions
 usage() {
@@ -14,8 +15,8 @@ usage() {
     echo "Options:"
     echo "  -d, --dist-dir     Path to folder containing the ZIP file and manifest.json (Default: $DIST_DIR)"
     echo "  -e, --env-file     Path to .env file with R2 credentials (optional if set via environment)"
+    echo "  -k, --keep         Number of newest ZIP versions to keep in the bucket (Default: $KEEP_COUNT)"
     echo "  -h, --help         Show this help message"
-    exit 1
 }
 
 # Parse command line arguments
@@ -23,11 +24,17 @@ while [[ "$#" -gt 0 ]]; do
     case $1 in
         -d|--dist-dir) DIST_DIR="$2"; shift ;;
         -e|--env-file) ENV_FILE="$2"; shift ;;
-        -h|--help) usage ;;
-        *) echo "Unknown parameter: $1"; usage ;;
+        -k|--keep) KEEP_COUNT="$2"; shift ;;
+        -h|--help) usage; exit 0 ;;
+        *) echo "Unknown parameter: $1"; usage; exit 1 ;;
     esac
     shift
 done
+
+if ! [[ "$KEEP_COUNT" =~ ^[0-9]+$ ]]; then
+    echo "Error: --keep must be a non-negative integer (got: $KEEP_COUNT)"
+    exit 1
+fi
 
 # Load credentials from .env file (if provided)
 if [ -n "$ENV_FILE" ]; then
@@ -102,6 +109,10 @@ aws s3 cp "$ZIP_FILE" "s3://$R2_BUCKET/$REMOTE_ZIP_KEY" \
     --endpoint-url "$R2_ENDPOINT" \
     --cache-control "public, max-age=31536000, immutable"
 
+if ! aws s3api head-object --endpoint-url "$R2_ENDPOINT" --bucket "$R2_BUCKET" --key "$REMOTE_ZIP_KEY" > /dev/null 2>&1; then
+    echo "WARNING: $REMOTE_ZIP_KEY not found in bucket after upload." >&2
+fi
+
 # 2. Upload manifest last for atomic update execution
 echo "Uploading manifest.json..."
 aws s3 cp "$MANIFEST_FILE" "s3://$R2_BUCKET/$REMOTE_MANIFEST_KEY" \
@@ -111,36 +122,59 @@ aws s3 cp "$MANIFEST_FILE" "s3://$R2_BUCKET/$REMOTE_MANIFEST_KEY" \
 
 echo "Files successfully uploaded."
 echo "------------------------------------------"
-echo "Applying retention policy (Keeping only the 2 newest ZIP files)..."
+echo "Applying retention policy (keeping the $KEEP_COUNT newest ZIP files)..."
 
-# 3. List all ZIPs in the bucket, sorted chronologically (oldest first)
-ZIPS_IN_BUCKET=$(aws s3api list-objects-v2 \
+# 3. List all ZIPs in the bucket, newest first
+ZIP_LISTING=$(aws s3api list-objects-v2 \
     --endpoint-url "$R2_ENDPOINT" \
     --bucket "$R2_BUCKET" \
     --prefix "$REMOTE_PREFIX" \
-    --query "Contents[?ends_with(Key, '.zip')] | sort_by(@, &LastModified)[].Key" \
+    --query "Contents[?ends_with(Key, '.zip')] | sort_by(@, &LastModified)[::-1].Key" \
     --output text)
 
-# Convert output into a Bash array
-read -r -a ZIP_ARRAY <<< "$ZIPS_IN_BUCKET"
-TOTAL_ZIPS=${#ZIP_ARRAY}
+# Normalize the listing into one key per line (text output may join keys with tabs)
+ZIP_ARRAY=()
+while IFS= read -r key; do
+    [ -n "$key" ] && [ "$key" != "None" ] && ZIP_ARRAY+=("$key")
+done < <(printf '%s\n' "$ZIP_LISTING" | tr '\t' '\n')
 
+TOTAL_ZIPS=${#ZIP_ARRAY[@]}
 echo "$TOTAL_ZIPS ZIP file(s) found in bucket."
 
-# If more than 2 versions are present, clean up the oldest
-if [ "$TOTAL_ZIPS" -gt 2 ]; then
-    DELETE_COUNT=$((TOTAL_ZIPS - 2))
-    echo "Retaining the 2 newest versions. Deleting $DELETE_COUNT older version(s)..."
-
-    for ((i=0; i<DELETE_COUNT; i++)); do
-        OLD_ZIP_KEY="${ZIP_ARRAY[$i]}"
-        echo "Deleting old package: s3://$R2_BUCKET/$OLD_ZIP_KEY"
-
-        aws s3 rm "s3://$R2_BUCKET/$OLD_ZIP_KEY" \
-            --endpoint-url "$R2_ENDPOINT"
-    done
-else
+if [ "$TOTAL_ZIPS" -le "$KEEP_COUNT" ]; then
     echo "Only $TOTAL_ZIPS version(s) found in bucket. No cleanup required."
+else
+    echo "Keeping:"
+    for ((i=0; i<KEEP_COUNT; i++)); do
+        echo "  - ${ZIP_ARRAY[$i]}"
+    done
+
+    DELETE_KEYS=()
+    for ((i=KEEP_COUNT; i<TOTAL_ZIPS; i++)); do
+        OLD_ZIP_KEY="${ZIP_ARRAY[$i]}"
+        if [ -z "$OLD_ZIP_KEY" ]; then
+            continue
+        elif [ "$OLD_ZIP_KEY" = "$REMOTE_ZIP_KEY" ]; then
+            echo "Keeping $OLD_ZIP_KEY (bundle uploaded by this run)"
+        elif [[ "$OLD_ZIP_KEY" != *.zip ]]; then
+            echo "WARNING: unexpected key '$OLD_ZIP_KEY' in bucket listing; aborting cleanup." >&2
+            DELETE_KEYS=()
+            break
+        else
+            DELETE_KEYS+=("$OLD_ZIP_KEY")
+        fi
+    done
+
+    if [ ${#DELETE_KEYS[@]} -eq 0 ]; then
+        echo "Nothing to delete."
+    else
+        echo "Retaining the $KEEP_COUNT newest version(s). Deleting ${#DELETE_KEYS[@]} older version(s)..."
+        for OLD_ZIP_KEY in "${DELETE_KEYS[@]}"; do
+            echo "Deleting old package: s3://$R2_BUCKET/$OLD_ZIP_KEY"
+            aws s3 rm "s3://$R2_BUCKET/$OLD_ZIP_KEY" \
+                --endpoint-url "$R2_ENDPOINT"
+        done
+    fi
 fi
 
 echo "=========================================="
