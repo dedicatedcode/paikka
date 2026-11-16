@@ -50,6 +50,7 @@ class MetadataServiceTest {
         assertEquals("20260517-074751", loaded.get("dataVersion"));
         assertEquals(12, loaded.get("gridLevel"));
         assertEquals("1.0.0", loaded.get("paikkaVersion"));
+        assertEquals("wkb", loaded.get("geometryFormat"));
         List<String> files = (List<String>) loaded.get("files");
         assertNotNull(files);
         assertEquals(2, files.size());

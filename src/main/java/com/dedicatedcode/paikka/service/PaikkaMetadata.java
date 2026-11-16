@@ -25,6 +25,7 @@ public record PaikkaMetadata(
         @JsonProperty("dataVersion") String dataVersion,
         @JsonProperty("file") List<String> files,
         @JsonProperty("gridLevel") Integer gridLevel,
-        @JsonProperty("paikkaVersion") String paikkaVersion
+        @JsonProperty("paikkaVersion") String paikkaVersion,
+        @JsonProperty("geometryFormat") String geometryFormat
 ) {
 }

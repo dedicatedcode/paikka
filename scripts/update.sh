@@ -32,6 +32,10 @@ IMPORT_THREADS="${IMPORT_THREADS:-10}"
 
 # --- Remote Machine Settings ---
 REMOTE_BASE_DIR="/opt/paikka/data"
+REMOTE_COMPOSE_DIR="${REMOTE_COMPOSE_DIR:-/opt/paikka}"
+REMOTE_COMPOSE_SERVICE="${REMOTE_COMPOSE_SERVICE:-paikka}"
+REMOTE_DOCKER_IMAGE="${REMOTE_DOCKER_IMAGE:-}"
+PULL_REMOTE_DOCKER_IMAGE="${PULL_REMOTE_DOCKER_IMAGE:-true}"
 
 # --- Cloudflare Cache Invalidation Settings ---
 CLOUDFLARE_API_BASE_URL="https://api.cloudflare.com/client/v4"
@@ -103,6 +107,14 @@ Options:
                               (env: DOCKER_IMAGE, default: dedicatedcode/paikka:latest)
   --no-pull                   Do not pull the Docker image before use; useful for local
                               test builds (env: PULL_DOCKER_IMAGE=false)
+  --remote-compose-dir DIR    Remote directory containing docker-compose.yml
+                              (env: REMOTE_COMPOSE_DIR, default: /opt/paikka)
+  --remote-compose-service N  Remote compose service name (env: REMOTE_COMPOSE_SERVICE,
+                              default: paikka)
+  --remote-docker-image IMAGE Image to pull/run on the remote host
+                              (env: REMOTE_DOCKER_IMAGE, default: --docker-image value)
+  --no-remote-pull            Skip pulling/recreating the remote Docker image
+                              (env: PULL_REMOTE_DOCKER_IMAGE=false)
   --clean                     Remove the downloaded and filtered PBF files after a
                               successful run (env: CLEAN_PBF=true; files are kept by
                               default so the filter/import can be re-run)
@@ -249,6 +261,20 @@ parse_args_and_configure() {
                     *) echo "Error: Invalid value for --no-pull (expected true or false)"; print_usage; exit 1 ;;
                 esac
                 shift ;;
+            --remote-compose-dir)   require_flag_value "$1" "${2:-}"; REMOTE_COMPOSE_DIR="$2"; shift 2 ;;
+            --remote-compose-dir=*) REMOTE_COMPOSE_DIR="${1#*=}"; shift ;;
+            --remote-compose-service) require_flag_value "$1" "${2:-}"; REMOTE_COMPOSE_SERVICE="$2"; shift 2 ;;
+            --remote-compose-service=*) REMOTE_COMPOSE_SERVICE="${1#*=}"; shift ;;
+            --remote-docker-image)  require_flag_value "$1" "${2:-}"; REMOTE_DOCKER_IMAGE="$2"; shift 2 ;;
+            --remote-docker-image=*) REMOTE_DOCKER_IMAGE="${1#*=}"; shift ;;
+            --no-remote-pull)       PULL_REMOTE_DOCKER_IMAGE=false; shift ;;
+            --no-remote-pull=*)
+                case "${1#*=}" in
+                    true)  PULL_REMOTE_DOCKER_IMAGE=true ;;
+                    false) PULL_REMOTE_DOCKER_IMAGE=false ;;
+                    *) echo "Error: Invalid value for --no-remote-pull (expected true or false)"; print_usage; exit 1 ;;
+                esac
+                shift ;;
             --clean)                CLEAN_PBF=true; shift ;;
             --clean=*)
                 case "${1#*=}" in
@@ -294,6 +320,7 @@ parse_args_and_configure() {
         print_usage
         exit 1
     fi
+    REMOTE_DOCKER_IMAGE="${REMOTE_DOCKER_IMAGE:-$DOCKER_IMAGE}"
     if [ -n "$PBF_INPUT_PATH" ] && [ ! -f "$PBF_INPUT_PATH" ]; then
         echo "Error: PBF file not found: $PBF_INPUT_PATH"
         exit 1
@@ -349,6 +376,8 @@ parse_args_and_configure() {
     echo "  Import memory: $IMPORT_MEMORY"
     echo "  Import threads: $IMPORT_THREADS"
     echo "  Docker image: $DOCKER_IMAGE (pull: $PULL_DOCKER_IMAGE)"
+    echo "  Remote compose: $REMOTE_COMPOSE_DIR ($REMOTE_COMPOSE_SERVICE)"
+    echo "  Remote Docker image: $REMOTE_DOCKER_IMAGE (pull: $PULL_REMOTE_DOCKER_IMAGE)"
     if [ -n "$PBF_INPUT_PATH" ]; then
         echo "  PBF input file: $PBF_INPUT_PATH"
     fi
@@ -524,6 +553,61 @@ remote_sync_bundle() {
           "${REMOTE_USER}@${REMOTE_HOST}:$NEW_RELEASE_DIR/"
 
       export LATEST_RELEASE_DIR_NAME="$NEW_RELEASE_TIMESTAMP"
+}
+
+###
+# REMOTE: Pulls the newest image and recreates the remote service before the
+# data symlink is switched. The new image must be able to read the old WKB
+# dataset during this step; the compact format is only activated by the
+# subsequent refresh.
+###
+remote_pull_and_recreate() {
+    if [ "$PULL_REMOTE_DOCKER_IMAGE" != "true" ]; then
+        log "REMOTE: Skipping remote Docker image pull (--no-remote-pull)"
+        return 0
+    fi
+
+    log "REMOTE: Pulling newest image and recreating ${REMOTE_COMPOSE_SERVICE}"
+
+    # shellcheck disable=SC2087
+    ssh "${REMOTE_USER}@${REMOTE_HOST}" /bin/bash << EOF
+  set -euo pipefail
+  cd "${REMOTE_COMPOSE_DIR}"
+
+  OLD_IMAGE_ID="\$(PAIKKA_IMAGE="${REMOTE_DOCKER_IMAGE}" docker compose images -q "${REMOTE_COMPOSE_SERVICE}" | head -1 || true)"
+  echo "[REMOTE] Previous image: \${OLD_IMAGE_ID:-none}"
+
+  COMPOSE_IMAGES="\$(PAIKKA_IMAGE="${REMOTE_DOCKER_IMAGE}" docker compose config --images)"
+  if ! printf '%s\n' "\$COMPOSE_IMAGES" | grep -Fxq "${REMOTE_DOCKER_IMAGE}"; then
+      echo "[REMOTE] ERROR: remote compose does not reference ${REMOTE_DOCKER_IMAGE}" >&2
+      echo "[REMOTE] Configure the remote compose file to use \${PAIKKA_IMAGE:-dedicatedcode/paikka:latest}." >&2
+      exit 1
+  fi
+
+  echo "[REMOTE] Pulling: ${REMOTE_DOCKER_IMAGE}"
+  PAIKKA_IMAGE="${REMOTE_DOCKER_IMAGE}" docker compose pull "${REMOTE_COMPOSE_SERVICE}"
+
+  echo "[REMOTE] Recreating service"
+  PAIKKA_IMAGE="${REMOTE_DOCKER_IMAGE}" docker compose up -d --no-deps --force-recreate "${REMOTE_COMPOSE_SERVICE}"
+
+  echo "[REMOTE] Waiting for health"
+  for i in \$(seq 1 60); do
+      if curl -fsS --max-time 5 http://localhost:8080/actuator/health >/dev/null 2>&1; then
+          echo "[REMOTE] Service healthy"
+          exit 0
+      fi
+      sleep 2
+  done
+
+  echo "[REMOTE] ERROR: service did not become healthy after 120s" >&2
+  PAIKKA_IMAGE="${REMOTE_DOCKER_IMAGE}" docker compose logs --tail=100 "${REMOTE_COMPOSE_SERVICE}" >&2 || true
+
+  if [ -n "\${OLD_IMAGE_ID:-}" ]; then
+      echo "[REMOTE] Rolling back to previous image \${OLD_IMAGE_ID}" >&2
+      PAIKKA_IMAGE="\${OLD_IMAGE_ID}" docker compose up -d --no-deps --force-recreate "${REMOTE_COMPOSE_SERVICE}" || true
+  fi
+  exit 1
+EOF
 }
 
 ###
@@ -927,6 +1011,7 @@ main() {
     local_create_import_bundle
     local_cleanup_pbf
     remote_sync_bundle
+    remote_pull_and_recreate
     remote_deploy_and_verify
     post_import_stats_to_github
     local_cleanup_stats_files

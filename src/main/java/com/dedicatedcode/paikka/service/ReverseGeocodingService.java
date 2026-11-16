@@ -17,20 +17,14 @@
 package com.dedicatedcode.paikka.service;
 
 import com.dedicatedcode.paikka.config.PaikkaConfiguration;
-import com.dedicatedcode.paikka.dto.GeoJsonGeometry;
 import com.dedicatedcode.paikka.dto.POIResponse;
 import com.dedicatedcode.paikka.flatbuffers.*;
+import com.dedicatedcode.paikka.service.geometry.EncodedGeometry;
+import com.dedicatedcode.paikka.service.geometry.GeometryCodec;
 import jakarta.annotation.PreDestroy;
 import org.locationtech.jts.geom.Geometry;
 import org.locationtech.jts.io.WKBReader;
-import org.rocksdb.BlockBasedTableConfig;
-import org.rocksdb.BloomFilter;
-import org.rocksdb.Cache;
-import org.rocksdb.Filter;
-import org.rocksdb.LRUCache;
-import org.rocksdb.Options;
-import org.rocksdb.RocksDB;
-import org.rocksdb.RocksDBException;
+import org.rocksdb.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -238,7 +232,7 @@ public class ReverseGeocodingService {
             long buildingLookupStart = System.nanoTime();
             try (BuildingService.BuildingLookupContext buildingContext = buildingService.newLookupContext()) {
                 for (POIData poi : closestPOIs) {
-                    POIResponse response = convertPOIToResponse(poi, lat, lon, lang);
+                    POIResponse response = convertPOIToResponse(poi, lat, lon, lang, buildingContext);
 
                     // Enhance with building information if this is a building or related to a building
                     enhanceWithBuildingInfo(response, poi, buildingContext);
@@ -345,20 +339,21 @@ public class ReverseGeocodingService {
             }
 
             // Copy boundary geometry if present
-            byte[] boundaryData = null;
+            EncodedGeometry boundaryData = null;
             if (poi.boundary() != null) {
                 com.dedicatedcode.paikka.flatbuffers.Geometry boundary = poi.boundary();
                 if (boundary.dataLength() > 0) {
-                    boundaryData = new byte[boundary.dataLength()];
+                    byte[] boundaryBytes = new byte[boundary.dataLength()];
                     ByteBuffer boundaryBuffer = boundary.dataAsByteBuffer();
                     if (boundaryBuffer != null) {
-                        boundaryBuffer.get(boundaryData);
+                        boundaryBuffer.get(boundaryBytes);
                     } else {
                         for (int k = 0; k < boundary.dataLength(); k++) {
-                            boundaryData[k] = (byte) boundary.data(k);
+                            boundaryBytes[k] = (byte) boundary.data(k);
                         }
                     }
-                    logger.debug("Copied boundary geometry: {} bytes", boundaryData.length);
+                    boundaryData = new EncodedGeometry((byte) boundary.format(), boundaryBytes);
+                    logger.debug("Copied boundary geometry: {} bytes, format {}", boundaryBytes.length, boundary.format());
                 }
             }
 
@@ -372,6 +367,7 @@ public class ReverseGeocodingService {
                 names,
                 addressData,
                 hierarchy,
+                shardId,
                 boundaryData
             );
 
@@ -464,7 +460,7 @@ public class ReverseGeocodingService {
             streetLine.append(address.street());
         }
         if (hasText(address.houseNumber())) {
-            if (streetLine.length() > 0) {
+            if (!streetLine.isEmpty()) {
                 streetLine.append(' ');
             }
             streetLine.append(address.houseNumber());
@@ -475,19 +471,19 @@ public class ReverseGeocodingService {
             cityLine.append(address.postcode());
         }
         if (hasText(address.city())) {
-            if (cityLine.length() > 0) {
+            if (!cityLine.isEmpty()) {
                 cityLine.append(' ');
             }
             cityLine.append(address.city());
         }
 
-        if (streetLine.length() > 0 && cityLine.length() > 0) {
-            return streetLine.toString() + ", " + cityLine.toString();
+        if (!streetLine.isEmpty() && !cityLine.isEmpty()) {
+            return streetLine + ", " + cityLine;
         }
-        if (streetLine.length() > 0) {
+        if (!streetLine.isEmpty()) {
             return streetLine.toString();
         }
-        if (cityLine.length() > 0) {
+        if (!cityLine.isEmpty()) {
             return cityLine.toString();
         }
         return null;
@@ -506,7 +502,7 @@ public class ReverseGeocodingService {
         return Math.sqrt(latDistKm * latDistKm + lonDistKm * lonDistKm);
     }
 
-    private POIResponse convertPOIToResponse(POIData poi, double queryLat, double queryLon, String lang) {
+    private POIResponse convertPOIToResponse(POIData poi, double queryLat, double queryLon, String lang, BuildingService.BuildingLookupContext buildingContext) {
         POIResponse response = new POIResponse();
 
         // Basic POI information
@@ -570,20 +566,23 @@ public class ReverseGeocodingService {
         response.setHierarchy(hierarchy);
 
         // Boundary information (if available)
-        if (poi.boundary() != null && poi.boundary().length > 0) {
+        if (poi.boundary() != null && !poi.boundary().isEmpty()) {
             try {
-                WKBReader wkbReader = new WKBReader();
-                Geometry geometry = wkbReader.read(poi.boundary());
-
-                // Create a simple GeoJSON representation
-                GeoJsonGeometry geoJsonGeometry = GeometryHelper.convertJtsToGeoJson(geometry);
-                response.setBoundary(geoJsonGeometry);
-
-                logger.debug("POI {} has boundary geometry converted to GeoJSON", poi.id());
+                Geometry geometry = GeometryCodec.decode(poi.boundary().format(), poi.boundary().data());
+                if (geometry != null) {
+                    response.setBoundary(GeometryHelper.convertJtsToGeoJson(geometry));
+                    logger.debug("POI {} has boundary geometry converted to GeoJSON", poi.id());
+                }
             } catch (Exception e) {
                 logger.warn("Failed to convert boundary geometry to GeoJSON for POI {}: {}", poi.id(), e.getMessage());
-                // Set null boundary on error
                 response.setBoundary(null);
+            }
+        }
+
+        if (response.getBoundary() == null && "building".equals(poi.type())) {
+            BuildingService.BuildingInfo buildingInfo = buildingService.getBuildingById(poi.id(), poi.shardId(), buildingContext);
+            if (buildingInfo != null && buildingInfo.getGeometry() != null) {
+                response.setBoundary(GeometryHelper.convertJtsToGeoJson(buildingInfo.getGeometry()));
             }
         }
 
@@ -610,13 +609,16 @@ public class ReverseGeocodingService {
 
             // Do not replace a geometry that belongs to the POI itself (for example a
             // mapped building or parking area) with the containing building footprint.
-            if (response.getBoundary() == null && buildingInfo.getBoundaryWkb() != null && buildingInfo.getBoundaryWkb().length > 0) {
+            if (response.getBoundary() == null) {
                 try {
-                    WKBReader wkbReader = new WKBReader();
-                    Geometry geometry = wkbReader.read(buildingInfo.getBoundaryWkb());
-                    GeoJsonGeometry geoJsonGeometry = GeometryHelper.convertJtsToGeoJson(geometry);
-                    response.setBoundary(geoJsonGeometry);
-                    logger.debug("Enhanced POI {} with building boundary", poi.id());
+                    org.locationtech.jts.geom.Geometry geometry = buildingInfo.getGeometry();
+                    if (geometry == null && buildingInfo.getBoundaryWkb() != null && buildingInfo.getBoundaryWkb().length > 0) {
+                        geometry = new WKBReader().read(buildingInfo.getBoundaryWkb());
+                    }
+                    if (geometry != null) {
+                        response.setBoundary(GeometryHelper.convertJtsToGeoJson(geometry));
+                        logger.debug("Enhanced POI {} with building boundary", poi.id());
+                    }
                 } catch (Exception e) {
                     logger.warn("Failed to convert building boundary to GeoJSON for POI {}: {}", poi.id(), e.getMessage());
                 }
@@ -640,7 +642,8 @@ public class ReverseGeocodingService {
     }
 
     record POIData(long id, float lat, float lon, String type, String subtype, Map<String, String> names,
-                           AddressData address, List<HierarchyData> hierarchy, byte[] boundary) {
+                           AddressData address, List<HierarchyData> hierarchy, long shardId,
+                           EncodedGeometry boundary) {
     }
 
     record AddressData(String street, String houseNumber, String postcode, String city, String country) {

@@ -20,11 +20,11 @@ import com.dedicatedcode.paikka.config.PaikkaConfiguration;
 import com.dedicatedcode.paikka.flatbuffers.Building;
 import com.dedicatedcode.paikka.flatbuffers.BuildingList;
 import com.dedicatedcode.paikka.flatbuffers.Geometry;
+import com.dedicatedcode.paikka.service.geometry.GeometryCodec;
 import jakarta.annotation.PreDestroy;
 import org.locationtech.jts.geom.Coordinate;
 import org.locationtech.jts.geom.GeometryFactory;
 import org.locationtech.jts.geom.Point;
-import org.locationtech.jts.io.WKBReader;
 import org.rocksdb.BlockBasedTableConfig;
 import org.rocksdb.BloomFilter;
 import org.rocksdb.Cache;
@@ -223,6 +223,41 @@ public class BuildingService {
     }
 
     /**
+     * Get a building by its OSM ID and known shard ID. Used for building POIs,
+     * whose geometry is stored only in the building shards.
+     */
+    public BuildingInfo getBuildingById(long osmId, long shardId) {
+        try (BuildingLookupContext context = newLookupContext()) {
+            return getBuildingById(osmId, shardId, context);
+        }
+    }
+
+    /**
+     * Get a building by its OSM ID, reusing a request-scoped lookup context.
+     */
+    public BuildingInfo getBuildingById(long osmId, long shardId, BuildingLookupContext context) {
+        if (buildingsDb == null) {
+            logger.debug("Buildings database not initialized");
+            return null;
+        }
+
+        try {
+            BuildingShardIndex shard = context.get(shardId);
+            if (shard == null) {
+                return null;
+            }
+            Building building = shard.findById(osmId);
+            return building == null ? null : decodeBuildingInfo(building);
+        } catch (RocksDBException e) {
+            logger.error("RocksDB error while querying building {} in shard {}", osmId, shardId, e);
+            return null;
+        } catch (Exception e) {
+            logger.error("Error while querying building {} in shard {}", osmId, shardId, e);
+            return null;
+        }
+    }
+
+    /**
      * Request-scoped set of parsed building shards.
      */
     public final class BuildingLookupContext implements AutoCloseable {
@@ -286,20 +321,17 @@ public class BuildingService {
 
     private static final class BuildingShardIndex {
 
-        private final byte[] data;
         private final BuildingList buildingList;
         private final int count;
         private final double[] envelopes;
         private final boolean[] unsupported;
         private final long estimatedBytes;
 
-        private BuildingShardIndex(byte[] data,
-                                   BuildingList buildingList,
+        private BuildingShardIndex(BuildingList buildingList,
                                    int count,
                                    double[] envelopes,
                                    boolean[] unsupported,
                                    long estimatedBytes) {
-            this.data = data;
             this.buildingList = buildingList;
             this.count = count;
             this.envelopes = envelopes;
@@ -326,8 +358,9 @@ public class BuildingService {
                     unsupported[i] = true;
                     continue;
                 }
-                ByteBuffer wkb = geometry.dataAsByteBuffer();
-                if (wkb == null || !WkbEnvelope.read(wkb, envelopes, i * 4)) {
+                ByteBuffer geometryData = geometry.dataAsByteBuffer();
+                if (geometryData == null
+                        || !GeometryCodec.readEnvelope((byte) geometry.format(), geometryData, envelopes, i * 4)) {
                     unsupported[i] = true;
                 }
             }
@@ -336,7 +369,7 @@ public class BuildingService {
                     + (long) count * 4L * Double.BYTES
                     + count
                     + 256L;
-            return new BuildingShardIndex(data, buildingList, count, envelopes, unsupported, estimatedBytes);
+            return new BuildingShardIndex(buildingList, count, envelopes, unsupported, estimatedBytes);
         }
 
         private Building findContaining(Point point) {
@@ -366,13 +399,25 @@ public class BuildingService {
                 }
 
                 try {
-                    byte[] wkb = copyGeometry(geometry);
-                    org.locationtech.jts.geom.Geometry jtsGeometry = new WKBReader().read(wkb);
-                    if (jtsGeometry.intersects(point)) {
+                    byte[] geometryData = copyGeometry(geometry);
+                    org.locationtech.jts.geom.Geometry jtsGeometry =
+                            GeometryCodec.decode((byte) geometry.format(), geometryData);
+                    if (jtsGeometry != null && jtsGeometry.intersects(point)) {
                         return building;
                     }
                 } catch (Exception e) {
                     logger.warn("Failed to read geometry for building {}", building.id(), e);
+                }
+            }
+            return null;
+        }
+
+        private Building findById(long osmId) {
+            Building reusableBuilding = new Building();
+            for (int i = 0; i < count; i++) {
+                Building building = buildingList.buildings(reusableBuilding, i);
+                if (building != null && building.id() == osmId) {
+                    return building;
                 }
             }
             return null;
@@ -425,10 +470,12 @@ public class BuildingService {
                     }
 
                     try {
-                        WKBReader wkbReader = new WKBReader();
-                        org.locationtech.jts.geom.Geometry jtsGeometry = wkbReader.read(wkbData);
+                        byte format = (byte) geometry.format();
+                        org.locationtech.jts.geom.Geometry jtsGeometry = GeometryCodec.decode(format, wkbData);
                         info.setGeometry(jtsGeometry);
-                        info.setBoundaryWkb(wkbData);
+                        if (format == GeometryCodec.FORMAT_WKB) {
+                            info.setBoundaryWkb(wkbData);
+                        }
                     } catch (Exception e) {
                         logger.warn("Failed to decode geometry for building OSM ID {}: {}", building.id(), e.getMessage());
                     }
