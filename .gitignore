@@ -40,3 +40,6 @@ build/
 /data-boundaries/
 /.env
 /tmp/
+
+# Local comparative datasets
+/data-before-*/

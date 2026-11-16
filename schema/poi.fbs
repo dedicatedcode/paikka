@@ -26,7 +26,8 @@ table HierarchyItem {
 
 // POI Geometry (stored as WKB bytes)
 table Geometry {
-  data:[ubyte];    // WKB binary
+  data:[ubyte];    // WKB binary or compact polygon bytes
+  format:ubyte;    // 0 = WKB, 1 = compact polygon v1
 }
 
 // The Main POI Table

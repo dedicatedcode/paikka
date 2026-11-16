@@ -22,6 +22,8 @@ import com.dedicatedcode.paikka.flatbuffers.Geometry;
 import com.dedicatedcode.paikka.service.PaikkaMetadata;
 import com.dedicatedcode.paikka.service.S2Geometry;
 import com.dedicatedcode.paikka.service.S2Helper;
+import com.dedicatedcode.paikka.service.geometry.EncodedGeometry;
+import com.dedicatedcode.paikka.service.geometry.GeometryCodec;
 import com.dedicatedcode.paikka.service.importer.ImportStatistics.Kind;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.github.benmanes.caffeine.cache.Caffeine;
@@ -303,7 +305,7 @@ public class ImportService {
         String importTimestamp = DateTimeFormatter.ISO_INSTANT.format(now);
         String dataVersion = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss").withZone(ZoneOffset.UTC).format(now);
         ObjectMapper objectMapper = new ObjectMapper();
-        PaikkaMetadata metadata = new PaikkaMetadata(importTimestamp, dataVersion, pbfFiles.stream().map(path -> path.getFileName().toString()).toList(), S2Helper.GRID_LEVEL, version);
+        PaikkaMetadata metadata = new PaikkaMetadata(importTimestamp, dataVersion, pbfFiles.stream().map(path -> path.getFileName().toString()).toList(), S2Helper.GRID_LEVEL, version, GeometryCodec.FORMAT_NAME);
 
         objectMapper.writeValue(metadataPath.toFile(), metadata);
         System.out.println("\n\033[1;32mMetadata file written to: " + metadataPath + "\033[0m");
@@ -557,9 +559,9 @@ public class ImportService {
                                         PoiIndexRec rec = item.rec;
                                         double lat = rec.lat;
                                         double lon = rec.lon;
-                                        byte[] boundaryWkb = null;
+                                        EncodedGeometry boundary = null;
 
-                                        if (rec.kind == 'W') {
+                                        if (rec.kind == 'W' && !"building".equals(rec.type)) {
                                             List<Coordinate> coords = buildCoordinatesFromWay(nodeCache, item.cachedWayNodes);
                                             if (coords != null && coords.size() >= 3) {
                                                 if (!coords.getFirst().equals2D(coords.getLast())) {
@@ -569,7 +571,7 @@ public class ImportService {
                                                     LinearRing shell = geometryFactory.createLinearRing(coords.toArray(new Coordinate[0]));
                                                     Polygon poly = geometryFactory.createPolygon(shell);
                                                     if (poly.isValid()) {
-                                                        boundaryWkb = new WKBWriter().write(poly);
+                                                        boundary = GeometryCodec.encode(poly);
                                                     }
                                                 }
                                             }
@@ -577,8 +579,8 @@ public class ImportService {
 
                                         List<HierarchyCache.SimpleHierarchyItem> hierarchy = hierarchyCache.resolve(lon, lat);
 
-                                        PoiData poiData = createPoiDataFromIndex(rec, lat, lon, hierarchy, boundaryWkb);
-                                        localShardBuffer.computeIfAbsent(s2Helper.getShardId(lat, lon), k -> new ArrayList<>()).add(poiData);
+                                        PoiData poiData = createPoiDataFromIndex(rec, lat, lon, hierarchy, boundary);
+                                        localShardBuffer.computeIfAbsent(s2Helper.getShardId(lat, lon), _ -> new ArrayList<>()).add(poiData);
                                     } catch (Exception e) {
                                         stats.recordError(ImportStatistics.Stage.PROCESSING_POIS_SHARDING, Kind.READ, null, "poi-reader", e);
                                     }
@@ -587,7 +589,7 @@ public class ImportService {
                                 stats.incrementPoisProcessed(localCount);
                                 if (localPoiCount > localPoiBufferSize) {
                                     Map<Long, List<PoiData>> currentActiveBuffer = shardBufferRef.get();
-                                    localShardBuffer.forEach((shardId, poiList) -> currentActiveBuffer.computeIfAbsent(shardId, k -> new CopyOnWriteArrayList<>()).addAll(poiList));
+                                    localShardBuffer.forEach((shardId, poiList) -> currentActiveBuffer.computeIfAbsent(shardId, _ -> new CopyOnWriteArrayList<>()).addAll(poiList));
                                     localShardBuffer.clear();
                                     localPoiCount = 0;
                                 }
@@ -596,7 +598,7 @@ public class ImportService {
                             Thread.currentThread().interrupt();
                         } finally {
                             Map<Long, List<PoiData>> currentActiveBuffer = shardBufferRef.get();
-                            localShardBuffer.forEach((shardId, poiList) -> currentActiveBuffer.computeIfAbsent(shardId, k -> new CopyOnWriteArrayList<>()).addAll(poiList));
+                            localShardBuffer.forEach((shardId, poiList) -> currentActiveBuffer.computeIfAbsent(shardId, _ -> new CopyOnWriteArrayList<>()).addAll(poiList));
                             localShardBuffer.clear();
                             hierarchyCacheThreadLocal.remove();
                             stats.decrementActiveThreads();
@@ -878,7 +880,7 @@ public class ImportService {
         }
     }
 
-    private void processBuildingBoundariesFromIndex(RocksDB poiIndexDb, RocksDB nodeCache, RocksDB wayIndexDb, RocksDB buildingGridIndexDb, RocksDB appendBuildingDb, ImportStatistics stats) throws Exception {
+    private void processBuildingBoundariesFromIndex(RocksDB poiIndexDb, RocksDB nodeCache, RocksDB wayIndexDb, RocksDB ignoredBuildingGridIndexDb, RocksDB appendBuildingDb, ImportStatistics stats) throws Exception {
         int maxInFlight = 100;
         Semaphore semaphore = new Semaphore(maxInFlight);
         int batchSize = 1000;
@@ -942,10 +944,10 @@ public class ImportService {
                                                 }
                                             }
                                             if (geometry == null || geometry.isEmpty() || !geometry.isValid()) continue;
-                                            byte[] wkb = new WKBWriter().write(geometry);
+                                            EncodedGeometry encoded = GeometryCodec.encode(geometry);
                                             Coordinate center = geometry.getEnvelopeInternal().centre();
                                             long shardId = s2Helper.getShardId(center.getY(), center.getX());
-                                            results.add(new BuildingData(wayIdInner, recInner.subtype, null, wkb, shardId));
+                                            results.add(new BuildingData(wayIdInner, recInner.subtype, null, encoded, shardId));
                                         } catch (Exception e) {
                                             stats.recordError(ImportStatistics.Stage.PROCESSING_BUILDINGS, Kind.GEOMETRY, wayIdInner, "build-building-geometry-batch", e);
                                         }
@@ -967,7 +969,7 @@ public class ImportService {
                                     List<BuildingData> batchResults = f.get();
                                     Map<Long, List<BuildingData>> currentActiveBuffer = shardBufferRef.get();
                                     for (BuildingData r : batchResults) {
-                                        List<BuildingData> shardList = currentActiveBuffer.computeIfAbsent(r.shardId, k -> new ArrayList<>());
+                                        List<BuildingData> shardList = currentActiveBuffer.computeIfAbsent(r.shardId, _ -> new ArrayList<>());
                                         synchronized (shardList) {
                                             shardList.add(r);
                                         }
@@ -1005,10 +1007,10 @@ public class ImportService {
                                     }
                                 }
                                 if (geometry == null || geometry.isEmpty() || !geometry.isValid()) continue;
-                                byte[] wkb = new WKBWriter().write(geometry);
+                                EncodedGeometry encoded = GeometryCodec.encode(geometry);
                                 Coordinate center = geometry.getEnvelopeInternal().centre();
                                 long shardId = s2Helper.getShardId(center.getY(), center.getX());
-                                results.add(new BuildingData(wayIdInner, recInner.subtype, null, wkb, shardId));
+                                results.add(new BuildingData(wayIdInner, recInner.subtype, null, encoded, shardId));
                             } catch (Exception e) {
                                 stats.recordError(ImportStatistics.Stage.PROCESSING_BUILDINGS, Kind.GEOMETRY, wayIdInner, "build-building-geometry-batch", e);
                             }
@@ -1029,7 +1031,7 @@ public class ImportService {
                     List<BuildingData> batchResults = f.get();
                     Map<Long, List<BuildingData>> currentActiveBuffer = shardBufferRef.get();
                     for (BuildingData r : batchResults) {
-                        List<BuildingData> shardList = currentActiveBuffer.computeIfAbsent(r.shardId, k -> new ArrayList<>());
+                        List<BuildingData> shardList = currentActiveBuffer.computeIfAbsent(r.shardId, _ -> new ArrayList<>());
                         synchronized (shardList) {
                             shardList.add(r);
                         }
@@ -1046,7 +1048,7 @@ public class ImportService {
         }
     }
 
-    private PoiData createPoiDataFromIndex(PoiIndexRec rec, double lat, double lon, List<HierarchyCache.SimpleHierarchyItem> hierarchy, byte[] boundaryWkb) {
+    private PoiData createPoiDataFromIndex(PoiIndexRec rec, double lat, double lon, List<HierarchyCache.SimpleHierarchyItem> hierarchy, EncodedGeometry boundary) {
         AddressData addr = null;
         if (rec.street != null || rec.houseNumber != null || rec.postcode != null || rec.city != null || rec.country != null) {
             String city = rec.city, country = rec.country;
@@ -1061,7 +1063,7 @@ public class ImportService {
             }
             addr = new AddressData(rec.street, rec.houseNumber, rec.postcode, city, country);
         }
-        return new PoiData(rec.id, lat, lon, rec.type != null ? rec.type : "unknown", rec.subtype != null ? rec.subtype : "", rec.names != null ? rec.names : List.of(), addr, hierarchy, boundaryWkb);
+        return new PoiData(rec.id, lat, lon, rec.type != null ? rec.type : "unknown", rec.subtype != null ? rec.subtype : "", rec.names != null ? rec.names : List.of(), addr, hierarchy, boundary);
     }
 
     private String intern(String s) {
@@ -1151,10 +1153,10 @@ public class ImportService {
         int hierVecOff = POI.createHierarchyVector(builder, hierOffs);
 
         int boundaryOff = 0;
-        byte[] boundaryWkb = poi.boundaryWkb();
-        if (boundaryWkb != null && boundaryWkb.length > 0) {
-            int boundaryDataOff = Geometry.createDataVector(builder, boundaryWkb);
-            boundaryOff = Geometry.createGeometry(builder, boundaryDataOff);
+        EncodedGeometry boundary = poi.boundary();
+        if (boundary != null && !boundary.isEmpty()) {
+            int boundaryDataOff = Geometry.createDataVector(builder, boundary.data());
+            boundaryOff = Geometry.createGeometry(builder, boundaryDataOff, boundary.format());
         }
 
         POI.startPOI(builder);
@@ -1258,11 +1260,8 @@ public class ImportService {
 
         int geometryOff = 0;
         if (building.geometry(reusableGeom) != null && reusableGeom.dataLength() > 0) {
-            ByteBuffer geometryBuf = reusableGeom.dataAsByteBuffer();
-            if (geometryBuf != null) {
-                int geometryDataOff = Geometry.createDataVector(builder, geometryBuf);
-                geometryOff = Geometry.createGeometry(builder, geometryDataOff);
-            }
+            int geometryDataOff = Geometry.createDataVector(builder, reusableGeom.dataAsByteBuffer());
+            geometryOff = Geometry.createGeometry(builder, geometryDataOff, reusableGeom.format());
         }
 
         Building.startBuilding(builder);
@@ -1318,10 +1317,10 @@ public class ImportService {
         int codeOff = building.code() != null ? builder.createString(building.code()) : 0;
 
         int geometryOff = 0;
-        if (building.geometry() != null) {
-            byte[] wkb = building.geometry();
-            int geometryDataOff = Geometry.createDataVector(builder, wkb);
-            geometryOff = Geometry.createGeometry(builder, geometryDataOff);
+        EncodedGeometry geometry = building.geometry();
+        if (geometry != null && !geometry.isEmpty()) {
+            int geometryDataOff = Geometry.createDataVector(builder, geometry.data());
+            geometryOff = Geometry.createGeometry(builder, geometryDataOff, geometry.format());
         }
 
         Building.startBuilding(builder);
@@ -1482,7 +1481,7 @@ public class ImportService {
             ByteBuffer boundaryBuf = reusableGeom.dataAsByteBuffer();
             if (boundaryBuf != null) {
                 int boundaryDataOff = Geometry.createDataVector(builder, boundaryBuf);
-                boundaryOff = Geometry.createGeometry(builder, boundaryDataOff);
+                boundaryOff = Geometry.createGeometry(builder, boundaryDataOff, reusableGeom.format());
             } else {
                 int len = reusableGeom.dataLength();
                 byte[] boundaryBytes = new byte[len];
@@ -1490,7 +1489,7 @@ public class ImportService {
                     boundaryBytes[k] = (byte) reusableGeom.data(k);
                 }
                 int boundaryDataOff = Geometry.createDataVector(builder, boundaryBytes);
-                boundaryOff = Geometry.createGeometry(builder, boundaryDataOff);
+                boundaryOff = Geometry.createGeometry(builder, boundaryDataOff, reusableGeom.format());
             }
         }
 
@@ -1752,7 +1751,7 @@ public class ImportService {
                     }
                     double wrapOffset = antimeridianWrapOffset(ringEnd, nextStart);
                     if (wrapOffset != 0) {
-                        addUnwrappedCoords(ring, nextWay, wrapOffset, 1);
+                        addUnwrappedCoords(ring, nextWay, wrapOffset);
                         usedWays.add(entry.getKey());
                         found = true;
                         break;
@@ -1761,7 +1760,7 @@ public class ImportService {
                     if (wrapOffset != 0) {
                         List<Coordinate> reversed = new ArrayList<>(nextWay);
                         Collections.reverse(reversed);
-                        addUnwrappedCoords(ring, reversed, wrapOffset, 1);
+                        addUnwrappedCoords(ring, reversed, wrapOffset);
                         usedWays.add(entry.getKey());
                         found = true;
                         break;
@@ -1785,8 +1784,8 @@ public class ImportService {
         return 0;
     }
 
-    static void addUnwrappedCoords(List<Coordinate> ring, List<Coordinate> way, double offset, int startIdx) {
-        for (int i = startIdx; i < way.size(); i++) {
+    static void addUnwrappedCoords(List<Coordinate> ring, List<Coordinate> way, double offset) {
+        for (int i = 1; i < way.size(); i++) {
             Coordinate c = way.get(i);
             ring.add(new Coordinate(c.x + offset, c.y));
         }
@@ -2079,7 +2078,7 @@ public class ImportService {
 
     private record PoiData(long id, double lat, double lon, String type, String subtype, List<NameData> names,
                            AddressData address, List<HierarchyCache.SimpleHierarchyItem> hierarchy,
-                           byte[] boundaryWkb) {
+                           EncodedGeometry boundary) {
     }
 
     private record NameData(String lang, String text) {
@@ -2091,7 +2090,7 @@ public class ImportService {
     private record BoundaryResultLite(long osmId, int level, String name, String code, org.locationtech.jts.geom.Geometry geometry) {
     }
 
-    private record BuildingData(long id, String name, String code, byte[] geometry, long shardId) {
+    private record BuildingData(long id, String name, String code, EncodedGeometry geometry, long shardId) {
     }
 
     private Long safeEntityId(EntityContainer container) {

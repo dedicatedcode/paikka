@@ -20,6 +20,8 @@ import com.dedicatedcode.paikka.config.PaikkaConfiguration;
 import com.dedicatedcode.paikka.flatbuffers.Building;
 import com.dedicatedcode.paikka.flatbuffers.BuildingList;
 import com.dedicatedcode.paikka.flatbuffers.Geometry;
+import com.dedicatedcode.paikka.service.geometry.EncodedGeometry;
+import com.dedicatedcode.paikka.service.geometry.GeometryCodec;
 import com.google.flatbuffers.FlatBufferBuilder;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -27,7 +29,6 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.locationtech.jts.geom.Coordinate;
 import org.locationtech.jts.geom.GeometryFactory;
-import org.locationtech.jts.io.WKBWriter;
 import org.rocksdb.Options;
 import org.rocksdb.RocksDB;
 
@@ -72,7 +73,19 @@ class BuildingServiceTest {
         assertThat(info).isNotNull();
         assertThat(info.getOsmId()).isEqualTo(1);
         assertThat(info.getName()).isEqualTo("first");
-        assertThat(info.getBoundaryWkb()).isNotEmpty();
+        assertThat(info.getGeometry()).isNotNull();
+    }
+
+    @Test
+    void findsBuildingByIdAndKnownShard() {
+        long shardId = new S2Helper().getShardId(52.0005, 4.0005);
+
+        BuildingService.BuildingInfo info = buildingService.getBuildingById(1, shardId);
+
+        assertThat(info).isNotNull();
+        assertThat(info.getOsmId()).isEqualTo(1);
+        assertThat(info.getGeometry()).isNotNull();
+        assertThat(buildingService.getBuildingById(999, shardId)).isNull();
     }
 
     @Test
@@ -129,21 +142,22 @@ class BuildingServiceTest {
         return builder.sizedByteArray();
     }
 
-    private int createBuilding(FlatBufferBuilder builder, long id, String name, byte[] wkb) {
+    private int createBuilding(FlatBufferBuilder builder, long id, String name, org.locationtech.jts.geom.Geometry geometry) {
         int nameOffset = builder.createString(name);
         int codeOffset = builder.createString("building");
-        int geometryData = Geometry.createDataVector(builder, wkb);
-        int geometry = Geometry.createGeometry(builder, geometryData);
+        EncodedGeometry encoded = GeometryCodec.encode(geometry);
+        int geometryData = Geometry.createDataVector(builder, encoded.data());
+        int geometryOffset = Geometry.createGeometry(builder, geometryData, encoded.format());
 
         Building.startBuilding(builder);
         Building.addId(builder, id);
         Building.addName(builder, nameOffset);
         Building.addCode(builder, codeOffset);
-        Building.addGeometry(builder, geometry);
+        Building.addGeometry(builder, geometryOffset);
         return Building.endBuilding(builder);
     }
 
-    private byte[] polygon(double minLon, double minLat, double maxLon, double maxLat) {
+    private org.locationtech.jts.geom.Geometry polygon(double minLon, double minLat, double maxLon, double maxLat) {
         Coordinate[] coordinates = {
                 new Coordinate(minLon, minLat),
                 new Coordinate(maxLon, minLat),
@@ -151,6 +165,6 @@ class BuildingServiceTest {
                 new Coordinate(minLon, maxLat),
                 new Coordinate(minLon, minLat)
         };
-        return new WKBWriter().write(GEOMETRY_FACTORY.createPolygon(coordinates));
+        return GEOMETRY_FACTORY.createPolygon(coordinates);
     }
 }

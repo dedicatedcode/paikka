@@ -1,7 +1,8 @@
 namespace com.dedicatedcode.paikka.flatbuffers;
 
 table Geometry {
-  data:[ubyte];    // WKB binary
+  data:[ubyte];    // WKB binary or compact polygon bytes
+  format:ubyte;    // 0 = WKB, 1 = compact polygon v1
 }
 table Building {
     id: long;

@@ -2,6 +2,7 @@ namespace com.dedicatedcode.paikka.flatbuffers;
 
 table Geometry {
   data: [ubyte];
+  format: ubyte;    // 0 = WKB, 1 = compact polygon v1
 }
 
 table Boundary {

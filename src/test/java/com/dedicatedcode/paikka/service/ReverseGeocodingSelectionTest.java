@@ -112,6 +112,6 @@ class ReverseGeocodingSelectionTest {
 
     private static POIData poi(long id, Map<String, String> names, AddressData address) {
         return new POIData(id, 53.8676f, 10.6958f, "amenity", "charging_station",
-                           names, address, List.<HierarchyData>of(), null);
+                           names, address, List.<HierarchyData>of(), 0L, null);
     }
 }

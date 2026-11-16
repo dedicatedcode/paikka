@@ -105,6 +105,7 @@ public class MetadataService {
         metadataMap.put("files", metadata.files());
         metadataMap.put("gridLevel", metadata.gridLevel());
         metadataMap.put("paikkaVersion", metadata.paikkaVersion());
+        metadataMap.put("geometryFormat", metadata.geometryFormat() != null ? metadata.geometryFormat() : "wkb");
         return Collections.unmodifiableMap(metadataMap);
     }
 }

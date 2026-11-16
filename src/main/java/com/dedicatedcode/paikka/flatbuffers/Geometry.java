@@ -2,10 +2,10 @@
 
 package com.dedicatedcode.paikka.flatbuffers;
 
-import java.nio.*;
-import java.lang.*;
-import java.util.*;
 import com.google.flatbuffers.*;
+
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 
 @SuppressWarnings("unused")
 public final class Geometry extends Table {
@@ -21,19 +21,27 @@ public final class Geometry extends Table {
   public ByteVector dataVector(ByteVector obj) { int o = __offset(4); return o != 0 ? obj.__assign(__vector(o), bb) : null; }
   public ByteBuffer dataAsByteBuffer() { return __vector_as_bytebuffer(4, 1); }
   public ByteBuffer dataInByteBuffer(ByteBuffer _bb) { return __vector_in_bytebuffer(_bb, 4, 1); }
+  public int format() { int o = __offset(6); return o != 0 ? bb.get(o + bb_pos) & 0xFF : 0; }
 
   public static int createGeometry(FlatBufferBuilder builder,
-      int dataOffset) {
-    builder.startTable(1);
+      int dataOffset,
+      int format) {
+    builder.startTable(2);
     Geometry.addData(builder, dataOffset);
+    Geometry.addFormat(builder, format);
     return Geometry.endGeometry(builder);
   }
 
-  public static void startGeometry(FlatBufferBuilder builder) { builder.startTable(1); }
+  public static int createGeometry(FlatBufferBuilder builder, int dataOffset) {
+    return createGeometry(builder, dataOffset, 0);
+  }
+
+  public static void startGeometry(FlatBufferBuilder builder) { builder.startTable(2); }
   public static void addData(FlatBufferBuilder builder, int dataOffset) { builder.addOffset(0, dataOffset, 0); }
   public static int createDataVector(FlatBufferBuilder builder, byte[] data) { return builder.createByteVector(data); }
   public static int createDataVector(FlatBufferBuilder builder, ByteBuffer data) { return builder.createByteVector(data); }
   public static void startDataVector(FlatBufferBuilder builder, int numElems) { builder.startVector(1, numElems, 1); }
+  public static void addFormat(FlatBufferBuilder builder, int format) { builder.addByte(1, (byte) format, (byte) 0); }
   public static int endGeometry(FlatBufferBuilder builder) {
     int o = builder.endTable();
     return o;
