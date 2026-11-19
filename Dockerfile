@@ -1,4 +1,4 @@
-FROM eclipse-temurin:25.0.2_10-jre
+FROM eclipse-temurin:25-jre
 
 LABEL maintainer="dedicatedcode"
 LABEL org.opencontainers.image.source="https://github.com/dedicatedcode/paikka"
@@ -83,7 +83,7 @@ elif [ "$1" = "import-boundaries" ]; then
 fi
 
 # Default: Execute the Java application
-exec runuser -u paikka -- java $JAVA_OPTS -jar $APP_HOME/app.jar -Dspring.profiles.active=docker "$@"
+exec runuser -u paikka -- java -XX:-UseBASE64Intrinsics $JAVA_OPTS -jar $APP_HOME/app.jar -Dspring.profiles.active=docker "$@"
 EOF
 
 RUN chmod +x /entrypoint.sh

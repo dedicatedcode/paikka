@@ -108,7 +108,8 @@ class ImportStatistics {
     private final AtomicLong poiIndexEntriesScanned = new AtomicLong(0);
     private final AtomicBoolean poiIndexRecReadDone = new AtomicBoolean(false);
     private final AtomicLong rocksDbWrites = new AtomicLong(0);
-    private final AtomicLong queueSize = new AtomicLong(0);
+    private final AtomicLong queueItems = new AtomicLong(0);
+    private volatile long queueCapacity = 0;
     private final AtomicLong activeThreads = new AtomicLong(0);
     private final AtomicLong boundaryWaysProcessed = new AtomicLong(0);
     private final AtomicLong boundaryPhaseEntitiesRead = new AtomicLong(0);
@@ -238,12 +239,24 @@ class ImportStatistics {
         rocksDbWrites.incrementAndGet();
     }
 
-    public int getQueueSize() {
-        return (int) queueSize.get();
+    public long getQueueItems() {
+        return queueItems.get();
     }
 
-    public void setQueueSize(int size) {
-        queueSize.set(size);
+    public void addQueueItems(long delta) {
+        queueItems.addAndGet(delta);
+    }
+
+    public void resetQueueItems() {
+        queueItems.set(0);
+    }
+
+    public long getQueueCapacity() {
+        return queueCapacity;
+    }
+
+    public void setQueueCapacity(long capacity) {
+        this.queueCapacity = capacity;
     }
 
     public int getActiveThreads() {
@@ -576,7 +589,7 @@ class ImportStatistics {
                     sb.append(String.format("\033[1;36m[%s]\033[0m \033[1mCaching Node Coordinates\033[0m", formatTime(elapsed)));
                     sb.append(String.format(" │ \033[32mNodes Cached:\033[0m %s \033[33m(%s/s)\033[0m",
                                             formatCompactNumber(getNodesCached()), formatCompactRate(nodesPerSec)));
-                    sb.append(String.format(" │ \033[36mQueue:\033[0m %s", formatCompactNumber(getQueueSize())));
+                    sb.append(String.format(" │ \033[36mQueue:\033[0m %s", formatQueueStatus()));
                     sb.append(String.format(" │ \033[37mThreads:\033[0m %d", getActiveThreads()));
 
                 } else if (phase.contains("1.2:")) {
@@ -584,7 +597,7 @@ class ImportStatistics {
                     sb.append(String.format("\033[1;36m[%s]\033[0m \033[1mCaching Node Coordinates\033[0m", formatTime(elapsed)));
                     sb.append(String.format(" │ \033[32mNodes Cached:\033[0m %s \033[33m(%s/s)\033[0m",
                                             formatCompactNumber(getNodesCached()), formatCompactRate(nodesPerSec)));
-                    sb.append(String.format(" │ \033[36mQueue:\033[0m %s", formatCompactNumber(getQueueSize())));
+                    sb.append(String.format(" │ \033[36mQueue:\033[0m %s", formatQueueStatus()));
                     sb.append(String.format(" │ \033[37mThreads:\033[0m %d", getActiveThreads()));
 
                 } else if (phase.contains("1.3:")) {
@@ -619,7 +632,7 @@ class ImportStatistics {
                     sb.append(String.format(" │ \033[32mPOI Index Rec Read:\033[0m %s \033[33m%s\033[0m", formatCompactNumber(getPoiIndexRecRead()), isPoiIndexRecReadDone() ? "(done)" : String.format("(%s/s)", formatCompactRate(poisReadSec))));
                     sb.append(String.format(" │ \033[32mPOIs Processed:\033[0m %s \033[33m(%s/s)\033[0m", formatCompactNumber(getPoisProcessed()), formatCompactRate(poisPerSec)));
                     sb.append(String.format(" │ \033[35mProgress:\033[0m %.4f%%", percentage));
-                    sb.append(String.format(" │ \033[36mQueue:\033[0m %s", formatCompactNumber(getQueueSize())));
+                    sb.append(String.format(" │ \033[36mQueue:\033[0m %s", formatQueueStatus()));
                     sb.append(String.format(" │ \033[37mThreads:\033[0m %d", getActiveThreads()));
 
                 } else if (phase.contains("2.2")) {
@@ -804,6 +817,16 @@ class ImportStatistics {
         if (n < 1000) return String.valueOf(n);
         if (n < 1_000_000) return String.format("%.2fk", n / 1000.0);
         return String.format("%.3fM", n / 1_000_000.0);
+    }
+
+    private String formatQueueStatus() {
+        long items = getQueueItems();
+        long cap = getQueueCapacity();
+        if (cap > 0) {
+            long pct = Math.max(0, Math.min(100, items * 100 / cap));
+            return String.format("%s/%s (%d%%)", formatCompactNumber(items), formatCompactNumber(cap), pct);
+        }
+        return formatCompactNumber(items);
     }
 
     private String formatCompactRate(long n) {

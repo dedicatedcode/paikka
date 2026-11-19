@@ -67,6 +67,7 @@ import java.util.stream.Stream;
 public class ImportService {
 
     private static final GeometryFactory GEOMETRY_FACTORY = new GeometryFactory();
+    private static final int POI_EMIT_BATCH_SIZE = 2000;
     private final S2Helper s2Helper;
     private final GeometrySimplificationService geometrySimplificationService;
     private final PaikkaConfiguration config;
@@ -457,10 +458,14 @@ public class ImportService {
         };
 
         try (PeriodicFlusher _ = PeriodicFlusher.start("shard-buffer-flush", 5, 5, flushTask)) {
-            BlockingQueue<List<PoiQueueItem>> queue = new LinkedBlockingQueue<>(10000);
             int numReaders = Math.max(1, config.getImportConfiguration().getThreads());
             int chunkSize = config.getImportConfiguration().getChunkSize();
             int localPoiBufferSize = 10_000;
+
+            int queueBatches = Math.max(2, numReaders * 2);
+            BlockingQueue<List<PoiQueueItem>> queue = new LinkedBlockingQueue<>(queueBatches);
+            stats.setQueueCapacity((long) queueBatches * POI_EMIT_BATCH_SIZE);
+            stats.resetQueueItems();
 
             CountDownLatch latch = new CountDownLatch(numReaders);
 
@@ -551,7 +556,7 @@ public class ImportService {
                         try {
                             while (true) {
                                 List<PoiQueueItem> batch = queue.take();
-                                stats.setQueueSize(queue.size());
+                                stats.addQueueItems(-batch.size());
                                 if (batch.isEmpty()) break;
                                 int localCount = batch.size();
                                 for (PoiQueueItem item : batch) {
@@ -631,19 +636,19 @@ public class ImportService {
     private void sortAndEmitChunk(List<PoiQueueItem> chunk, BlockingQueue<List<PoiQueueItem>> queue, ImportStatistics stats) throws InterruptedException {
         chunk.sort((a, b) -> Long.compareUnsigned(a.s2SortKey, b.s2SortKey));
 
-        List<PoiQueueItem> buf = new ArrayList<>(2000);
+        List<PoiQueueItem> buf = new ArrayList<>(POI_EMIT_BATCH_SIZE);
         for (PoiQueueItem item : chunk) {
             buf.add(item);
-            if (buf.size() >= 2000) {
+            if (buf.size() >= POI_EMIT_BATCH_SIZE) {
                 queue.put(new ArrayList<>(buf));
+                stats.addQueueItems(buf.size());
                 buf.clear();
-                stats.setQueueSize(queue.size());
             }
         }
         if (!buf.isEmpty()) {
             queue.put(new ArrayList<>(buf));
+            stats.addQueueItems(buf.size());
             buf.clear();
-            stats.setQueueSize(queue.size());
         }
     }
 
@@ -689,8 +694,12 @@ public class ImportService {
     private void cacheNeededNodeCoordinates(Path pbfFile, RocksDB neededNodesDb, RocksDB nodeCache, ImportStatistics stats) throws Exception {
         final int BATCH_SIZE = 50_000;
 
-        BlockingQueue<List<OsmNode>> nodeBatchQueue = new LinkedBlockingQueue<>(200);
         int numProcessors = Math.max(1, config.getImportConfiguration().getThreads());
+        // Small in-flight buffer so the PBF reader gets throttled instead of queuing millions of nodes on the heap.
+        int queueBatches = Math.max(2, numProcessors * 2);
+        BlockingQueue<List<OsmNode>> nodeBatchQueue = new LinkedBlockingQueue<>(queueBatches);
+        stats.setQueueCapacity((long) queueBatches * BATCH_SIZE);
+        stats.resetQueueItems();
         CountDownLatch latch = new CountDownLatch(numProcessors);
 
         try (ExecutorService executor = createExecutorService(numProcessors)) {
@@ -704,14 +713,14 @@ public class ImportService {
                                 buf.add((OsmNode) c.getEntity());
                                 if (buf.size() >= BATCH_SIZE) {
                                     nodeBatchQueue.put(new ArrayList<>(buf));
+                                    stats.addQueueItems(buf.size());
                                     buf.clear();
-                                    stats.setQueueSize(nodeBatchQueue.size());
                                 }
                             }
                         }
                         if (!buf.isEmpty()) {
                             nodeBatchQueue.put(new ArrayList<>(buf));
-                            stats.setQueueSize(nodeBatchQueue.size());
+                            stats.addQueueItems(buf.size());
                         }
                     });
                 } catch (Exception e) {
@@ -737,7 +746,7 @@ public class ImportService {
                     try {
                         while (true) {
                             List<OsmNode> nodes = nodeBatchQueue.take();
-                            stats.setQueueSize(nodeBatchQueue.size());
+                            stats.addQueueItems(-nodes.size());
                             if (nodes.isEmpty()) break;
 
                             List<byte[]> keys = keysListLocal.get();
